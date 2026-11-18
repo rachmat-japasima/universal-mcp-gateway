@@ -4,3 +4,6 @@ data/
 .env
 *.log
 graphify-out/
+.claude/
+.codex/
+.opencode/
