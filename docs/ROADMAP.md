@@ -14,36 +14,51 @@ The full product scope is approved in this document. Implement sequentially; do 
 - [x] User verified dev server and health endpoint.
 - [x] Production backend registry remains empty.
 
-## Phase 1 — MCP protocol correctness (next)
-- Audit installed SDK versions and declarations.
-- Verify transport lifecycle against actual SDK.
-- Add official MCP Client SDK integration tests.
-- Test initialize and tools/list returns empty array.
-- Test multiple clients/session semantics.
-- Test malformed requests, host validation, and cleanup.
-- Ensure typecheck/build/test pass.
+## Phase 1 — MCP protocol correctness (completed)
+- [x] Audited installed SDK versions (v2.4.0 server/client, v2.0.2 hono).
+- [x] Serving entry replaced with SDK `createMcpHandler` (2025 + 2026 eras).
+- [x] Host and Origin validation wired explicitly (loopback allowlists).
+- [x] `tools/list` returns an empty array on both eras.
+- [x] Per-exchange server instances: no mutable state shared between clients.
+- [x] Malformed JSON, unknown method, empty batch, bad protocol version,
+      wrong content type, and oversize body produce protocol errors.
+- [x] Shutdown closes the MCP handler; `/mcp` answers 503 afterwards.
+- [x] 19 integration tests using the official MCP Client SDK.
+- [x] `pnpm typecheck`, `pnpm build`, `pnpm test` pass.
 
-## Phase 2 — Core domain and configuration
-- Define domain types and Zod schemas.
-- Define error taxonomy.
-- Define backend configuration format.
-- Define registry repository interfaces.
-- Add SQLite migrations foundation.
-- No real backend integrations.
+## Phase 2 — Core domain and configuration (completed)
+- [x] Domain models + Zod 4 schemas: backend, backend runtime, agent,
+      credentials, policies, sessions, activity events, audit events.
+- [x] Create vs update schemas; update schemas carry no defaults.
+- [x] Error taxonomy (`AppError`, 12 stable codes) mapped to HTTP and JSON-RPC.
+- [x] Centralized configuration: pure parser, env → defaults, loopback-only host,
+      fail-fast with actionable messages, no `process.exit` inside the module.
+- [x] SQLite foundation: connection pragmas, transactional versioned migrations
+      with checksums, `0001_initial_schema.sql` (11 tables).
+- [x] Repository interfaces (domain terms) + SQLite implementations.
+- [x] Bootstrap wiring: config → logger → store → HTTP, migrations before serving,
+      shutdown releases handler then database.
+- [x] 121 tests; `/health` reports `backendCount: 0`; registry remains empty.
+- [x] `pnpm typecheck`, `pnpm build`, `pnpm test` pass.
 
-## Phase 3 — Backend registry and management API
-- Implement backend CRUD and validation.
-- Add enable/disable lifecycle.
-- Persist definitions in SQLite.
-- Separate persisted definition and runtime status.
-- Add tests and API documentation.
-- Registry remains empty until user adds a backend.
+## Phase 3 — Backend registry and management API (completed)
+- [x] Backend CRUD and validation at `/api/v1/backends`.
+- [x] Enable/disable as idempotent configuration operations.
+- [x] Definitions persisted in SQLite; runtime status kept in a separate row.
+- [x] Pagination, filtering (transport, enabled), search, stable ordering, totals.
+- [x] Optimistic concurrency via `backends.version` and `?expectedVersion=`.
+- [x] Audit events for create/update/enable/disable/delete and validation failure.
+- [x] api / registry / infrastructure layering; no SQL or rules in handlers.
+- [x] Loopback-only, Host/Origin, JSON content-type, and body-size guards.
+- [x] 190 tests; `pnpm typecheck`, `pnpm test`, `pnpm build` pass.
+- [x] Registry remains empty until the user adds a backend. No backend connected.
 
 ## Phase 4 — Adapter framework
 - Implement stdio adapter.
 - Implement Streamable HTTP adapter.
 - Use official MCP Client SDK.
 - Implement process lifecycle, timeouts, reconnect, cleanup.
+- Wire the `connect`/`disconnect`/`reconnect` endpoints deferred from Phase 3.
 - Use test fixtures only; do not add permanent production backends.
 
 ## Phase 5 — Tool catalog and routing

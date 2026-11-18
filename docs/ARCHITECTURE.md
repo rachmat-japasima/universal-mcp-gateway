@@ -131,6 +131,76 @@ apps/
 
 This is a target structure, not a requirement to move existing files immediately. Preserve the current working bootstrap and refactor incrementally.
 
+### 4.1 Implemented module layout (Phase 3)
+
+```text
+src/
+  domain/          # contracts, no infrastructure imports
+    primitives.ts        ids, timestamps, secret references
+    backend.ts           definition + create/update schemas
+    backend-runtime.ts   runtime state + status enum
+    agent.ts
+    agent-credential.ts  verifier hash, derived status
+    policy.ts            rules, effects, deterministic ordering
+    session.ts
+    activity-event.ts    operational history
+    audit-event.ts       administrative/security history
+    repositories.ts      persistence interfaces (SQL/persistence-free)
+  shared/
+    errors.ts        AppError, ErrorCode, toAppError, log view
+  config/
+    config.ts        pure parseConfig/loadConfig/redactConfig
+  api/
+    index.ts             management API assembly + middleware order
+    http.ts              request id, envelopes, JSON parsing, error boundary
+    middleware/
+      guards.ts          loopbackOnly, requireJsonBody
+    schemas/
+      queries.ts         pagination/filter/param contracts
+    routes/
+      system.routes.ts
+      backends.routes.ts
+  registry/
+    backend-service.ts   business rules, transactions, audit, sanitization
+  core/
+    gateway.ts       Hono app + MCP handler + health + API mount
+  infrastructure/
+    database/
+      connection.ts        pragmas, one handle per process
+      migration-runner.ts  transactional, checksummed migrations
+      migrations/0001_initial_schema.sql
+      migrations/0002_backend_version.sql
+      repositories/        SQLite implementations
+  monitoring/
+    logger.ts        Pino + redaction paths
+  index.ts           process lifecycle
+```
+
+Dependency direction is one-way: `index` → `core` → `api` → `registry` → `infrastructure`/`config` → `shared`/`domain`. `domain` imports only Zod and its own primitives, so it can move into a workspace package without changes (ADR-022). `registry` is the only layer that combines several repositories in one transaction.
+
+Boundaries that matter:
+
+- **Domain vs persistence.** Repository interfaces live in `src/domain/repositories.ts` and speak in entities; SQL and `better-sqlite3` types never appear there. An in-memory fake satisfies the same contract.
+- **Route vs service vs repository.** A route parses HTTP and formats the response; `BackendService` owns uniqueness, transactions, audit, and sanitization; repositories own SQL. No handler contains a statement or a business rule.
+- **Definition vs runtime.** `backends` holds configuration; `backend_runtime` holds observed connection state. A persisted backend never implies a live connection.
+- **Activity vs audit.** Separate entities, tables, and interfaces. Operational volume must not dilute administrative history, and audit is append-only.
+- **Contracts vs secrets.** Agent tokens are not part of the `Agent` entity; only a verifier hash is stored. Backend `env`/`headers` accept secret *references* only.
+
+### 4.2 Management API middleware order (Phase 3)
+
+Declared once in `createManagementApi()`, applied to every `/api/v1` route:
+
+1. `requestId` — assigns or accepts a well-formed `X-Request-Id` so later log lines and error envelopes correlate.
+2. `loopbackOnly` — rejects a non-loopback socket, a non-loopback configured `HOST`, a foreign `Host`, and a foreign `Origin`.
+3. `jsonBodyLimit` — bounds the body before any parse allocates it.
+4. `requireJsonBody` — rejects a declared non-JSON content type, which blocks cross-site form posts.
+
+Order is load-bearing: the local-only check runs before a body is read, so a non-local caller cannot make the gateway buffer a payload. Host/Origin checks reuse the SDK's own `validateHostHeader`/`validateOriginHeader`; only the response envelope differs from `/mcp` (ADR-029).
+
+The MCP surface keeps the SDK's `hostHeaderValidation`/`originValidation` middleware because a JSON-RPC client expects a JSON-RPC error. Both middlewares are scoped away from `/api/v1` so neither surface answers in the other's shape.
+
+The API is not mounted at all when no store is configured, rather than mounted against a missing database.
+
 ## 5. Inbound MCP lifecycle
 
 1. Client connects to `/mcp`.
@@ -162,25 +232,29 @@ Use official MCP Client SDK. Keep process launch and transport details inside ad
 
 ## 7. Registry model
 
-Backend definition fields (conceptual):
-- `id`
-- `name`
-- `description`
-- `transport`
-- transport-specific connection config
-- `enabled`
-- `timeoutMs`
-- `concurrencyPolicy`
-- `createdAt`
-- `updatedAt`
+Implemented in Phase 3 (`src/domain/backend.ts`, `src/registry/backend-service.ts`, `docs/BACKEND_SPEC.md`).
 
-Runtime state should be separate:
-- `status`
-- `lastConnectedAt`
-- `lastHealthCheckAt`
-- `lastErrorCode`
-- `lastErrorAt`
-- `reconnectAttempt`
+Backend definition fields:
+- `id` — application-generated UUIDv4.
+- `name` — unique among active backends (`RESOURCE_CONFLICT` on clash).
+- `description` — optional, nullable.
+- `connection` — discriminated union on `type`: `stdio` or `streamable-http`.
+- `enabled` — configuration flag only; not a connection.
+- `timeoutMs` — per-call timeout applied later by an adapter.
+- `concurrencyMode` / `concurrencyLimit` — `parallel` | `serialized` | `limited`.
+- `version` — optimistic-concurrency counter, incremented on every persisted change.
+- `createdAt`, `updatedAt`.
+
+Runtime state is a separate row and never part of a definition:
+- `status` — `disconnected` | `connecting` | `connected` | `unhealthy` | `error` | `disabled`.
+- `lastConnectedAt`, `lastHealthCheckAt`, `lastErrorCode`, `lastErrorAt`, `reconnectAttempts`.
+
+Rules enforced by the registry service:
+
+- Creating, updating, enabling, or disabling **cannot** connect, spawn, or resolve anything. Only two configuration-visible runtime transitions exist: disable → `disabled`, enable from `disabled` → `disconnected`. A `connected` state is never fabricated.
+- A definition's `env`/`headers` may hold secret *references* (`secret:...`, `env:VAR`) only. A literal secret is rejected by the schema, so an API response cannot leak one by construction.
+- A stdio `command` is a single executable token. Arguments, flags, and pipes belong in `args`; a shell-looking command is rejected rather than split.
+- Deletion is a tombstone: the backend leaves the registry, runtime state cascades, and audit rows keep referencing the id.
 
 Do not store plaintext secrets in ordinary registry JSON/YAML or database columns. Use secret references and a separately designed secure store.
 
@@ -222,6 +296,10 @@ Default deny for unknown identities and unassigned tools.
 
 Document and test selected Streamable HTTP session behavior against the installed SDK version. Keep session-bound data isolated. Define expiration, cleanup, and revocation. Avoid sharing mutable server/transport state between clients unless explicitly supported by the SDK lifecycle.
 
+**Current (Phase 1):** serving is stateless per HTTP exchange. `createMcpHandler` builds a fresh `McpServer` from a factory for every exchange, so no mutable state exists to share; `tools/list` and `tools/call` see only that exchange's instance. Session ids are not issued and a client-supplied `mcp-session-id` is ignored. `GET`/`DELETE` answer `405` on the stateless legacy leg.
+
+**Deferred to Phase 7:** server-side session registry, expiry/revocation, resumable streams, and per-session concurrency accounting. Until then a session cannot be revoked mid-flight because none is tracked — credential revocation (Phase 6) is enforced per request instead.
+
 ## 11. Concurrency
 
 Per-backend/resource modes:
@@ -233,9 +311,16 @@ Use scoped queues/locks for stateful resources. Include timeout, cancellation, c
 
 ## 12. Data persistence
 
-SQLite stores registry metadata, agent profiles, policy records, audit events, and any bounded operational metadata. Use migrations and repository interfaces. Runtime MCP client/transport/process objects stay in memory.
+SQLite stores registry metadata, agent profiles, policy records, audit events, and any bounded operational metadata. Access goes through the repository interfaces in `src/domain/repositories.ts`; SQL is confined to `src/infrastructure/database/`. Runtime MCP client/transport/process objects stay in memory.
 
-Define retention and backup policy. Do not store sensitive tool arguments/results by default.
+Implemented in Phase 2 (details in `docs/DATABASE.md`):
+
+- One connection per process, WAL + `synchronous=FULL` + `foreign_keys=ON`.
+- Transactional, checksummed, additive migrations; applied files are immutable.
+- Soft delete (tombstone) for backends and agents; hard delete with cascade for policies; revocation timestamps for credentials and sessions.
+- Status for credentials and sessions is derived from timestamps, not stored.
+
+Retention and backup policy are still to be defined. Do not store sensitive tool arguments/results by default.
 
 ## 13. Dashboard architecture
 
@@ -251,29 +336,38 @@ Define retention and backup policy. Do not store sensitive tool arguments/result
 
 ## 14. Security boundaries
 
-- Loopback binding by default.
-- Authentication before protected operations.
-- Authorization on every management API and MCP tool invocation.
-- Origin/Host validation.
-- Redacted logs.
-- Safe stdio process launch with executable and argument arrays.
+- Loopback binding by default; a non-loopback `HOST` is refused at config load.
+- The management API is **unauthenticated** in Phase 3. Its boundary is local-only access (socket address, `HOST`, `Host`, `Origin`) plus a JSON content-type requirement — not identity. Dashboard authentication is Phase 6.
+- Origin/Host validation on both surfaces, each answering in its own protocol's error shape.
+- Redacted logs; secrets exist only as references, so there is nothing to redact in a payload.
+- Safe stdio process launch with executable and argument arrays; no shell interpolation.
 - Controlled environment inheritance.
-- No arbitrary shell command interpolation.
 - No public exposure before security review.
 
 ## 15. Error taxonomy
 
-Internal categories:
-- invalid request
-- unsupported protocol operation
-- unauthenticated
-- forbidden
-- unknown tool
-- backend disabled
-- backend unavailable
-- backend timeout
-- backend protocol error
-- concurrency timeout
-- internal gateway error
+Implemented in `src/shared/errors.ts` as `AppError` with stable `ErrorCode` values. Each code has a fixed category, HTTP status, and JSON-RPC code (`errorDefinition()`), so mapping is a table lookup rather than per-call judgement.
+
+| Code | Category | HTTP | JSON-RPC |
+| --- | --- | --- | --- |
+| `VALIDATION_ERROR` | client | 400 | -32602 |
+| `RESOURCE_NOT_FOUND` | client | 404 | -32602 |
+| `RESOURCE_CONFLICT` | client | 409 | -32602 |
+| `MCP_PROTOCOL_ERROR` | client | 400 | -32600 |
+| `AUTHENTICATION_ERROR` | denied | 401 | -32001 |
+| `AUTHORIZATION_ERROR` | denied | 403 | -32002 |
+| `BACKEND_CONNECTION_ERROR` | unavailable | 502 | -32603 |
+| `BACKEND_UNAVAILABLE` | unavailable | 503 | -32603 |
+| `BACKEND_TIMEOUT` | unavailable | 504 | -32603 |
+| `CONFIGURATION_ERROR` | internal | 500 | -32603 |
+| `DATABASE_ERROR` | internal | 500 | -32603 |
+| `INTERNAL_ERROR` | internal | 500 | -32603 |
+
+Rules:
+
+- `message` is client-safe; `details` and `cause` are log-only and never serialized outward (`toEnvelope()`).
+- `toAppError()` collapses any non-`AppError` into `INTERNAL_ERROR` with a generic message, preserving the original as `cause`, so raw SQLite/OS text cannot reach a client. The one exception is a `ZodError`: it is always malformed caller input, so it maps to `VALIDATION_ERROR` naming only the failing paths and messages — never the received values.
+- `describeErrorForLog()` is the only view that includes stacks and causes.
+- `isClientFault()` separates caller mistakes from gateway faults so invalid input is not logged as an outage.
 
 Return protocol-appropriate errors without leaking stack traces, secrets, process environment, or filesystem details.

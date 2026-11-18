@@ -33,6 +33,12 @@ Use Pino JSON logs. Standard fields:
 - outcome
 - errorCode
 
+Current behavior (Phase 1):
+- Handler faults log at `error` with the stack.
+- Input the gateway refuses (malformed JSON-RPC, empty batch, unsupported protocol
+  version, wrong content type) logs at `warn` with the message only — no stack,
+  since the gateway itself is healthy.
+
 Do not log:
 - authorization tokens
 - passwords
@@ -84,6 +90,23 @@ Record:
 - authorization denials where useful.
 
 Audit entries include actor, action, target, timestamp, result, and request ID.
+
+### 6.1 Implemented in Phase 3
+
+`backend.created`, `backend.updated`, `backend.enabled`, `backend.disabled`,
+`backend.deleted`, and `backend.validation_failed`.
+
+- Actor is `admin` / `local-operator` until authentication exists (ADR-030); `requestId` is
+  not yet persisted on audit rows (the column exists, the service does not thread it through).
+- `metadata_json` holds a whitelist of primitives only: `{transport, enabled}`, `{changed}`,
+  `{name}`, or `{operation, reason, fields}`. A connection config is never copied in.
+- No row is written for a no-op, so the log reflects changes rather than requests.
+- `backend.validation_failed` has no `target_type`/`target_id`: validation persists nothing.
+- Audit is append-only with no application delete path; deletion of a backend tombstones the
+  definition instead of cascading, so history stays resolvable.
+
+Login/logout, credential, policy, and settings events arrive with their phases. There are no
+metrics endpoints yet, so no backend counters are exposed beyond `/api/v1/system` counts.
 
 ## 7. Alerts and notifications
 
