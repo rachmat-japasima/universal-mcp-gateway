@@ -34,7 +34,7 @@ Defines the management API, registry domain, MCP adapters, routing, and lifecycl
 ### System
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `GET` | `/api/v1/system` | Service name/version, environment, endpoint paths, backend count, and explicit capability flags (`backendConnections: false`, `toolRouting: false`, `authentication: false`). |
+| `GET` | `/api/v1/system` | Service name/version, environment, endpoint paths, backend count, explicit capability flags (`backendConnections: true`, `toolRouting: true`, `authentication: true`), and a live `authentication` field (`required` or `unavailable`). |
 | `GET` | `/api/v1/system/health` | Management-plane liveness. Distinct from `/health`, which stays dependency-free for the process probe. |
 
 ### Backends
@@ -241,20 +241,26 @@ refusal, or a rejected credential is permanent: retrying cannot change the answe
 Retries are off by default (`RECONNECT_ENABLED=false`).
 
 **Secrets.** `env:` references are resolved from `process.env`. `secret:`
-references fail loudly as `CONFIGURATION_ERROR` — the secret store is Phase 6 —
+references fail loudly as `CONFIGURATION_ERROR` — there is still no secret store —
 rather than being sent literally, which would look like an auth failure and hide
 the real problem.
 
-## 7. Tool routing (implemented in Phase 5)
+## 7. Tool routing (implemented in Phase 6)
 
-Implemented in `src/routing/`, served on `/mcp`. Steps 1–2 and 5–9 of the original
-sketch exist; steps 3–4 and 6 wait for Phases 6–7.
+Implemented in `src/routing/`, served on `/mcp`. Every step exists except 6 and 8,
+which are Phase 7 concurrency control.
 
-1. Resolve public tool name against the in-memory catalog.
-2. Resolve backend and original tool name; re-check the backend is enabled and
+1. **Authenticate the caller** (Phase 6, before anything else runs). `mcpAuthenticate`
+   verifies the bearer credential and establishes the agent for this exchange only.
+2. **Evaluate effective policy** for that agent (Phase 6): system restrictions →
+   priority → deny → default deny. A denial answers `-32602 "Unknown tool"` and
+   stops — no backend read, no reachability check, no schema compile, no
+   invocation. (The decision reads the in-memory catalog to learn a tool's
+   backend for `backend`-scoped rules; that read behaves identically for a real
+   and an invented name.)
+3. Resolve public tool name against the in-memory catalog.
+4. Resolve backend and original tool name; re-check the backend is enabled and
    connected at call time, so a stale mapping is refused rather than dialled.
-3. Authenticate agent — **Phase 6**.
-4. Evaluate effective policy — **Phase 6**.
 5. Validate arguments against the backend's own JSON Schema. A schema that
    cannot be compiled is forwarded **unvalidated** with the reason logged, never
    replaced by a permissive stub (ADR-037).
@@ -267,6 +273,10 @@ sketch exist; steps 3–4 and 6 wait for Phases 6–7.
    result; a routing failure becomes a JSON-RPC error.
 10. Record `tools.call` activity: backend, public name, outcome, error code,
     duration, and the bounded JSON-RPC id. Never arguments or results.
+
+`tools/list` applies the same policy: it publishes only the tools this agent may
+call, through the same `AuthorizationService`, so the view and the boundary cannot
+drift.
 
 ### 7.1 Catalog endpoints (implemented)
 
@@ -282,7 +292,50 @@ sketch exist; steps 3–4 and 6 wait for Phases 6–7.
 
 There is deliberately **no** HTTP tool-invocation endpoint. Invocation stays on
 `/mcp`, so there is exactly one place where an agent can reach a backend and one
-place where Phase 6 authorization has to be enforced.
+place where authorization is enforced.
+
+## 7.2 Agent, credential, and policy endpoints (Phase 6)
+
+All of these are on the unauthenticated, loopback-only management API.
+
+### Agents
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/agents` | Paginated, filterable (`status`, `search`), sortable list. |
+| `POST` | `/api/v1/agents` | Create. `201`. New agents have no credential and no policy. |
+| `GET` | `/api/v1/agents/:agentId` | Detail, `404` if absent or tombstoned. |
+| `PATCH` | `/api/v1/agents/:agentId` | Update name/description/clientType/metadata. |
+| `DELETE` | `/api/v1/agents/:agentId` | Tombstone, revoke every credential, drop every assignment — one transaction. |
+| `POST` | `/api/v1/agents/:agentId/enable` | Enable. No-op when already enabled (writes no audit row). |
+| `POST` | `/api/v1/agents/:agentId/disable` | Disable. Effective immediately: authentication refuses the agent's credentials. |
+| `GET` | `/api/v1/agents/:agentId/access` | Read-only preview: assigned policies and, for every tool in the current catalog, allowed/denied plus the reason. |
+
+### Credentials
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/agents/:agentId/credentials` | List. Never includes a token or verifier. |
+| `POST` | `/api/v1/agents/:agentId/credentials` | Issue. `201` with the token **once** in the response; `409`/`500` if no hashing key. |
+| `POST` | `/api/v1/agents/:agentId/credentials/:credentialId/rotate` | Create new + revoke old in one transaction; token returned once; one `credential.rotated` audit row with `previousCredentialId`. |
+| `POST` | `/api/v1/agents/:agentId/credentials/:credentialId/revoke` | Idempotent; keeps the original `revokedAt`. |
+
+A credential addressed under the wrong agent is a `404`, never a cross-agent
+operation.
+
+### Policies
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/policies` | Paginated; filters `effect`, `agentId`, `backendId`, `search`. |
+| `POST` | `/api/v1/policies` | Create. |
+| `GET` | `/api/v1/policies/:policyId` | Detail. |
+| `PATCH` | `/api/v1/policies/:policyId` | Update name/description/priority/rules. |
+| `DELETE` | `/api/v1/policies/:policyId` | Hard delete; every assignment is dropped (`ON DELETE CASCADE`). |
+| `POST` | `/api/v1/policies/:policyId/assignments` | Assign to an agent (idempotent). |
+| `DELETE` | `/api/v1/policies/:policyId/assignments/:agentId` | Remove an assignment; `404` if not assigned. |
+
+Rule targets are validated at write time: a `backend` target must exist in the
+registry (or be `*`); a `tool` target must be a well-formed public name and is
+**not** required to exist in the catalog, because the catalog is transient
+(ADR-038).
 
 ## 8. Error codes
 
@@ -308,6 +361,13 @@ Implemented in Phase 3:
 - No internal exception text, stack traces, or driver messages in responses.
 - Secrets are structurally absent from stored config (references only).
 
-**Not implemented, and the API must not be described as production-secure:** authentication, authorization, per-caller rate limiting, and CSRF tokens. Any caller that can reach loopback — any local process or user — can call this API. See `docs/SECURITY.md`.
+Phases 5–6 add:
 
-Deferred: dashboard authentication and agent authorization (Phase 6), owner confirmation flows for destructive or exposure-changing operations.
+- The MCP surface (`/mcp`) requires a per-agent bearer credential, verified on every request. It answers one uniform 401 for every failure.
+- MCP authorization is default-deny, enforced on both `tools/list` and `tools/call`; a denial is byte-identical to an unknown tool.
+- Credential tokens are returned exactly once and stored only as an HMAC-SHA-256 digest with a key id.
+- `CREDENTIAL_HASH_SECRET` is read outside `Config`, so no API response or log line has a field that could carry it. Production refuses to start without it.
+
+**Not implemented, and the API must not be described as production-secure:** management-API authentication (there is still no operator identity), per-caller rate limiting, and CSRF tokens. Any caller that can reach loopback — any local process or user — can call this API, including minting an agent credential. See `docs/SECURITY.md`.
+
+Deferred: dashboard authentication and operator sessions (Phase 8), owner confirmation flows for destructive or exposure-changing operations.

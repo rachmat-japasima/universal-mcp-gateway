@@ -59,11 +59,31 @@ export interface BackendRuntimeRepository {
   list(): BackendRuntime[];
 }
 
+export interface AgentQuery {
+  /** Case-insensitive substring match on name or description. */
+  search?: string;
+  enabled?: boolean;
+  clientType?: string;
+  limit: number;
+  offset: number;
+  sort: 'name' | 'createdAt' | 'updatedAt';
+  order: 'asc' | 'desc';
+}
+
+export interface AgentPage {
+  items: Agent[];
+  total: number;
+}
+
 export interface AgentRepository {
   create(input: CreateAgentInput, now: string): Agent;
   findById(id: string): Agent | undefined;
+  findByName(name: string): Agent | undefined;
   list(): Agent[];
+  query(criteria: AgentQuery): AgentPage;
   update(id: string, input: UpdateAgentInput, now: string): Agent;
+  /** Records a successful credential authentication. Separate from `update`: no audit row. */
+  touchAuthentication(id: string, now: string): void;
   softDelete(id: string, now: string): void;
   countActive(): number;
 }
@@ -75,18 +95,40 @@ export interface CredentialRepository {
   listByAgentId(agentId: string): AgentCredential[];
   /** Revocation is a timestamp, never a delete: the audit trail keeps the row. */
   revoke(id: string, now: string): AgentCredential;
+  /** Revokes every unrevoked credential of one agent; returns how many changed. */
+  revokeAllForAgent(agentId: string, now: string): number;
   touch(id: string, now: string): void;
+}
+
+export interface PolicyQuery {
+  search?: string;
+  effect?: 'allow' | 'deny';
+  /** Only policies assigned to this agent. */
+  agentId?: string;
+  limit: number;
+  offset: number;
+  sort: 'name' | 'createdAt' | 'updatedAt' | 'priority';
+  order: 'asc' | 'desc';
+}
+
+export interface PolicyPage {
+  items: Policy[];
+  total: number;
 }
 
 export interface PolicyRepository {
   create(input: CreatePolicyInput, now: string): Policy;
   findById(id: string): Policy | undefined;
+  findByName(name: string): Policy | undefined;
   list(): Policy[];
+  query(criteria: PolicyQuery): PolicyPage;
   update(id: string, input: UpdatePolicyInput, now: string): Policy;
   delete(id: string): void;
   assign(agentId: string, policyId: string, now: string): void;
   unassign(agentId: string, policyId: string): void;
   listPoliciesForAgent(agentId: string): Policy[];
+  /** Removes every assignment of one agent. Used when an agent is deleted. */
+  unassignAll(agentId: string): number;
 }
 
 /** Operational history: append + bounded read. No update, no delete. */

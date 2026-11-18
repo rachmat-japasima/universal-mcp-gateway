@@ -59,14 +59,19 @@ Configuration existing never implies a connection: a new backend starts `disconn
 - **Startup recovery:** a persisted `connected`/`connecting`/`unhealthy`/`disconnecting` is a claim by a process that no longer exists. Recovery rewrites it to `disconnected` (or `disabled`) without reconnecting.
 
 ### `agents`
-`id`, `name`, `description`, `client_type`, `enabled`, `created_at`, `updated_at`, `last_seen_at`, `deleted_at`.
+`id`, `name`, `description`, `client_type`, `enabled`, `created_at`, `updated_at`, `last_seen_at`, `last_authenticated_at`, `metadata_json`, `deleted_at`.
 
 No token material. Tombstoned on delete.
 
-### `agent_credentials`
-`id`, `agent_id` (FK → `agents`, cascade), `credential_hash`, `label`, `created_at`, `expires_at`, `last_used_at`, `revoked_at`.
+- `last_authenticated_at` (Phase 6) is written on every successful credential verification. It is separate from `last_seen_at`, which remains Phase 2 scaffolding and is not read or written by anything.
+- `metadata_json` (Phase 6) is a flat primitive map, validated by Zod and bounded like audit metadata. It is operator annotation, never an authorization input.
 
-- `credential_hash` is a lowercase hex SHA-256 digest (`CHECK length = 64`, unique index). A raw token is never stored.
+### `agent_credentials`
+`id`, `agent_id` (FK → `agents`, cascade), `credential_hash`, `token_prefix`, `hash_key_id`, `label`, `created_at`, `expires_at`, `last_used_at`, `revoked_at`.
+
+- `credential_hash` is a lowercase hex digest (`CHECK length = 64`, unique index). A raw token is never stored. Phase 2 defined the column as SHA-256; Phase 6 fills it with **HMAC-SHA-256**, which has the same 64-hex shape, so no data migration was needed or possible.
+- `token_prefix` (Phase 6) is the first 12 characters of the token, for operator recognition only. It is not sufficient to authenticate and is never compared against anything.
+- `hash_key_id` (Phase 6) names the key that produced the digest. A credential whose key id the running process does not hold is refused rather than verified on the digest alone. Rows written before Phase 6 have `NULL` and can never authenticate.
 - No `status` column: status is **derived** from `revoked_at` / `expires_at`, so it cannot contradict them.
 - No delete path. Revocation is a timestamp.
 
@@ -76,10 +81,12 @@ No token material. Tombstoned on delete.
 
 Policies are shared objects; assignment does not copy them. Default deny is structural — no matching rule means no access.
 
+Precedence lives in `src/domain/policy.ts` and is not encoded in SQL: system restrictions → highest `priority` → deny over allow at equal priority → policy id → rule index. `priority` is copied into the comparator explicitly so an operator's ordering beats the deny preference, and ties are order-independent.
+
 ### `sessions`
 `id`, `agent_id` (FK → `agents`, cascade), `created_at`, `last_activity_at`, `expires_at`, `revoked_at`, `metadata_json`.
 
-Status derived, not stored. Phase 1 serving is stateless per exchange, so no rows are written yet.
+Status derived, not stored. Serving is stateless per exchange, so no rows are written. **Phase 6 deliberately did not touch this table:** authorization is re-derived per HTTP request from the presented credential, not from a stored binding. Session-to-agent binding is Phase 7.
 
 ### `activity_events` (operational)
 `id`, `type`, `request_id`, `agent_id` (FK `ON DELETE SET NULL`), `backend_id` (FK `ON DELETE SET NULL`), `tool_name`, `outcome` (`success` | `failure` | `denied`), `error_code`, `duration_ms`, `created_at`.
@@ -101,7 +108,7 @@ Table only; dashboard authentication is a later phase.
 - `backends`: unique `name` where `deleted_at IS NULL`; `enabled` where active. No index on `version`: it is only ever compared alongside the primary key. Sorting on `name`/`created_at`/`updated_at` uses the existing indexes plus an `id` tie-break; the registry is small enough that a filtered scan with a bound `LIMIT` is the right trade-off.
 - `backend_runtime`: `status`.
 - `agents`: unique `name` where active; `enabled`; `last_seen_at`.
-- `agent_credentials`: unique `credential_hash`; `(agent_id, revoked_at)`; `expires_at`.
+- `agent_credentials`: unique `credential_hash`; `(agent_id, revoked_at)`; `expires_at`. **Phase 6 added no index:** verification looks a credential up by digest, which the unique index already serves, and policy lookup by agent uses the `agent_policy_assignments` primary key.
 - `policies`: unique `name`. Assignments: `policy_id`.
 - `sessions`: `agent_id`, `expires_at`, `revoked_at`.
 - `activity_events`: `created_at`, `(agent_id, created_at)`, `(backend_id, created_at)`, `(tool_name, created_at)`, `request_id`.
@@ -119,6 +126,8 @@ Partial unique indexes (`WHERE deleted_at IS NULL`) allow a name to be reused af
 - Migrations are additive. Existing tables and data are never dropped or reset; an existing database is opened, not recreated.
 - Re-running is a no-op (`skipped`), which is what makes restart safe.
 
+Migration `0004_agent_authentication.sql` is the Phase 6 example: four `ALTER TABLE ... ADD COLUMN` statements, all nullable, no backfill, no index, no `sessions` change. Nullable was a deliberate choice — a default would have been a claim about rows issued before the column existed. A pre-Phase-6 credential row therefore has `hash_key_id = NULL` and can never authenticate, which is the honest outcome.
+
 `.sql` files are not TypeScript output, so `pnpm build` runs `build:migrations` to copy them next to the compiled runner.
 
 ## 7. Repository interfaces
@@ -129,9 +138,9 @@ Declared in `src/domain/repositories.ts` in domain terms — no SQL, no driver t
 | --- | --- |
 | `BackendRepository` | create, findById, findByName, list, query, update, softDelete, countActive |
 | `BackendRuntimeRepository` | upsert, findByBackendId |
-| `AgentRepository` | create, findById, list, update, softDelete, countActive |
-| `CredentialRepository` | create, findById, findByHash, listByAgentId, revoke, touch |
-| `PolicyRepository` | create, findById, list, update, delete, assign, unassign, listPoliciesForAgent |
+| `AgentRepository` | create, findById, findByName, list, query, update, touchAuthentication, softDelete, countActive |
+| `CredentialRepository` | create, findById, findByHash, listByAgentId, revoke, touch, revokeAllForAgent |
+| `PolicyRepository` | create, findById, findByName, list, query, update, delete, assign, unassign, listPoliciesForAgent, unassignAll |
 | `SessionRepository` | create, findById, listByAgentId, revoke, count |
 | `ActivityRepository` | append, list, count |
 | `AuditRepository` | append, list, count |

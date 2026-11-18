@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { CallToolResult } from '@modelcontextprotocol/client';
 
 import type { ActivityType } from '../domain/activity-event.js';
+import type { Agent } from '../domain/agent.js';
 import type { Backend } from '../domain/backend.js';
 import type { CatalogTool } from '../domain/tool.js';
 import type { Database } from '../infrastructure/database/index.js';
@@ -10,6 +11,8 @@ import type { Logger } from '../monitoring/logger.js';
 import { AppError, describeErrorForLog } from '../shared/errors.js';
 import type { BackendLifecycleManager } from '../adapters/lifecycle.js';
 import { normalizeMcpError } from '../adapters/mcp-client.js';
+import type { AuthorizationService } from '../auth/authorization.js';
+import type { AccessDecision } from '../domain/policy.js';
 import type { ToolCatalog } from './catalog.js';
 import { compileInputSchema } from './schema.js';
 
@@ -31,6 +34,13 @@ export interface RouterOptions {
   logger: Logger;
   lifecycle: BackendLifecycleManager;
   catalog: ToolCatalog;
+  /**
+   * When supplied, every call must carry an authenticated agent and is
+   * re-authorized here before anything is resolved or dispatched. The MCP
+   * surface already filters, but this is the boundary: a direct caller of
+   * `call()` cannot reach a backend without a decision.
+   */
+  authorization?: AuthorizationService;
   now?: () => string;
   /**
    * Ceiling for one routed call. The backend's own `timeoutMs` applies inside
@@ -44,6 +54,9 @@ export interface RoutingContext {
   requestId?: string;
   /** Cancellation from the MCP request (`ctx.mcpReq.signal`). */
   signal?: AbortSignal;
+  /** The authenticated caller. Required when the router has an authorization service. */
+  agent?: Agent;
+  credentialId?: string;
 }
 
 export interface RoutedCall {
@@ -57,6 +70,7 @@ export class ToolRouter {
   private readonly logger: Logger;
   private readonly lifecycle: BackendLifecycleManager;
   private readonly catalog: ToolCatalog;
+  private readonly authorization: AuthorizationService | undefined;
   private readonly now: () => string;
   private readonly timeoutMs: number;
 
@@ -65,6 +79,7 @@ export class ToolRouter {
     this.logger = options.logger;
     this.lifecycle = options.lifecycle;
     this.catalog = options.catalog;
+    this.authorization = options.authorization;
     this.now = options.now ?? (() => new Date().toISOString());
     this.timeoutMs = options.timeoutMs ?? 60_000;
   }
@@ -72,6 +87,38 @@ export class ToolRouter {
   /** Public entry point used by `tools/call`. Throws `AppError` for every pre-call rejection. */
   async call(publicName: string, args: unknown, context: RoutingContext = {}): Promise<RoutedCall> {
     const startedAt = Date.now();
+
+    /**
+     * Authorization precedes routing.
+     *
+     * Two reasons, and both matter: a denied caller must not be able to learn
+     * from a different error whether the name they guessed exists, and no work
+     * beyond the decision should happen for a name the caller may not use — no
+     * backend read, no reachability check, no schema compile, no invocation.
+     * Every rejection below this point is therefore already the caller's own
+     * tool.
+     *
+     * The decision itself reads the catalog once (see `authorize`): a
+     * `backend`-scoped rule cannot be evaluated without knowing the tool's
+     * backend. That read is in-memory, happens identically for a real and an
+     * invented name, and its result re-enriches the audit row.
+     */
+    if (this.authorization !== undefined) {
+      const decision = this.authorize(publicName, context);
+      if (!decision.allowed) {
+        this.authorization.logDecision(decision, publicName, context.requestId);
+        this.authorization.safeAudit(decision, {
+          ...(context.requestId === undefined ? {} : { requestId: context.requestId }),
+          ...(context.credentialId === undefined ? {} : { credentialId: context.credentialId }),
+        });
+
+        // Same code and message as an unknown name. The reason stays internal.
+        throw new AppError('TOOL_NOT_FOUND', `Unknown tool "${publicName}".`, {
+          details: { publicName },
+        });
+      }
+    }
+
     const tool = this.resolve(publicName);
 
     const backend = this.assertReachable(tool, context);
@@ -149,6 +196,23 @@ export class ToolRouter {
       });
     }
     throw new AppError('TOOL_NOT_FOUND', `Unknown tool "${publicName}".`, { details: { publicName } });
+  }
+
+  /**
+   * The authorization check. A router with an authorization service refuses to
+   * act without an authenticated agent: there is no "anonymous but allowed"
+   * mode, because that would be a bypass with extra steps.
+   */
+  private authorize(publicName: string, context: RoutingContext): AccessDecision {
+    if (this.authorization === undefined) {
+      throw new AppError('INTERNAL_ERROR', 'Authorization is not configured.');
+    }
+
+    if (context.agent === undefined) {
+      throw new AppError('AUTHENTICATION_ERROR', 'The caller has no authenticated identity.');
+    }
+
+    return this.authorization.evaluate(context.agent, this.authorization.resolveTarget(publicName));
   }
 
   /**

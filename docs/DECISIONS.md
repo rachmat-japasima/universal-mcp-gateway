@@ -147,9 +147,10 @@ Two admins, or one double-clicked Save, read the same backend and write conflict
 **Status:** Accepted (interim)  
 The API can create, modify, and delete backend definitions but has no authentication. Pretending otherwise would be worse than documenting it.
 - What exists: loopback socket check, configured-`HOST` check, `Host` and `Origin` validation, JSON content-type requirement, size limits, strict Zod validation, parameterized SQL, and a non-leaking error envelope. These stop remote and cross-origin misuse.
-- What does not exist: identity, per-caller authorization, rate limiting, CSRF tokens. Any local process can call the API. `GET /api/v1/system` reports `capabilities.authentication: false` so a client cannot mistake the posture.
+- What does not exist: identity, per-caller authorization, rate limiting, CSRF tokens. Any local process can call the API.
 - Audit rows record `{ type: "admin", id: "local-operator" }` rather than an anonymous actor, so Phase 3 history does not later read as system-generated.
 - Revisit in Phase 6 (ADR planned then): dashboard auth, agent credentials, and default-deny authorization. Until then no non-loopback exposure, per `docs/SECURITY.md` release gate.
+- **Updated in Phase 6:** agent credentials and default-deny authorization exist, but **for the MCP surface only**. This ADR still describes the management API exactly as it is — unauthenticated and loopback-only — and that API can now mint an agent credential, which makes the boundary more consequential, not less. `GET /api/v1/system` now reports `capabilities.authentication: true` (the MCP surface can verify) plus a live `authentication: required | unavailable` field. See ADR-039.
 
 ## ADR-031 — Validation messages echo only field names the gateway defines
 **Status:** Accepted  
@@ -224,3 +225,36 @@ A backend's `inputSchema` is carried as an opaque `Record<string, unknown>` from
 - The catalog is authoritative **within** its lifetime: routing reads it, but re-checks `isConnected` at call time rather than trusting the entry. A hint plus a fact beats two sources of truth.
 - Conflict counts are computed at read time from the whole index rather than stored on each snapshot, because a conflict is a property of the catalog, not of one backend's discovery — and a stored count would go stale the moment a *different* backend connected or disconnected.
 - **Accepted limit:** a process restart costs one `tools/list` per connected backend before their tools are callable. Acceptable for a local gateway with a handful of backends; a persisted snapshot with a validity check would be the upgrade path if that stops being true.
+
+## ADR-039 — MCP authentication is per request; the hashing secret lives outside `Config`
+**Status:** Accepted  
+Phase 6 authenticates `/mcp` and authorizes nothing else. Three decisions make that safe to state.
+- **Per request, no session binding.** Every exchange presents a bearer credential and is verified independently. `sessions` is untouched and no binding table was added. Cost: one indexed SQLite read per request. Benefit: revocation, a disabled agent, and a policy edit take effect on the next call instead of the next handshake, and no client-supplied id can become proof.
+- **Credentials are HMAC-SHA-256, not SHA-256.** A plain digest would let anyone with a database copy verify guesses offline. The key (`CREDENTIAL_HASH_SECRET`) is a symmetric secret; `hash_key_id` records which key produced a digest so rotation needs no flag day.
+- **The secret is read outside `Config`.** `src/auth/credential-key.ts` and `src/index.ts` read the environment directly. Putting it in `Config` would put it one serializer away from `redactConfig`, a config dump, and an API response. Production fails startup when it is missing; development starts with keys that issue nothing, so `/health` and the management API keep working while every `/mcp` request fails closed with the same 401. No ephemeral secret is generated — it would verify tokens only until the next restart.
+- **Accepted limit:** anyone who can read the process environment can mint credentials. There is no automatic rehash-on-verify, so key rotation means adding a key id, revoking, and reissuing.
+
+## ADR-040 — A denied tool call is byte-identical to a nonexistent tool
+**Status:** Accepted  
+Authorization runs **before** routing in `ToolRouter.call`, and both outcomes produce `-32602` with the message `Unknown tool`.
+- Resolving first — backend lookup, reachability check, schema compile — would let a caller distinguish "exists but not yours" from "does not exist" by error code, error text, or timing. That turns the tool surface into a discovery oracle for the catalog it was denied.
+- One catalog read does precede the decision: `resolveTarget` maps the public name to its backend because a `backend`-scoped rule cannot be evaluated without it. It is a lookup in the gateway's own in-memory index, performs no DNS, no socket, and no backend call, and yields the same result for a real and an invented name.
+- No backend name, backend id, policy id, reason, or input schema is disclosed. `toProtocolError` special-cases `TOOL_NOT_FOUND` with a fixed string rather than echoing `AppError.message`, so a future message change cannot reintroduce the leak.
+- The real reason is not lost: `access.denied` records it with the agent, credential, correlation id, and resolved ids. Internal truth, public uniformity.
+- **Accepted limit:** because a denial for an existing name and one for an invented name take the same path, the gateway cannot avoid the catalog read; it only avoids disclosing anything that distinguishes the two responses.
+
+## ADR-041 — Policy precedence is priority-first, then deny
+**Status:** Accepted  
+`evaluateAccess` sorts candidates by policy `priority` desc, then `deny` over `allow`, then policy id, then rule index, and denies when nothing matched.
+- The spec's "explicit deny overrides all allow" is reconciled as: an operator's explicit priority ordering is authoritative, so a deny at a higher priority beats an allow; at *equal* priority the deny wins. Encoding deny-first globally would make priority decorative and let a catch-all deny in a low-priority policy silently disable a specific allow.
+- The remaining tie-breaks exist so the outcome never depends on row order. Without them, two policies with the same priority and conflicting effects would resolve differently after a vacuum or a re-insert.
+- System restrictions (agent disabled, backend disabled) are applied by `AuthorizationService` *before* the comparator and cannot be re-enabled by any rule, so "never" does not depend on an operator remembering to write a deny.
+- **Accepted limit:** an operator can accidentally let an allow outrank a deny by giving it a higher priority. `GET /agents/:id/access` shows the winning policy and reason for every tool, which is the intended place to notice it.
+
+## ADR-042 — `tools/list` and `tools/call` share one decision function
+**Status:** Accepted  
+`tools/list` filtering and `tools/call` enforcement both call `AuthorizationService` — the former through `visibleTools`, the latter through `authorize` in the router.
+- Two implementations would drift: a tool could be hidden but callable, or visible and then rejected. The view and the boundary are one function read two ways.
+- The `ToolCatalog` is still authoritative for *what exists*; `AuthorizationService` only answers *may this agent use it*. Keeping those separate is why the catalog needed no change to support filtering, and why a policy does not have to be re-validated when the catalog changes.
+- Both are re-evaluated per request, so there is no cached decision to invalidate when a policy is edited.
+- **Accepted limit:** every listed tool costs one evaluation per policy rule; fine for operator-sized policy sets, and it would need indexing before thousands of rules per agent.

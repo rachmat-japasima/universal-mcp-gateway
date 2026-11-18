@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { CreatePolicyInput, Policy, UpdatePolicyInput } from '../../../domain/policy.js';
 import { createPolicySchema, policySchema, updatePolicySchema } from '../../../domain/policy.js';
-import type { PolicyRepository } from '../../../domain/repositories.js';
+import type { PolicyPage, PolicyQuery, PolicyRepository } from '../../../domain/repositories.js';
 import { AppError } from '../../../shared/errors.js';
 import type { SqliteDatabase } from '../connection.js';
 import { parseStored, wrapDatabaseError } from './helpers.js';
@@ -77,9 +77,57 @@ export class SqlitePolicyRepository implements PolicyRepository {
     return row === undefined ? undefined : toPolicy(row);
   }
 
+  findByName(name: string): Policy | undefined {
+    const row = this.database.prepare('SELECT * FROM policies WHERE name = ?').get(name) as PolicyRow | undefined;
+    return row === undefined ? undefined : toPolicy(row);
+  }
+
   list(): Policy[] {
     const rows = this.database.prepare('SELECT * FROM policies ORDER BY name').all() as PolicyRow[];
     return rows.map(toPolicy);
+  }
+
+  /**
+   * Paged listing.
+   *
+   * `agentId` and `search` are pushed into SQL; the effect filter is applied
+   * afterwards because an effect lives inside `rules_json` (a policy matches if
+   * *any* rule carries that effect). Bounded by the operator-authored policy
+   * count, which is a control-plane-sized set, not request data.
+   *
+   * ponytail: in-memory effect filter + sort. Move to a `policy_rules` table when
+   * policy counts grow past what one process can cheaply scan (Phase 8+).
+   */
+  query(criteria: PolicyQuery): PolicyPage {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    let join = '';
+
+    if (criteria.agentId !== undefined) {
+      join = 'JOIN agent_policy_assignments a ON a.policy_id = p.id';
+      where.push('a.agent_id = ?');
+      values.push(criteria.agentId);
+    }
+    if (criteria.search !== undefined) {
+      where.push('(p.name LIKE ? ESCAPE \'\\\' OR p.description LIKE ? ESCAPE \'\\\')');
+      const pattern = `%${escapeLike(criteria.search)}%`;
+      values.push(pattern, pattern);
+    }
+
+    const clause = where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`;
+    const rows = this.database
+      .prepare(`SELECT p.* FROM policies p ${join} ${clause}`)
+      .all(...values) as PolicyRow[];
+
+    const filtered = rows
+      .map(toPolicy)
+      .filter((policy) => criteria.effect === undefined || policy.rules.some((rule) => rule.effect === criteria.effect));
+
+    const direction = criteria.order === 'asc' ? 1 : -1;
+    filtered.sort((a, b) => direction * sortValue(a, b, criteria.sort));
+
+    const total = filtered.length;
+    return { items: filtered.slice(criteria.offset, criteria.offset + criteria.limit), total };
   }
 
   update(id: string, input: UpdatePolicyInput, now: string): Policy {
@@ -150,6 +198,13 @@ export class SqlitePolicyRepository implements PolicyRepository {
     }
   }
 
+  unassignAll(agentId: string): number {
+    const result = this.database
+      .prepare('DELETE FROM agent_policy_assignments WHERE agent_id = ?')
+      .run(agentId);
+    return result.changes;
+  }
+
   listPoliciesForAgent(agentId: string): Policy[] {
     const rows = this.database
       .prepare(
@@ -162,4 +217,22 @@ export class SqlitePolicyRepository implements PolicyRepository {
 
     return rows.map(toPolicy);
   }
+}
+
+function sortValue(a: Policy, b: Policy, sort: PolicyQuery['sort']): number {
+  switch (sort) {
+    case 'priority':
+      return a.priority - b.priority;
+    case 'createdAt':
+      return a.createdAt.localeCompare(b.createdAt);
+    case 'updatedAt':
+      return a.updatedAt.localeCompare(b.updatedAt);
+    default:
+      return a.name.localeCompare(b.name);
+  }
+}
+
+/** `%`, `_`, and the escape character are literal in a search term, not wildcards. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
 }

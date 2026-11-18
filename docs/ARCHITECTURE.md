@@ -131,7 +131,7 @@ apps/
 
 This is a target structure, not a requirement to move existing files immediately. Preserve the current working bootstrap and refactor incrementally.
 
-### 4.1 Implemented module layout (Phase 4)
+### 4.1 Implemented module layout (Phase 6)
 
 ```text
 src/
@@ -139,9 +139,9 @@ src/
     primitives.ts        ids, timestamps, secret references
     backend.ts           definition + create/update schemas
     backend-runtime.ts   runtime state, status enum, BACKEND_TRANSITIONS
-    agent.ts
-    agent-credential.ts  verifier hash, derived status
-    policy.ts            rules, effects, deterministic ordering
+    agent.ts             profile, enable flag, metadata
+    agent-credential.ts  verifier hash, key id, derived status
+    policy.ts            rules, effects, deterministic ordering (priority-first)
     session.ts
     activity-event.ts    operational history
     audit-event.ts       administrative/security history
@@ -153,6 +153,10 @@ src/
     config.ts        pure parseConfig/loadConfig/redactConfig
   security/
     network-policy.ts    outbound destination policy (SSRF), guardedFetch
+  auth/            # Phase 6: nothing here reads the environment except resolveCredentialKeys
+    credential-key.ts    token minting, HMAC digest, timing-safe compare, key registry
+    auth-service.ts      per-request bearer verification, bounded audit windows
+    authorization.ts     policy evaluation, visibleTool filtering, denial audit
   adapters/
     adapter.ts           BackendAdapter interface + createAdapter()
     stdio-adapter.ts     child-process transport
@@ -164,23 +168,29 @@ src/
     schema.ts            remote JSON Schema → AJV validator (cached)
     catalog.ts           in-memory authoritative catalog, collision policy
     discovery.ts         discovery, coalescing, lifecycle observer
-    router.ts            public name → backend call (timeout, cancel, audit)
-    mcp-server.ts        tools/list + tools/call on the low-level SDK Server
+    router.ts            authorize → resolve → backend call (timeout, cancel, activity)
+    mcp-server.ts        identity-scoped tools/list + tools/call
   api/
     index.ts             management API assembly + middleware order
     http.ts              request id, envelopes, JSON parsing, error boundary
     middleware/
       guards.ts          loopbackOnly, requireJsonBody
+      mcp-auth.ts        bearer authentication boundary for /mcp
     schemas/
       queries.ts         pagination/filter/param contracts
     routes/
       system.routes.ts
       backends.routes.ts
+      agents.routes.ts   agents, enable/disable, access preview, credentials
+      policies.routes.ts policies, assignments
       tools.routes.ts    catalog, discovery reports, conflicts, refresh
   registry/
     backend-service.ts   business rules, transactions, audit, sanitization
+    agent-service.ts     agent lifecycle, tombstone + cascade in one transaction
+    credential-service.ts issue/rotate/revoke, once-only token return
+    policy-service.ts    policy CRUD, target validation, assignments
   core/
-    gateway.ts       Hono app + MCP handler + health + API mount + lifecycle
+    gateway.ts       Hono app + MCP handler + health + API mount + lifecycle + auth
   infrastructure/
     database/
       connection.ts        pragmas, one handle per process
@@ -188,13 +198,14 @@ src/
       migrations/0001_initial_schema.sql
       migrations/0002_backend_version.sql
       migrations/0003_runtime_disconnecting.sql
+      migrations/0004_agent_authentication.sql
       repositories/        SQLite implementations
   monitoring/
     logger.ts        Pino + redaction paths
-  index.ts           process lifecycle
+  index.ts           process lifecycle, including the credential-key startup policy
 ```
 
-Dependency direction is one-way: `index` → `core` → `api` → `registry` → `infrastructure`/`config` → `shared`/`domain`. `domain` imports only Zod and its own primitives, so it can move into a workspace package without changes (ADR-022). `registry` is the only layer that combines several repositories in one transaction.
+Dependency direction is one-way: `index` → `core` → `api` → `registry` → `infrastructure`/`config` → `shared`/`domain`. `domain` imports only Zod and its own primitives, so it can move into a workspace package without changes (ADR-022). `registry` is the only layer that combines several repositories in one transaction. `auth/*` depends on `domain`, `infrastructure` (repository interfaces via `Database`), and `monitoring` — never on `api`, so the middleware is a thin adapter over a testable service.
 
 Boundaries that matter:
 
@@ -205,6 +216,7 @@ Boundaries that matter:
 - **Who owns the manager.** One `BackendLifecycleManager` per process, constructed in `createGateway()` and passed to the management API, so `connect` routes, `runtime` reads, startup `recover()`, and `shutdown()` all see the same connections. It is injectable for tests.
 - **Activity vs audit.** Separate entities, tables, and interfaces. Operational volume must not dilute administrative history, and audit is append-only.
 - **Contracts vs secrets.** Agent tokens are not part of the `Agent` entity; only a verifier hash is stored. Backend `env`/`headers` accept secret *references* only.
+- **Service vs middleware vs in-request check.** `AuthService` verifies a header and returns either an identity or a reason — it knows nothing about Hono. `mcpAuthenticate` is the only place the header is read. `AuthorizationService` decides about a *known* agent and knows nothing about HTTP. `ToolRouter` re-checks before resolving, so a caller that bypasses the SDK still cannot call a tool it was not granted.
 
 ### 4.2 Management API middleware order (Phase 3)
 
@@ -254,11 +266,11 @@ The catalog is served through a **low-level `Server`**, not `McpServer`: `McpSer
 
 1. Client connects to `/mcp`.
 2. Transport validates HTTP request and host/origin according to SDK guidance.
-3. Client identity is authenticated — **not yet implemented** (Phase 6); today the loopback bind is the only control.
-4. MCP initialize lifecycle is handled by official SDK.
-5. The server establishes the selected stateless/sessionful behavior.
-6. `tools/list` reads the in-memory catalog: only tools from connected, enabled backends, with colliding names withheld. Full list, no pagination (protocol-legal; the catalog is bounded at 2000 tools per backend).
-7. `tools/call` resolves the public name, re-checks runtime truth, validates arguments against the backend's own JSON Schema, and applies the call timeout.
+3. **Authentication (Phase 6).** `mcpAuthenticate` verifies the bearer credential on this request, writes `auth.succeeded`/`auth.failed`, and either establishes an identity or answers one uniform 401. Nothing else runs on a failure.
+4. MCP initialize lifecycle is handled by official SDK. The identity from step 3 is used to build this exchange's server instance; a session id never substitutes for it.
+5. Serving is stateless: a fresh server instance per exchange, no session registry.
+6. `tools/list` reads the in-memory catalog **through `AuthorizationService.visibleTools(agent)`**: only connected, enabled backends, colliding names withheld, and only tools this agent may call. Full list, no pagination (protocol-legal; the catalog is bounded at 2000 tools per backend).
+7. `tools/call` authorizes **before** resolving — a denial answers `-32602 "Unknown tool"` and writes `access.denied`. On an allow it resolves the public name, re-checks runtime truth, validates arguments against the backend's own JSON Schema, and applies the call timeout.
 8. `ToolRouter` dispatches to the owning backend through the lifecycle's `activeClient`. A cancelled request is classified from the transport's abort signal.
 9. Adapter returns MCP-compatible result/error. A backend tool-level failure is a `CallToolResult` with `isError`, never a protocol error; routing failures map onto JSON-RPC codes (`-32602` unknown/invalid, `-32800` cancelled, `-32603` otherwise).
 10. Observability records safe metadata and correlation ID: `tools.list`/`tools.call` activity with backend, public name, outcome, error code, duration — no arguments or results.
@@ -333,8 +345,8 @@ staleness the spec forbids.
 ## 9. Authentication and authorization
 
 Separate:
-- Dashboard user identity.
-- MCP client/agent identity.
+- Dashboard user identity (Phase 8).
+- MCP client/agent identity (Phase 6, implemented).
 - Backend credentials.
 
 Use separate credential scopes. Dashboard login must not implicitly grant MCP tool access. MCP client metadata must not be trusted as identity.
@@ -349,13 +361,45 @@ Policy evaluation:
 
 Default deny for unknown identities and unassigned tools.
 
+### 9.1 Implemented in Phase 6
+
+```
+Authorization: Bearer umg_live_<base64url>
+        │
+        ▼  src/api/middleware/mcp-auth.ts   (mounted on /mcp only)
+   AuthService.authenticate
+     shape → HMAC-SHA-256 → indexed lookup by digest → timing-safe re-compare
+     → key id known? → not revoked/expired? → agent exists and enabled?
+        │                                     │
+     identity                          401 (one shape, one message)
+        │
+        ▼  createMcpHandler factory  (once per request, never reused)
+     agent re-read from the store, so a disable between verify and handle is honoured
+        │
+        ├── tools/list → AuthorizationService.visibleTools(agent)
+        └── tools/call → ToolRouter.call(..., { agent, credentialId })
+                            └── authorize() BEFORE resolve()
+                                  ├─ allowed  → resolve → backend → result
+                                  └─ denied   → -32602 "Unknown tool" + access.denied audit
+```
+
+Three invariants hold this together:
+
+1. **One identity per exchange.** The SDK server factory receives the authenticated identity and builds a fresh instance around it. There is no object shared between agents, so a server instance cannot serve two identities.
+2. **One decision function for both directions.** `tools/list` filtering and `tools/call` rejection call the same `AuthorizationService.evaluate`. Drift would require changing one call site and not the other, and both are three lines long.
+3. **Deny before route.** A denied caller learns nothing: no backend is read, no reachability check runs, no schema is compiled, nothing is invoked, and the error is byte-identical to an unknown tool. `AuthorizationService.resolveTarget` is the single catalog read behind the decision (a `backend`-scoped rule needs to know the tool's backend) and is also what enriches the audit row; it never gates a call on its own.
+
+`AuthService` and `AuthorizationService` are composed in `src/core/gateway.ts` and injected; neither reads the environment. The hashing key is loaded by `src/index.ts` through `resolveCredentialKeys`, which throws in production when absent and returns keys that issue nothing otherwise, so a development process without a secret fails closed per request instead of inventing an ephemeral one.
+
 ## 10. Session isolation
 
 Document and test selected Streamable HTTP session behavior against the installed SDK version. Keep session-bound data isolated. Define expiration, cleanup, and revocation. Avoid sharing mutable server/transport state between clients unless explicitly supported by the SDK lifecycle.
 
 **Current (Phase 1):** serving is stateless per HTTP exchange. `createMcpHandler` builds a fresh `McpServer` from a factory for every exchange, so no mutable state exists to share; `tools/list` and `tools/call` see only that exchange's instance. Session ids are not issued and a client-supplied `mcp-session-id` is ignored. `GET`/`DELETE` answer `405` on the stateless legacy leg.
 
-**Deferred to Phase 7:** server-side session registry, expiry/revocation, resumable streams, and per-session concurrency accounting. Until then a session cannot be revoked mid-flight because none is tracked — credential revocation (Phase 6) is enforced per request instead.
+**Phase 6 decision: no session binding.** A session id, if one is ever issued, is a transport optimization, not a permission. Identity comes from the credential presented on *this* request, and authorization is re-derived from the database every time. This costs one indexed SQLite read per request and buys the property that revocation, disabling an agent, and editing a policy all take effect on the next call rather than at the next handshake. `sessions` is untouched by Phase 6; no binding table was added.
+
+**Deferred to Phase 7:** server-side session registry, expiry/revocation, resumable streams, and per-session concurrency accounting. Phase 7 may bind a session to an agent for observability, but must not treat that binding as proof of identity.
 
 ## 11. Concurrency
 
@@ -394,7 +438,8 @@ Retention and backup policy are still to be defined. Do not store sensitive tool
 ## 14. Security boundaries
 
 - Loopback binding by default; a non-loopback `HOST` is refused at config load.
-- The management API is **unauthenticated** in Phase 4. Its boundary is local-only access (socket address, `HOST`, `Host`, `Origin`) plus a JSON content-type requirement — not identity. Since Phase 4 a local caller can also cause a process spawn and an outbound connection, so the blast radius is larger than in Phase 3. Do not expose it via tunnel, proxy, or non-loopback bind before Phase 6.
+- The MCP surface requires a per-agent bearer credential (Phase 6). The management API is **still unauthenticated**: its boundary is local-only access (socket address, `HOST`, `Host`, `Origin`) plus a JSON content-type requirement — not identity. Since Phase 4 a local caller can also cause a process spawn and an outbound connection, and since Phase 6 can mint a credential, so the blast radius is larger than in Phase 3. Do not expose it via tunnel, proxy, or non-loopback bind before the dashboard has an operator identity (Phase 8).
+- MCP authorization is default-deny, evaluated per request, with `tools/list` filtered and `tools/call` re-checked before resolution. A denial is byte-identical to an unknown tool.
 - Outbound Streamable HTTP destinations pass a documented policy: `http`/`https` only, no embedded credentials, DNS-resolved address classification, per-request re-check, same-origin redirects. `ALLOW_PRIVATE_NETWORK` opens loopback/private/CGNAT for local fixtures and never metadata or link-local.
 - Registration, enable, and process start never connect; a connection requires an explicit `connect`, and a restart rewrites persisted live state to `disconnected` without reconnecting.
 - Origin/Host validation on both surfaces, each answering in its own protocol's error shape.

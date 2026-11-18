@@ -17,6 +17,8 @@ export interface SystemDependencies {
   environment: string;
   mcpEndpoint: string;
   healthEndpoint: string;
+  /** `unavailable` when no hashing secret is configured, so the posture is visible. */
+  authentication: 'required' | 'unavailable';
 }
 
 export function systemRoutes(deps: SystemDependencies): Hono {
@@ -37,10 +39,12 @@ export function systemRoutes(deps: SystemDependencies): Hono {
       endpoints: { mcp: deps.mcpEndpoint, health: deps.healthEndpoint },
       counts: { backends: backends.total },
       /**
-       * Phase 4 connects on explicit request only. There is no tool routing and
-       * no authentication yet, so both stay `false` until their phase lands.
+       * Flags rather than version strings: a dashboard branches on
+       * "can I call this?", and `authentication` reports whether the MCP
+       * surface can verify a credential at all — not whether one exists.
        */
-      capabilities: { backendConnections: true, toolRouting: false, authentication: false },
+      capabilities: { backendConnections: true, toolRouting: true, authentication: true },
+      authentication: deps.authentication,
     });
   });
 

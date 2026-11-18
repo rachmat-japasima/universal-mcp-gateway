@@ -26,12 +26,18 @@ The full product includes gateway core, backend registry, adapters, tool routing
 - Hono + `@hono/node-server`
 - Official MCP SDK v2 (`@modelcontextprotocol/server` 2.4.0, `client` 2.4.0, `hono` 2.0.2)
 - Zod 4, Pino, YAML, `better-sqlite3`, Vitest
-- Phases 1–3 are complete: `pnpm typecheck`, `pnpm build`, and `pnpm test` pass (190 tests).
-- `src/core/gateway.ts` builds the app via `createGateway({ config, logger, store? })`:
-  SDK `createMcpHandler` + Host/Origin middleware for non-API paths + `/health`, and
-  mounts the management API at `/api/v1` when a store is present.
+- Phases 1–6 are complete: `pnpm typecheck`, `pnpm build`, and `pnpm test` pass (372 tests).
+- `src/core/gateway.ts` builds the app via `createGateway({ config, logger, store?, credentialKeys? })`:
+  SDK `createMcpHandler` + Host/Origin middleware for non-API paths + `/health`, mounts the
+  management API at `/api/v1` when a store is present, and mounts bearer authentication on
+  `/mcp` whenever auth services exist.
+- `src/auth/` holds MCP authentication (`auth-service.ts`), policy evaluation
+  (`authorization.ts`), and credential keying/digests (`credential-key.ts`). Only
+  `credential-key.ts` reads the environment, and `CREDENTIAL_HASH_SECRET` is deliberately
+  outside `Config` (ADR-039).
 - `src/api/` is the HTTP layer (routes, guards, envelopes); `src/registry/backend-service.ts`
   holds backend business rules, transactions, audit, and sanitization.
+  `src/registry/{agent,credential,policy}-service.ts` hold the Phase 6 rules.
 - `src/domain/` holds entities, Zod schemas, and repository interfaces; `src/shared/errors.ts`
   the error taxonomy; `src/config/config.ts` the pure config parser;
   `src/infrastructure/database/` the SQLite foundation and repositories.
@@ -45,17 +51,23 @@ Inspect actual repository state before editing. This document may lag the code.
 
 ## 3. Immediate assignment
 
-Phases 1–3 are complete. Start **Phase 4 — adapter framework** in `ROADMAP.md`.
+Phases 1–6 are complete. Start **Phase 7 — session isolation and concurrency** in
+`ROADMAP.md` when authorized.
 
-Phase 4 is the first phase that touches the network and spawns processes. Before any of
-that: the management API is currently unauthenticated and loopback-only (ADR-030). Connecting
-real backends raises the blast radius of that gap, so re-read `docs/SECURITY.md` §3.1 and
-decide whether authentication must land before adapters rather than after — that is a
-security-posture change and needs the user's approval.
+Phase 6 added MCP authentication and authorization; the **management API is still
+unauthenticated** and loopback-only (ADR-030, updated). It can now mint an agent credential,
+so anything that widens its reachability is a security-posture change and needs the user's
+approval. Any session binding added in Phase 7 must not become an authorization shortcut
+(ADR-039).
 
 Do not start dashboard implementation yet. The dashboard depends on stable APIs.
 
 Evidence to build on:
+- `tests/mcp-auth.test.ts` — the authentication/authorization boundary over a real socket:
+  uniform 401s, session-id replay, header spoofing, per-agent `tools/list`, and a denied call
+  being byte-identical to an unknown tool.
+- `tests/credentials.test.ts`, `tests/authentication.test.ts`, `tests/authorization.test.ts` —
+  digest/key handling, failure reasons, and policy precedence.
 - `tests/gateway.test.ts` — MCP protocol tests over the real loopback server using the official MCP Client SDK.
 - Both protocol eras work: 2025 `initialize` and 2026-07-28 `server/discover`.
 - Serving is stateless per exchange; see ADR-020 in `DECISIONS.md` before changing session behavior.

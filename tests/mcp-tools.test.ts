@@ -11,6 +11,7 @@ import { loadConfig } from '../src/config/config.js';
 import { createGateway, type Gateway } from '../src/core/gateway.js';
 import { openStore, type Database } from '../src/infrastructure/database/index.js';
 import { createLogger } from '../src/monitoring/logger.js';
+import { bearer, createTestAgent, testKeys, type TestAgent } from './fixtures/auth.js';
 
 /**
  * The gateway's MCP surface over a real loopback listener.
@@ -39,10 +40,15 @@ let server: ServerType;
 let url: string;
 const clients: Client[] = [];
 
+/** One agent per test, allowed every tool: these tests are about routing, not access. */
+let agent: TestAgent;
+
 beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), 'gw-mcp-tools-'));
   store = openStore({ path: join(directory, 'gateway.db') });
-  gateway = createGateway({ config, logger, store });
+  const keys = testKeys();
+  gateway = createGateway({ config, logger, store, credentialKeys: keys });
+  agent = createTestAgent(store, keys, { allowTools: ['*'] });
 
   server = serve({ fetch: gateway.app.fetch, hostname: '127.0.0.1', port: 0 });
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -90,12 +96,16 @@ async function until(predicate: () => boolean, timeoutMs = 10_000): Promise<void
   throw new Error('condition not met before timeout');
 }
 
-async function connect(modern: boolean): Promise<Client> {
+async function connect(modern: boolean, identity: TestAgent = agent): Promise<Client> {
   const client = new Client(
     { name: modern ? 'modern' : 'legacy', version: '1.0.0' },
     modern ? { versionNegotiation: { mode: 'auto' } } : undefined,
   );
-  await client.connect(new StreamableHTTPClientTransport(new URL(url)));
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(url), {
+      requestInit: { headers: bearer(identity) },
+    }),
+  );
   clients.push(client);
   return client;
 }

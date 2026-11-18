@@ -86,7 +86,7 @@ describe('migrations', () => {
       checksum: string;
     }>;
 
-    expect(applied.map((row) => row.version)).toEqual(['0001', '0002', '0003']);
+    expect(applied.map((row) => row.version)).toEqual(['0001', '0002', '0003', '0004']);
     for (const row of applied) expect(row.checksum).toMatch(/^[a-f0-9]{64}$/);
 
     store.close();
@@ -121,8 +121,8 @@ describe('migrations', () => {
     const upgrade: Migration[] = [
       ...baseline,
       {
-        version: '0004',
-        filename: '0004_add_note.sql',
+        version: '0005',
+        filename: '0005_add_note.sql',
         sql: 'CREATE TABLE notes (id TEXT PRIMARY KEY); INSERT INTO notes (id) VALUES (\'kept\');',
       },
     ];
@@ -145,8 +145,8 @@ describe('migrations', () => {
     const broken: Migration[] = [
       ...baseline,
       {
-        version: '0004',
-        filename: '0004_broken.sql',
+        version: '0005',
+        filename: '0005_broken.sql',
         sql: 'CREATE TABLE half_done (id TEXT); INSERT INTO missing_table (id) VALUES (1);',
       },
     ];

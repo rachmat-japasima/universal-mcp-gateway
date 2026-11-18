@@ -26,12 +26,13 @@ Next.js, React, TypeScript, and **Astryx directly** as the UI component library/
 
 ## Current status
 
-Phases 1–5 are complete.
-- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 303 tests).
+Phases 1–6 are complete.
+- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 372 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
-- `tools/list` serves the live catalog; no backend is registered and none is
-  connected in the production registry, so it is empty there by default.
+- `tools/list` serves the live catalog, filtered per agent; no backend is
+  registered and none is connected in the production registry, so it is empty
+  there by default.
 - Phase 1: 19 integration tests cover handshake, malformed input, Host/Origin
   validation, per-exchange server isolation, and shutdown.
 - Phase 2: domain + Zod 4 contracts, error taxonomy, centralized configuration,
@@ -49,7 +50,11 @@ Phases 1–5 are complete.
 - Phase 5: generic tool discovery, deterministic namespacing, a fail-closed
   collision policy, lossless JSON Schema forwarding, `tools/list` + `tools/call`
   over a low-level SDK `Server`, per-call timeout and cancellation, lifecycle
-  synchronization, and a catalog management API. 47 new tests → 303 total.
+  synchronization, and a catalog management API. 47 new tests.
+- Phase 6: agent profiles, per-agent bearer credentials, a default-deny policy
+  engine enforced on both `tools/list` and `tools/call`, per-request
+  authentication on `/mcp`, and `auth.*` / `access.denied` audit events. 69 new
+  tests → 372 total.
 - `/health` reports `backendCount: 0`; production backend registry is empty.
 
 **Nothing connects by itself.** Registration, validation, and enable/disable are
@@ -70,11 +75,22 @@ policy (scheme, credentials, DNS-resolved destinations, redirects) is in
 loopback/private/CGNAT and never metadata or link-local. TLS verification is
 never disabled.
 
-**The management API is unauthenticated, and so is the tool surface.** Both are
-loopback-only and apply Host/Origin, JSON content-type, and size guards — but any
-local process can call them, and every discovered tool is callable by any caller
-that reaches `/mcp`. Agent identity and authorization are Phase 6. Do not expose
-this beyond loopback. See `docs/SECURITY.md` §3.1 and §5.
+**`/mcp` requires a per-agent credential.** Every request presents
+`Authorization: Bearer umg_live_…`, verified independently on that request — no
+session carries identity forward. Authorization is default deny: an agent sees
+only the tools its policies allow, and a denied call answers `-32602 "Unknown
+tool"`, identical to a name that does not exist. New agents have no credential
+and no access until an operator issues one and assigns a policy.
+
+**The management API is still unauthenticated**, loopback-only, and — since
+Phase 6 — able to mint a credential. Any local process can therefore grant
+itself MCP access. Treat it as a local operator CLI, not a service. Do not expose
+this beyond loopback. See `docs/SECURITY.md` §3.1, §4.1, §5.
+
+**Set `CREDENTIAL_HASH_SECRET` before connecting any agent.** In production a
+missing or too-short secret refuses startup; in development the gateway starts
+but every `/mcp` request answers 401 until it is set. There is deliberately no
+auto-generated ephemeral secret, and no default value.
 
 ## Configuration
 
@@ -99,10 +115,16 @@ Environment variables, with defaults:
 | `ALLOW_PRIVATE_NETWORK` | `false` | Permit loopback/private HTTP backends (fixtures only) |
 | `TOOL_DISCOVERY_TIMEOUT_MS` | `15000` | Bound on one backend's `tools/list` |
 | `TOOL_CALL_TIMEOUT_MS` | `60000` | Ceiling on one `tools/call` (backend `timeoutMs` still wins if lower) |
+| `CREDENTIAL_HASH_SECRET` | *(none)* | **Required for `/mcp`.** ≥32 chars. Read outside `Config`; production refuses startup without it |
+| `CREDENTIAL_HASH_KEY_ID` | `v1` | Key id stored with each digest, for rotation |
 
 Precedence: explicit overrides → environment → defaults. Invalid configuration
 fails fast at startup with a message naming the setting. No YAML is read; no
 secret is ever logged.
+
+`.env.example` lists the common variables. There is no built-in `.env` loader —
+export the variables or let your process manager inject them. `CREDENTIAL_HASH_SECRET`
+is the only one with no default, and it is deliberately not part of `Config`.
 
 ## Development commands
 
@@ -148,6 +170,26 @@ curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/connect
 curl -s http://127.0.0.1:8787/api/v1/backends/<id>/runtime
 curl -s http://127.0.0.1:8787/api/v1/backends/runtime
 curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/disconnect
+
+# Agents, credentials, policies (Phase 6)
+curl -s -X POST http://127.0.0.1:8787/api/v1/agents \
+  -H 'content-type: application/json' -d '{"name":"coding-agent"}'
+# Token is returned ONCE here; it is never readable again.
+curl -s -X POST http://127.0.0.1:8787/api/v1/agents/<agentId>/credentials \
+  -H 'content-type: application/json' -d '{"name":"laptop"}'
+curl -s -X POST http://127.0.0.1:8787/api/v1/policies \
+  -H 'content-type: application/json' \
+  -d '{"name":"read-only","rules":[{"resource":"tool","target":"<backendId>__get_status","effect":"allow"}]}'
+curl -s -X POST http://127.0.0.1:8787/api/v1/policies/<policyId>/assignments \
+  -H 'content-type: application/json' -d '{"agentId":"<agentId>"}'
+# Read-only preview of what that agent may call, and why
+curl -s http://127.0.0.1:8787/api/v1/agents/<agentId>/access
+
+# Then call /mcp as that agent
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'authorization: Bearer umg_live_…' \
+  -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
 | Method | Path |
@@ -167,6 +209,25 @@ curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/disconnect
 | `POST` | `/api/v1/backends/:backendId/reconnect` |
 | `GET` | `/api/v1/backends/:backendId/runtime` |
 | `POST` | `/api/v1/backends/validate` |
+| `GET` | `/api/v1/agents` |
+| `POST` | `/api/v1/agents` |
+| `GET` | `/api/v1/agents/:agentId` |
+| `PATCH` | `/api/v1/agents/:agentId` |
+| `DELETE` | `/api/v1/agents/:agentId` |
+| `POST` | `/api/v1/agents/:agentId/enable` |
+| `POST` | `/api/v1/agents/:agentId/disable` |
+| `GET` | `/api/v1/agents/:agentId/access` |
+| `GET` | `/api/v1/agents/:agentId/credentials` |
+| `POST` | `/api/v1/agents/:agentId/credentials` |
+| `POST` | `/api/v1/agents/:agentId/credentials/:credentialId/rotate` |
+| `POST` | `/api/v1/agents/:agentId/credentials/:credentialId/revoke` |
+| `GET` | `/api/v1/policies` |
+| `POST` | `/api/v1/policies` |
+| `GET` | `/api/v1/policies/:policyId` |
+| `PATCH` | `/api/v1/policies/:policyId` |
+| `DELETE` | `/api/v1/policies/:policyId` |
+| `POST` | `/api/v1/policies/:policyId/assignments` |
+| `DELETE` | `/api/v1/policies/:policyId/assignments/:agentId` |
 
 Every request body must be `application/json`. Errors use one envelope:
 `{ "error": { "code", "message", "requestId" } }`. Contracts and validation
@@ -187,6 +248,10 @@ rules are in `docs/BACKEND_SPEC.md`.
 
 ## Next task
 
-Phase 6 — agent profiles, per-agent credentials, dashboard owner authentication,
-and the policy engine (default deny; filter `tools/list`; re-check `tools/call`).
-Do not add real backends or modify agent configurations without approval.
+Phase 7 — session isolation and concurrency: transport/session model, session
+tracking and expiry, per-backend concurrency modes, scoped queues/locks, and
+cancellation. A session binding may be recorded for observability; it must not
+become an authorization shortcut (see `docs/ARCHITECTURE.md` §10).
+
+Not started, and not to be added without approval: real backends, agent client
+config changes, dashboard work, OAuth, non-loopback exposure.

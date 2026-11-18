@@ -43,11 +43,13 @@ What is actually enforced, per request:
 | Outbound destination | SSRF policy below, applied before every HTTP request |
 | Process execution | no shell; single executable token plus an argument array |
 
-These controls prevent *remote and cross-origin* misuse. They do **not** provide identity, and they do not stop another local process or another local user. Treat the API as a local operator tool, equivalent in trust to a CLI on the same machine. This is a documented limitation, not an oversight; dashboard authentication is Phase 6.
+These controls prevent *remote and cross-origin* misuse. They do **not** provide identity, and they do not stop another local process or another local user. Treat the API as a local operator tool, equivalent in trust to a CLI on the same machine. This is a documented limitation, not an oversight; dashboard authentication is Phase 8.
 
-`GET /api/v1/system` reports `capabilities.authentication: false` so a client cannot mistake the current posture for an authenticated one.
+Phase 6 authenticates the **MCP** surface only. The management API still has no operator identity: it can now mint, rotate, and revoke the credentials that MCP callers use, so a local caller who can reach it can issue themselves an agent credential. That is why it stays loopback-only and why it is not a lower bar to clear than it was in Phase 4.
 
-**What changed in Phase 4.** Before this phase the API could only mutate rows. It can now cause process spawns and outbound sockets, which widens the blast radius of a local caller from "edit configuration" to "run a command as the gateway user". The mitigations are structural (no shell, argument arrays, destination policy, no auto-connect) but they are **not** a substitute for authentication. Do not expose this API — including via a tunnel or reverse proxy — until Phase 6.
+`GET /api/v1/system` reports `capabilities.authentication: true` and a live `authentication` field (`required` or `unavailable`) so a client can tell whether the MCP surface can currently verify anything.
+
+**What changed in Phase 4.** Before this phase the API could only mutate rows. It can now cause process spawns and outbound sockets, which widens the blast radius of a local caller from "edit configuration" to "run a command as the gateway user". The mitigations are structural (no shell, argument arrays, destination policy, no auto-connect) but they are **not** a substitute for authentication. Do not expose this API — including via a tunnel or reverse proxy — until the dashboard has an operator identity (Phase 8).
 
 ## 3.2 Outbound destination policy (SSRF)
 
@@ -70,11 +72,44 @@ TLS verification is never disabled: no `rejectUnauthorized: false`, no `NODE_TLS
 ## 4. Authentication
 
 Separate dashboard and MCP authentication:
-- Dashboard: secure local owner login/session.
-- MCP: unique credential per agent/client.
+- Dashboard: secure local owner login/session (Phase 8).
+- MCP: unique credential per agent/client (Phase 6, implemented).
 - Backend: separate secret references for backend credentials.
 
 Do not use a client-supplied `agentName` or arbitrary metadata as proof of identity.
+
+### 4.1 Implemented in Phase 6 (MCP surface)
+
+Every HTTP request to `/mcp` is authenticated independently. There is no session, cookie, or connection state that can carry identity forward: the bearer token presented *on this request* is the only proof accepted. `mcp-session-id`, `X-Agent-*` headers, agent names, ids, and query parameters are all just input, and none of them is read as identity.
+
+**Credential format:** `umg_live_<43 base64url chars>` — 32 random bytes from `crypto.randomBytes`. The prefix exists so a caller can recognise what it is holding and so a leaked token is greppable; it is not a secret.
+
+**Storage.** `agent_credentials` holds:
+
+| Column | Content |
+| --- | --- |
+| `credential_hash` | HMAC-SHA-256 of the full token, lowercase hex (`CHECK length = 64`, `UNIQUE`) |
+| `token_prefix` | first 12 characters, for operator recognition only |
+| `hash_key_id` | which key produced the digest (`v1` today) |
+
+The token is never written to the database, an API response after issuance, a log line, or an audit row. Verification is: shape check → HMAC over the presented token → **single indexed lookup by digest** → timing-safe re-compare → key id known to this process → status (`revoked`/`expired`) → owning agent exists and is enabled → touch usage.
+
+**Hashing secret.** `CREDENTIAL_HASH_SECRET` (minimum 32 characters) is read in `src/index.ts` and `src/auth/credential-key.ts`, never through `Config`. It therefore cannot appear in `redactConfig`, any API response, or a config dump. `CREDENTIAL_HASH_KEY_ID` defaults to `v1` and exists for rotation.
+
+- Production: a missing or too-short secret **fails startup**. Starting with authentication permanently unavailable would answer 401 to every MCP client while `/health` stayed green — a silently dead gateway.
+- Development: startup succeeds and every MCP request fails closed with 401, so health checks and the management API remain usable while the secret is provisioned. An ephemeral secret is deliberately **not** generated: it would verify tokens only until the next restart.
+
+A credential issued under the same secret keeps verifying across restarts, because the digest has no process-local state. Rotating the *secret* means a new key id; a credential whose key id this process does not hold is refused (`unknown_key`) rather than trusted on the digest alone.
+
+**Failure is uniform.** Missing header, malformed header, malformed token, unknown token, wrong secret, revoked credential, expired credential, disabled agent, and missing server secret all answer the same 401 with the same body and the same `WWW-Authenticate: Bearer` challenge. The distinction exists only in the audit trail and the log.
+
+### 4.2 Credential lifecycle
+
+- `POST /api/v1/agents/:agentId/credentials` returns the token **once**. Listing never re-exposes it.
+- Rotation creates the new credential and revokes the old one **in one transaction**, writing a single `credential.rotated` audit row carrying `previousCredentialId`. There is no overlap window: the old token stops working the moment the new one exists.
+- Revocation is idempotent and keeps the original timestamp.
+- Deleting an agent tombstones it, revokes every credential, and drops every policy assignment in the same transaction.
+- Issuing requires a hashing key. With none configured the API returns a configuration error rather than creating a credential that could never authenticate.
 
 ## 5. Authorization
 
@@ -85,7 +120,39 @@ Do not use a client-supplied `agentName` or arbitrary metadata as proof of ident
 - Re-evaluate access on every call, not only at session initialization.
 - Define and test allow/deny precedence.
 
-**Phase 5 is not authorization.** Every discovered tool is visible to every caller that can reach `/mcp`, and every listed tool is callable. The only gates today are the loopback bind, the name-ownership check, and the backend's own schema. `tools/list` filtering by agent policy and a `tools/call` permission re-check are Phase 6, and the catalog is indexed by public name specifically so filtering can be added at read time without changing routing.
+### 5.1 Implemented in Phase 6 — precedence, in this order
+
+1. **System restrictions** — a disabled agent, a disabled backend, or an unusable credential denies before any policy is read. No rule can re-enable them.
+2. **Highest policy `priority` wins.** The operator's explicit ordering is authoritative, so a deny at `priority: 10` beats an allow at `0` — and vice versa.
+3. **At equal priority, `deny` beats `allow`.**
+4. Remaining ties break by policy id, then rule index, so the outcome never depends on row order.
+5. **No matching rule → deny.**
+
+A rule matches a `tool` resource by public tool name (`<backendId>__<tool>`) or a `backend` resource by backend id; `*` matches any target at that level. Policy targets naming an unknown backend are rejected at write time. Tool targets are checked for *shape* only, because the catalog is transient (ADR-038) and a policy must be authorable while its backend is disconnected.
+
+Both enforcement points call the same `AuthorizationService`, so the view and the boundary cannot drift:
+
+- `tools/list` returns only the tools this agent may call.
+- `tools/call` rejects before resolution.
+
+### 5.2 A denied call is indistinguishable from a nonexistent one
+
+An unauthorized `tools/call` answers `-32602` with the message `Unknown tool` — the same code and the same bytes as a name that was never published. No backend name, backend id, policy id, or reason is disclosed, and no input schema is returned. Resolving first would have allowed a caller to distinguish "exists but not yours" from "does not exist" by error or by timing, so authorization runs *before* routing: a denied call performs no backend lookup, no reachability check, no schema compile, no invocation, and writes no `tools.call` activity. One catalog read does happen — it is how a `backend`-scoped rule learns the tool's backend, and it is used only to decide and to enrich the audit row.
+
+The real reason (`default_deny`, `explicit_deny`, `agent_disabled`, `backend_disabled`) is written to `access.denied` in `audit_events` with the agent id, the resolved backend/tool id where safely determinable, the credential id, the correlation id, and the decision timestamp.
+
+### 5.3 Session limitation (deliberate, Phase 6)
+
+There is no persistent session-to-agent binding. The `sessions` table exists but Phase 6 neither reads nor writes it for authorization, and no binding table was added. Consequences:
+
+- Every request costs one indexed credential lookup — accepted, because it is a local SQLite primary-key read.
+- A client cannot inherit authority from a previous `initialize`.
+- Authorization is re-evaluated per request, so a revocation, a disable, or a policy edit takes effect on the very next call.
+- Phase 7 may introduce session tracking for observability; it must not become an authorization shortcut.
+
+### 5.4 Audit volume control
+
+Authentication success and failure rows are collapsed per agent (success) or per reason (failure) within a fixed 60-second window. Suppressed repeats are counted and folded into the next written row as `suppressed`, so the trail never understates an attempt while a caller cannot grow the table linearly by looping.
 
 ## 6. Credentials and secrets
 
@@ -102,6 +169,7 @@ Do not use a client-supplied `agentName` or arbitrary metadata as proof of ident
 
 - `agent_credentials` stores a lowercase hex SHA-256 verifier only (`CHECK length = 64`, unique index). The `Agent` entity has no credential field, so listing agents cannot serialize one.
 - Backend `env` and HTTP `headers` accept **secret references only**: `secret:<path>` or `env:<VAR>`. Any other string is rejected at validation time. A scheme is required because no pattern can tell a pasted secret (`sk-live-...`) from a variable name (`api-key`).
+  - Phase 6 correction: only `env:` is actually resolvable. There is no secret store yet, so a `secret:` reference fails loudly as `CONFIGURATION_ERROR` at connect time and is never sent literally. It is accepted by the schema because the reference format exists to keep the value out of `config_json`, not because resolution is implemented.
 - SQLite never receives raw secrets; `config_json` holds references and non-secret connection detail.
 - Verifier integrity is enforced at three layers: Zod (`^[a-f0-9]{64}$`), a `CHECK` constraint, and a unique index.
 - Credential/session status is derived from `revoked_at`/`expires_at`, so a "revoked" row cannot be reported as active.
@@ -116,6 +184,18 @@ Do not use a client-supplied `agentName` or arbitrary metadata as proof of ident
 - Env keys must be POSIX names (`^[A-Za-z_][A-Za-z0-9_]{0,127}$`) and header keys must be RFC 7230 tokens, so a name is validated for what a child process or a request can actually use.
 - **Known limit:** a header *name* is caller-supplied config text, like `name` or `description`. `X-Api-Key` is indistinguishable from a pasted secret, so header names are stored and displayed rather than redacted. A secret typed into a header name by mistake is therefore visible to any local API caller — the same exposure class as a secret typed into `description`. Only header/env *values* are constrained to references, and they are the fields that would carry a credential.
 - Creating, updating, enabling, or disabling a backend cannot connect, spawn, or emit network traffic. The only runtime states the registry may write are `disconnected` and `disabled`; a `connected` state is never fabricated from configuration.
+
+### 6.3 Implemented in Phase 6
+
+- **The MCP credential is an HMAC-SHA-256 digest of the whole token, keyed by `CREDENTIAL_HASH_SECRET`.** A plain SHA-256 would let anyone who obtained a copy of the database verify guesses offline; keying the digest means a database leak alone is not enough to mount a dictionary attack on tokens that follow the `umg_live_` format.
+- **The secret never enters `Config`.** It is read by `src/auth/credential-key.ts` and `src/index.ts` only. `redactConfig`, the config validator, the management API, `/health`, and `/api/v1/system` have no field that could carry it, so it cannot be leaked by a serialization change.
+- **Comparison is timing-safe.** The indexed lookup is by digest, so a hit already implies equality; `crypto.timingSafeEqual` re-checks it anyway so a future query change cannot silently turn a prefix match into an authentication.
+- **Key ids make rotation possible without a flag day.** `hash_key_id` records which key produced a digest. A credential whose key id this process does not hold is refused (`unknown_key`) rather than verified on the digest alone.
+- **Tokens are returned exactly once**, at issue or rotate. There is no "show token" endpoint and no field in any projection that carries one. `toPublicCredential()` omits `credentialHash` and `token` by construction, not by a delete call.
+- **No secret is ever written to audit or logs.** `auth.succeeded`/`auth.failed`/`access.denied` carry ids, reason, and outcome only. The pino redaction list already covers `authorization` and `*.token|credential|credentialHash|password|secret|apiKey`.
+- **`umg_live_` tokens are not password-equivalent.** They are machine credentials with no user, no scope beyond the owning agent's policies, and no ability to reach the management API.
+- **Known limit:** the hashing secret is a symmetric secret in the process environment. Anyone who can read `/proc/<pid>/environ`, the shell history that set it, or a backup of the deployment's env file can mint credentials offline. Rotate it by adding a new key id, revoking, and reissuing; there is no automatic rehash-on-verify yet.
+- **Known limit, unchanged:** the management API remains unauthenticated on loopback, and it can issue credentials. A local attacker with API access does not need to steal one.
 
 ## 7. stdio process security
 
@@ -191,7 +271,23 @@ The tool surface is a new trust boundary in both directions: a caller supplies a
 - Child stderr is bounded and credential-redacted; only the last line reaches an error message, which is itself truncated to the 500-character column limit.
 - An SDK or transport error is normalized to a generic message before storage: SDK errors can carry response bodies, URLs, or a command line.
 - Runtime state (`backendRuntime`) holds no connection detail at all — no pid, no command, no URL. The `RuntimeView` returned by the API is an explicit projection.
-- **Not audited:** connect/disconnect/reconnect are logged but produce no `audit_events` row. `AUDIT_ACTIONS` has no lifecycle actions yet, and inventing one at a call site would break the contract. Add `backend.connected`/`backend.disconnected` when Phase 5 introduces a per-caller actor worth recording against.
+- **Not audited:** connect/disconnect/reconnect are logged but produce no `audit_events` row. `AUDIT_ACTIONS` still has no lifecycle actions; Phase 6 added agent/credential/auth actions only. Add `backend.connected`/`backend.disconnected` when there is a reason to correlate them with a per-caller actor.
+
+### 9.1.3 Authentication and authorization audit (Phase 6)
+
+Three new audit actions, all with flat primitive metadata:
+
+| Action | Actor | Metadata |
+| --- | --- | --- |
+| `auth.succeeded` | `agent` | `credentialId`, `hashKeyId` |
+| `auth.failed` | `system` | `reason` (fixed enum), `credentialId` and `agentId` only when the credential row was located |
+| `access.denied` | `agent` | `reason`, `backendId`/`toolId` where resolvable, `credentialId`, `matchedPolicyId`, `suppressed` |
+
+- The failure *reason* is internal. On the wire every failure is the same 401; only the audit row and the `warn` log carry `malformed_token`, `revoked_credential`, `agent_disabled`, and so on.
+- `access.denied` names the resolved backend and tool id when the decision could be made about them, and the bare public name otherwise. A name that resolves to nothing is audited by name only, so probing for tools leaves a trail without confirming that anything exists.
+- Repeated failures are collapsed per reason within a 60-second window, with the suppressed count folded into the next row, so a loop cannot grow the table linearly.
+- Audit is best-effort by design: `safeAudit` swallows a write failure after logging it, because a request that was already refused for security reasons must not turn into a 500.
+- Tokens, headers, agent-supplied names, and authorization reasons never appear in metadata. `tests/mcp-auth.test.ts` and `tests/authentication.test.ts` assert both the presence of the ids and the absence of the token.
 
 ### 9.2 Implemented in Phase 2
 
@@ -234,11 +330,31 @@ The tool surface is a new trust boundary in both directions: a caller supplies a
 - Gateway restart while a backend claims `connected` (recovered to `disconnected`; nothing is re-dialled).
 - Disable, delete, or config change while a child process is live (process is torn down, pending retries cancelled).
 
+Phase 6 additions (all covered by `tests/credentials.test.ts`, `tests/authentication.test.ts`, `tests/authorization.test.ts`, `tests/mcp-auth.test.ts`):
+
+- `/mcp` called with no credential, a malformed header, a malformed token, an unknown token, a revoked credential, an expired credential, or a disabled agent's credential (all one identical 401).
+- The same bearer token replayed against a *different* request after revocation (401: verification is per request, not per session).
+- A previously issued `mcp-session-id` replayed without a token (401; session ids are not credentials).
+- A client declaring another agent's id or name in a header (`X-Agent-Id`, `X-Agent-Name`) while holding its own token (authenticated as itself; claims ignored).
+- A live credential used with a different `CREDENTIAL_HASH_SECRET` (401: digest mismatch, no oracle).
+- A credential whose `hash_key_id` this process does not hold (`unknown_key`, refused).
+- A no-op re-hash: two processes with the same secret verify the same stored digest across restarts.
+- `tools/call` for a tool that exists but is not granted (byte-identical to a nonexistent tool: `-32602`, `Unknown tool`; no backend id, policy id, reason, or schema disclosed).
+- `tools/call` for a guessed name (`ghost__tool`) by an agent that may use other tools (same answer).
+- `tools/list` for an agent with no policy, a tool-only policy, and a wildcard policy (empty, one tool, all tools).
+- A denied call producing **no** backend invocation and **no** `tools.call` activity row.
+- Two agents seeing different catalog views at the same moment.
+- Policy precedence: priority beats effect, equal priority denies, ties are order-independent, system restrictions beat every rule.
+- Rotating a credential (`previousCredentialId` audited, old token dead immediately) and deleting an agent (all credentials revoked, all assignments dropped).
+- Inspecting `/health`, `/api/v1/system`, and the agent/credential/policy endpoints for the hashing secret or a stored token (never present).
+
 ## 11. Release gate
 
 No non-loopback exposure until:
-- Authentication and authorization are implemented (Phase 6). The management API is currently unauthenticated and loopback-only; see 3.1.
+- Authentication and authorization are implemented. **MCP is done (Phase 6); the management API still has no operator identity (Phase 8).** The API is loopback-only; see 3.1.
 - TLS/reverse-proxy assumptions are documented.
 - Host/Origin and CSRF defenses are tested.
-- Secrets are protected.
+- Secrets are protected — `CREDENTIAL_HASH_SECRET` is required in production and never enters `Config`, but it is still a symmetric secret in the environment with the limits in 6.3.
 - Threat review and operational rollback plan are complete.
+
+**Explicitly not satisfied by Phase 6:** dashboard login, dashboard sessions/CSRF, TLS, per-operator identity on the management API (Phase 8), and any form of non-loopback exposure. Do not put this behind a tunnel yet.

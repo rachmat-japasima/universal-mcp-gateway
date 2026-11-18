@@ -19,6 +19,8 @@ export const AUDIT_ACTIONS = [
   'backend.validation_failed',
   'agent.created',
   'agent.updated',
+  'agent.enabled',
+  'agent.disabled',
   'agent.deleted',
   'credential.created',
   'credential.rotated',
@@ -30,6 +32,7 @@ export const AUDIT_ACTIONS = [
   'policy.unassigned',
   'session.revoked',
   'settings.updated',
+  'auth.succeeded',
   'auth.failed',
   'access.denied',
 ] as const;

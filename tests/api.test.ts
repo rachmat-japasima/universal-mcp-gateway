@@ -10,6 +10,7 @@ import { createGateway, type Gateway } from '../src/core/gateway.js';
 import { openStore, type Database } from '../src/infrastructure/database/index.js';
 import { createLogger } from '../src/monitoring/logger.js';
 import type { ErrorEnvelope } from '../src/shared/errors.js';
+import { bearer, createTestAgent, testKeys } from './fixtures/auth.js';
 
 /**
  * Management API contract tests.
@@ -32,7 +33,7 @@ let gateway: Gateway;
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'gw-api-'));
   store = openStore({ path: join(directory, 'gateway.db') });
-  gateway = createGateway({ config, logger, store });
+  gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
 });
 
 afterEach(async () => {
@@ -82,7 +83,10 @@ describe('system', () => {
       service: 'universal-mcp-gateway',
       environment: 'test',
       counts: { backends: 0 },
-      capabilities: { backendConnections: true, toolRouting: false, authentication: false },
+      capabilities: { backendConnections: true, toolRouting: true, authentication: true },
+      // A hashing secret is configured for this gateway, so the MCP surface can
+      // verify credentials.
+      authentication: 'required',
     });
   });
 
@@ -549,14 +553,31 @@ describe('request hygiene', () => {
   });
 
   it('keeps the MCP protocol envelope on /mcp (regression)', async () => {
+    const agent = createTestAgent(store, testKeys());
     const response = await gateway.app.request('/mcp', {
       method: 'POST',
-      headers: { ...JSON_HEADERS, accept: 'application/json, text/event-stream' },
+      headers: {
+        ...JSON_HEADERS,
+        ...bearer(agent),
+        accept: 'application/json, text/event-stream',
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } }),
     });
 
     // Reached the MCP transport rather than the REST guard.
     expect(response.status).toBe(200);
+  });
+
+  it('answers an unauthenticated /mcp request with a 401 challenge, not the REST envelope', async () => {
+    const response = await gateway.app.request('/mcp', {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toMatch(/^Bearer /);
+    expect(await json(response)).toMatchObject({ jsonrpc: '2.0', error: { message: 'Unauthorized' } });
   });
 });
 

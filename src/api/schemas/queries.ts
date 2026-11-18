@@ -29,6 +29,67 @@ export const backendIdParamSchema = z.object({
   backendId: z.uuid(),
 });
 
+export const agentIdParamSchema = z.object({
+  agentId: z.uuid(),
+});
+
+export const credentialIdParamSchema = z.object({
+  credentialId: z.uuid(),
+});
+
+export const policyIdParamSchema = z.object({
+  policyId: z.uuid(),
+});
+
+export const listAgentsQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).max(1_000_000).default(1),
+    limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(20),
+    /** Substring match on name or description. */
+    search: z.string().trim().min(1).max(200).optional(),
+    enabled: booleanFlag.optional(),
+    status: z.enum(['active', 'disabled']).optional(),
+    clientType: z.string().trim().min(1).max(64).optional(),
+    sort: z.enum(['name', 'createdAt', 'updatedAt']).default('name'),
+    order: z.enum(['asc', 'desc']).default('asc'),
+  })
+  .transform(({ page, limit, status, ...rest }) => ({
+    ...rest,
+    // `status` is derived from `enabled`; the two cannot contradict each other.
+    ...(status === undefined ? {} : { enabled: status === 'active' }),
+    limit,
+    offset: (page - 1) * limit,
+    page,
+  }));
+
+export const listPoliciesQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).max(1_000_000).default(1),
+    limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(20),
+    search: z.string().trim().min(1).max(200).optional(),
+    /** Policies containing at least one rule with this effect. */
+    effect: z.enum(['allow', 'deny']).optional(),
+    agentId: z.uuid().optional(),
+    backendId: z.uuid().optional(),
+    sort: z.enum(['name', 'createdAt', 'updatedAt', 'priority']).default('name'),
+    order: z.enum(['asc', 'desc']).default('asc'),
+  })
+  .transform(({ page, limit, backendId, ...rest }) => ({
+    ...rest,
+    ...(backendId === undefined ? {} : { backendId }),
+    limit,
+    offset: (page - 1) * limit,
+    page,
+  }));
+
+/** Credential issue/rotate body. `expiresAt` is an absolute instant, validated by the domain schema. */
+export const issueCredentialBodySchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    expiresAt: z.iso.datetime().optional(),
+  })
+  .strict();
+
 /**
  * `?expectedVersion=` on update/enable/disable. Optional: a caller that omits it
  * opts into last-write-wins, which is the documented behaviour for scripts.

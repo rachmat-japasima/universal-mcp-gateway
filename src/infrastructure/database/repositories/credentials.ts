@@ -1,15 +1,18 @@
+import { randomUUID } from 'node:crypto';
+
 import type { AgentCredential, CreateCredentialInput } from '../../../domain/agent-credential.js';
 import { agentCredentialSchema, createCredentialSchema } from '../../../domain/agent-credential.js';
 import type { CredentialRepository } from '../../../domain/repositories.js';
 import { AppError } from '../../../shared/errors.js';
 import type { SqliteDatabase } from '../connection.js';
 import { parseStored, wrapDatabaseError } from './helpers.js';
-import { randomUUID } from 'node:crypto';
 
 interface CredentialRow {
   id: string;
   agent_id: string;
   credential_hash: string;
+  token_prefix: string | null;
+  hash_key_id: string | null;
   label: string | null;
   created_at: string;
   expires_at: string | null;
@@ -24,6 +27,8 @@ function toCredential(row: CredentialRow): AgentCredential {
         id: row.id,
         agentId: row.agent_id,
         credentialHash: row.credential_hash,
+        ...(row.token_prefix === null ? {} : { tokenPrefix: row.token_prefix }),
+        ...(row.hash_key_id === null ? {} : { hashKeyId: row.hash_key_id }),
         ...(row.label === null ? {} : { label: row.label }),
         createdAt: row.created_at,
         ...(row.expires_at === null ? {} : { expiresAt: row.expires_at }),
@@ -48,10 +53,19 @@ export class SqliteCredentialRepository implements CredentialRepository {
     try {
       this.database
         .prepare(
-          `INSERT INTO agent_credentials (id, agent_id, credential_hash, label, created_at, expires_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO agent_credentials (id, agent_id, credential_hash, token_prefix, hash_key_id, label, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, parsed.agentId, parsed.credentialHash, parsed.label ?? null, now, parsed.expiresAt ?? null);
+        .run(
+          id,
+          parsed.agentId,
+          parsed.credentialHash,
+          parsed.tokenPrefix ?? null,
+          parsed.hashKeyId ?? null,
+          parsed.label ?? null,
+          now,
+          parsed.expiresAt ?? null,
+        );
     } catch (error) {
       throw wrapDatabaseError(error, { operation: 'agent_credentials.create', agentId: parsed.agentId });
     }
@@ -111,6 +125,17 @@ export class SqliteCredentialRepository implements CredentialRepository {
     }
 
     return credential;
+  }
+
+  revokeAllForAgent(agentId: string, now: string): number {
+    try {
+      const result = this.database
+        .prepare('UPDATE agent_credentials SET revoked_at = ? WHERE agent_id = ? AND revoked_at IS NULL')
+        .run(now, agentId);
+      return result.changes;
+    } catch (error) {
+      throw wrapDatabaseError(error, { operation: 'agent_credentials.revokeAll', agentId });
+    }
   }
 
   touch(id: string, now: string): void {

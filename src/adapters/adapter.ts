@@ -54,10 +54,10 @@ export interface AdapterContext {
 /**
  * Resolves `secret:`/`env:` references to values.
  *
- * Phase 4 has no secret store yet (Phase 6), so only `env:` can be resolved.
- * A `secret:` reference fails loudly instead of being sent literally: sending
- * the string `secret:foo` as an API key would look like an auth failure and
- * would hide the real problem.
+ * There is still no secret store, so only `env:` can be resolved. A `secret:`
+ * reference fails loudly instead of being sent literally: sending the string
+ * `secret:foo` as an API key would look like an auth failure and would hide the
+ * real problem.
  *
  * The returned map is passed straight to the transport and is never logged,
  * persisted, or attached to an error.

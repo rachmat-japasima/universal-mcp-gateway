@@ -119,8 +119,35 @@ Audit entries include actor, action, target, timestamp, result, and request ID.
 - Audit is append-only with no application delete path; deletion of a backend tombstones the
   definition instead of cascading, so history stays resolvable.
 
-Login/logout, credential, policy, and settings events arrive with their phases. There are no
-metrics endpoints yet, so no backend counters are exposed beyond `/api/v1/system` counts.
+Login/logout and settings events arrive with later phases (dashboard auth is Phase 8/9).
+Credential and policy events landed in Phase 6, below. There are no metrics endpoints yet,
+so no backend counters are exposed beyond `/api/v1/system` counts.
+
+### 6.3 Identity and authorization audit (Phase 6)
+
+New actions: `agent.created`/`updated`/`enabled`/`disabled`/`deleted`,
+`credential.created`/`rotated`/`revoked`, `policy.created`/`updated`/`deleted`/`assigned`/
+`unassigned`, `auth.succeeded`, `auth.failed`, and `access.denied`.
+
+- `auth.succeeded` carries `credentialId` and `hashKeyId`. `auth.failed` carries a fixed
+  `reason` (`missing_header`, `malformed_header`, `malformed_token`, `unknown_credential`,
+  `revoked_credential`, `expired_credential`, `agent_disabled`, `agent_missing`,
+  `unknown_key`, `secret_missing`) and adds `credentialId`/`agentId` only when the row was located.
+- `access.denied` carries the real decision reason, plus `backendId`/`toolId` where the target
+  could be resolved, and `credentialId`.
+- Actor is the authenticated agent for `auth.succeeded`/`access.denied`, `system` for
+  `auth.failed`, and `admin`/`local-operator` for management-API writes (still no operator
+  identity; ADR-030).
+- No token, header value, or submitted secret is ever a metadata field, and the pino redaction
+  list covers `authorization` plus `*.token|credential|credentialHash|password|secret|apiKey`.
+- Volume control: failures are collapsed per reason and successes per agent within a fixed
+  60-second window; suppressed repeats are counted and folded into the next written row as
+  `suppressed`. The maps are in-process and bounded (512 keys), so a loop cannot grow either
+  the table or memory without bound.
+- Audit is best-effort: a failed write is logged and swallowed, because a request already
+  refused for security reasons must not become a `500`.
+- Successful authentication also updates `agents.last_authenticated_at`; that write is **not**
+  audited, or every request would produce a row.
 
 ### 6.2 Lifecycle logging (Phase 4)
 

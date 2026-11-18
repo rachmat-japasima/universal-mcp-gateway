@@ -87,14 +87,25 @@ The full product scope is approved in this document. Implement sequentially; do 
 
 **Deferred by design:** health probing (an `unhealthy` state still has no setter), catalog persistence (ADR-038), and `tools/list` pagination (full list is protocol-legal and bounded).
 
-## Phase 6 — Identity, authentication, and policies
-- Agent profiles.
-- Per-agent credentials.
-- Dashboard owner authentication.
-- Policy engine.
-- Default-deny authorization.
-- Filter tools/list and enforce tools/call.
-- Secret redaction and audit events.
+## Phase 6 — Identity, authentication, and policies (completed)
+- [x] Agent profiles with `enabled`, metadata, and a tombstone delete that revokes credentials and drops assignments in one transaction.
+- [x] Per-agent credentials: `umg_live_<base64url>` tokens, returned once, stored as HMAC-SHA-256 with `token_prefix` and `hash_key_id`.
+- [x] Timing-safe verification: shape → digest → indexed lookup → re-compare → key id → status → agent enabled.
+- [x] Per-request MCP authentication on `/mcp` with one uniform 401 for every failure; no session binding, no trust in client-supplied identity.
+- [x] `CREDENTIAL_HASH_SECRET` read outside `Config`: production fails startup when absent, development fails closed per request, never an ephemeral secret.
+- [x] Credential rotation as one transaction with a single `credential.rotated` audit row and no overlap window.
+- [x] Policy engine with explicit precedence: system restrictions → priority → deny over allow → policy id → rule index → default deny.
+- [x] Default-deny authorization enforced independently in `tools/list` (filtered view) and `tools/call` (checked before resolution).
+- [x] A denied call is byte-identical to an unknown tool: `-32602`, `Unknown tool`, no backend/policy/schema disclosure.
+- [x] `access.denied`, `auth.succeeded`, and `auth.failed` audit rows with agent, backend/tool, credential, correlation id, reason, and outcome; windowed dedup with `suppressed` counts.
+- [x] Agent, credential, and policy endpoints, plus a read-only access preview.
+- [x] `GET /api/v1/system` and `/health` report the live authentication posture.
+- [x] Migration `0004_agent_authentication.sql`: additive, nullable, no backfill, no index, `sessions` untouched.
+- [x] 69 new tests (`credentials` 19, `authentication` 18, `authorization` 23, `mcp-auth` 8) → 372 total.
+- [x] `pnpm typecheck`, `pnpm test`, `pnpm build` pass; migration 0004 verified against a real pre-0004 database.
+- [x] No real backend connected; backend registry empty; bind still `127.0.0.1`.
+
+**Not in this phase (by decision):** dashboard owner authentication, session-to-agent binding, and OAuth. The management API remains unauthenticated and loopback-only, and it can now mint a credential — that is why it must not be exposed. Session tracking is Phase 7, which must not turn a session binding into an authorization shortcut.
 
 ## Phase 7 — Session isolation and concurrency
 - Finalize transport/session model.
@@ -105,10 +116,11 @@ The full product scope is approved in this document. Implement sequentially; do 
 - Concurrent client tests.
 
 ## Phase 8 — Management API completion
-- Agents, policies, sessions, activity, settings APIs.
+- Sessions, activity, settings, and (remaining) agent/policy gaps in the API surface.
 - Validation, pagination, filtering.
 - API contracts and integration tests.
 - Secure backup/restore APIs.
+- Dashboard owner authentication and operator identity for the management API (currently unauthenticated on loopback).
 
 ## Phase 9 — Astryx dashboard foundation
 - Read current official Astryx docs.
