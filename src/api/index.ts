@@ -17,6 +17,8 @@ import { apiErrorHandler, getRequestId, jsonBodyLimit, requestId } from './http.
 import { loopbackOnly, requireJsonBody } from './middleware/guards.js';
 import { agentsRoutes } from './routes/agents.routes.js';
 import { backendsRoutes } from './routes/backends.routes.js';
+import { activityRoutes, auditRoutes } from './routes/events.routes.js';
+import { opsRoutes } from './routes/ops.routes.js';
 import { policiesRoutes } from './routes/policies.routes.js';
 import { sessionsRoutes } from './routes/sessions.routes.js';
 import { systemRoutes } from './routes/system.routes.js';
@@ -65,7 +67,7 @@ export function createManagementApi(options: ManagementApiOptions): Hono {
   const agents = new AgentService(store, undefined, undefined, sessions);
   const credentials = new CredentialService({ store, keys: options.credentialKeys, ...(sessions === undefined ? {} : { sessions }) });
   const policies = new PolicyService({ store });
-  const toolDeps = { catalog: options.catalog, discovery: options.discovery, logger };
+  const toolDeps = { catalog: options.catalog, discovery: options.discovery, logger, store };
 
   const api = new Hono();
 
@@ -75,6 +77,15 @@ export function createManagementApi(options: ManagementApiOptions): Hono {
   api.use('*', loopbackOnly(config));
   api.use('*', jsonBodyLimit(config));
   api.use('*', requireJsonBody());
+
+  const ops = opsRoutes({
+    config,
+    store,
+    lifecycle,
+    catalog: options.catalog,
+    ...(sessions === undefined ? {} : { sessions }),
+    authentication: options.credentialKeys.issuing === undefined ? 'unavailable' : 'required',
+  });
 
   api.route(
     '/system',
@@ -90,6 +101,12 @@ export function createManagementApi(options: ManagementApiOptions): Hono {
   api.route('/agents', agentsRoutes({ agents, credentials, authorization: options.authorization }));
   api.route('/policies', policiesRoutes(policies));
   if (sessions !== undefined) api.route('/sessions', sessionsRoutes({ sessions }));
+  api.route('/activity', activityRoutes({ store }));
+  api.route('/audit', auditRoutes({ store }));
+  // Overview, monitoring, readiness, diagnostics, settings and the OpenAPI
+  // document share one snapshot reader, so their numbers cannot disagree.
+  api.route('/', ops);
+
   // `/tools` is a sibling of `/backends`, so the nested router is mounted on a
   // parameterised path instead of being folded into `backendsRoutes`: that keeps
   // the literal-before-parameter rule scoped to one file each.

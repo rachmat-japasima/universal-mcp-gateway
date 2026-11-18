@@ -203,6 +203,19 @@ export class SqliteAgentRepository implements AgentRepository {
     return row.count;
   }
 
+  /** Enabled/disabled split for the overview. One statement; tombstones excluded. */
+  counts(): { total: number; enabled: number; disabled: number } {
+    const row = this.database
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END), 0) AS enabled,
+                COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS disabled
+           FROM agents WHERE ${ACTIVE_AGENT}`,
+      )
+      .get() as { total: number; enabled: number; disabled: number };
+    return row;
+  }
+
   private requireById(id: string, message: string): Agent {
     const agent = this.findById(id);
     if (agent === undefined) {

@@ -329,6 +329,15 @@ export class SessionService {
     return toPublicSession(session, this.now(), this.idleTimeoutMs);
   }
 
+  /** Effective status breakdown for dashboards; same clock and idle deadline as `list()`. */
+  counts(): Record<SessionStatus, number> {
+    const now = this.now();
+    return this.store.sessions.counts(
+      now.toISOString(),
+      new Date(now.getTime() - this.idleTimeoutMs).toISOString(),
+    );
+  }
+
   get(sessionId: string): Session {
     return this.require(sessionId);
   }

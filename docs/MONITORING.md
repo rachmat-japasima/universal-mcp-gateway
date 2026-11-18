@@ -2,21 +2,28 @@
 
 ## 1. Objectives
 
-Provide enough operational visibility to answer:
-- Is the gateway running?
-- Is each backend connected and healthy?
-- Which agents are active?
-- Which tools are being called?
-- Are calls slow or failing?
-- Are queues/locks saturated?
-- What administrative/security changes occurred?
+Implemented through Phase 8. The questions the surface answers today:
+
+- Is the gateway running? — `/health`, `/ready`.
+- Is each backend connected and healthy? — `/api/v1/monitoring/backends`, `…/:id/runtime`.
+- Which agents are active? — `/api/v1/overview` (`agents`), `/api/v1/agents?status=active`.
+- Which tools are being called? — `/api/v1/activity?type=tools.call`.
+- What administrative/security changes occurred? — `/api/v1/audit`.
+- Are sessions accumulating or expiring? — `/api/v1/monitoring/sessions`.
+
+Still unanswerable, and therefore not shown: request latency percentiles, per-tool duration
+distributions, queue depth, and saturation. See §4.
 
 ## 2. Health endpoints
 
-- `/health`: process liveness and basic service status.
-- A separate readiness endpoint may be added when readiness depends on external resources.
-- Management API should provide detailed diagnostics to authenticated administrators.
-- Do not expose internal paths, environment variables, secrets, or stack traces.
+Implemented:
+
+- `/health` — **liveness only**. Answers while the process can serve. Deliberately does not fail when a backend is disconnected or authentication is unconfigured; those are reported in the body, not as a status.
+- `/ready` — **readiness**. Checks that the database answers and the migration ledger is readable. `200` with `status: "ready"`, or `503` with `status: "not_ready"` and the failing check named. Optional backends are excluded by design: a gateway with every backend disconnected is still ready to accept work. It lives outside `/api/v1` (an infrastructure probe should not follow an API version) and is mounted only when a store exists — without one, the gateway has no evidence to report and a `503` would be a claim it cannot support.
+- `/api/v1/system/health` — management-plane liveness, distinct from both.
+- `/api/v1/diagnostics` — safe incident facts, read-only by construction.
+
+Neither probe, nor any `ops` endpoint, reveals a private path, an environment value, a secret, or a stack trace (`tests/ops-api.test.ts` asserts it).
 
 ## 3. Structured logs
 
@@ -63,33 +70,70 @@ Do not log:
 
 ## 4. Metrics
 
-Recommended metrics:
-- HTTP request count and duration.
-- MCP initialize count/failures.
-- tools/list count/duration.
-- tools/call count/duration by backend/tool.
-- error rate by category.
-- backend connection state and uptime.
-- reconnect attempts.
-- active sessions.
-- active calls.
-- queue depth and lock wait time.
-- dashboard API latency.
+Implemented in Phase 8 as **read endpoints over live state**, not as a metrics
+store. There is no sampler, no time series, and no cache: every value is read
+from a repository, the lifecycle manager, or the in-memory catalog at request
+time. A time-series backend remains unbuilt, and adding one without a concrete
+need would be a second source of truth.
+
+| Endpoint | Answers |
+| --- | --- |
+| `GET /api/v1/overview` | Every aggregate a dashboard home screen shows, in one snapshot. |
+| `GET /api/v1/monitoring` | Runtime, storage status, backends, sessions, tools, activity. |
+| `GET /api/v1/monitoring/health` | Storage status plus backend counts. |
+| `GET /api/v1/monitoring/backends` | Counts, per-backend runtime states, discovery reports, conflicts. |
+| `GET /api/v1/monitoring/sessions` | Effective session distribution, or `available: false`. |
+| `GET /api/v1/monitoring/runtime` | Service version, Node version, platform, uptime. |
+
+Available now, all real: backend totals and enabled/disabled split, the runtime
+status distribution across every backend, tool totals by availability, backends
+with a catalog, discovery failures, agent totals and split, session counts by
+effective status, and activity totals grouped by type and by outcome.
+
+**Not available, and therefore not shown:** request throughput and latency
+percentiles (no request histogram is kept), queue depth and lock wait time (tool
+calls are not queue-gated yet — `docs/ARCHITECTURE.md` §11.2), per-tool duration
+distributions (each `tools.call` row has a `durationMs`, but nothing aggregates
+it), and saturation. A dashboard must render these as "not collected", never as
+zero.
+
+### 4.1 Two rules the numbers keep
+
+1. **Fabricate nothing.** Every figure comes from a repository, the lifecycle
+   manager, or the catalog. An empty registry reports zeros; nothing is sampled,
+   estimated, seeded, or defaulted to a plausible-looking value.
+2. **`null` is not `0`.** When a storage read fails, `database` becomes
+   `"unavailable"`, `status` becomes `"degraded"`, and every storage-backed field
+   becomes `null`. The in-memory catalog is still reported, because it survived
+   the outage. Rendering `0` for an unavailable store is a false claim and the
+   dashboard must branch on `null`.
+
+### 4.2 One reader
+
+`/overview`, `/monitoring*`, and `/diagnostics` all call `opsSnapshot()`
+(`src/api/ops.ts`). Three endpoints computing backend counts down three code
+paths is the classic dashboard bug — two widgets on one screen disagreeing about
+the same instant. With one reader they cannot, and one fix corrects all of them.
+The count queries are single statements (grouped `SUM(CASE …)` and `GROUP BY`),
+so the overview does not become an N+1.
 
 Use bounded labels; never use arbitrary user input as unbounded metric labels.
+The `byType`/`byOutcome` maps are keyed by closed enums, not by user input.
 
 ## 5. Dashboard visualizations
 
-- Gateway status card.
-- Backend health table.
-- Request throughput chart.
-- Latency percentile chart.
-- Error-rate chart.
-- Tool-call distribution.
-- Recent event timeline.
-- Session/queue overview.
+Every page in `docs/DASHBOARD.md` must be buildable from the endpoints above, with no fixture data.
 
-All charts must distinguish zero from unavailable/no data. Never populate production charts with fabricated demo data.
+- Gateway status card — `/api/v1/overview` (`status`, `database`, `authentication`).
+- Backend health table — `/api/v1/monitoring/backends` (`runtimes`, `counts`).
+- Session/queue overview — `/api/v1/monitoring/sessions`; queue depth is not collected.
+- Recent activity timeline — `/api/v1/activity`.
+- Audit trail — `/api/v1/audit` (list) and `/api/v1/audit/:eventId` (metadata).
+- Settings and diagnostics pages — `/api/v1/settings`, `/api/v1/diagnostics`.
+- Request throughput, latency percentiles, and error-rate charts — **not
+  collectable yet**; render as "not collected" rather than a flat line at zero.
+
+All charts must distinguish zero from unavailable/no data. Never populate production charts with fabricated demo data, and branch on `null` before formatting a number.
 
 ## 6. Audit events
 
@@ -119,9 +163,15 @@ Audit entries include actor, action, target, timestamp, result, and request ID.
 - Audit is append-only with no application delete path; deletion of a backend tombstones the
   definition instead of cascading, so history stays resolvable.
 
-Login/logout and settings events arrive with later phases (dashboard auth is Phase 8/9).
-Credential and policy events landed in Phase 6, below. There are no metrics endpoints yet,
-so no backend counters are exposed beyond `/api/v1/system` counts.
+Login/logout and settings events arrive with later phases (dashboard auth is Phase 9–10).
+Credential and policy events landed in Phase 6, and session events in Phase 7. Phase 8 added the
+read API over this trail, not new actions: `GET /api/v1/audit` (filterable, paginated, `metadata`
+omitted) and `GET /api/v1/audit/:eventId` (metadata included). `/api/v1/activity` is the separate
+operational log. Neither has a write verb.
+
+The distinction is enforced by the type system, not by convention: the audit list returns
+`AuditListItem`, which has no `metadata` field. A collection response therefore cannot carry
+free-form context by accident, and reading one record is an explicit operator act.
 
 ### 6.3 Identity and authorization audit (Phase 6)
 
@@ -214,11 +264,15 @@ the next process believe sessions are live that nothing can serve.
 
 ## 7. Alerts and notifications
 
-Initial local version:
-- In-dashboard event/health indicators.
-- Optional desktop/local notification can be considered later.
-- Do not add external notification integrations until requested.
-- Alert rules should support thresholds and cooldowns to prevent noisy repeated alerts.
+Not implemented. Phase 8 exposes the data an alerting layer would need — counts,
+status distribution, discovery failures, error outcomes — but adds no evaluator,
+no thresholds, no cooldowns, and no external notification integration. Adding one
+before there is a concrete need would introduce a background loop the gateway
+does not currently have.
+
+Do not add external notification integrations until requested. When they land,
+alert rules must support thresholds and cooldowns to prevent noisy repeats, and
+must not use unbounded user input as a label.
 
 ## 8. Recovery
 
@@ -235,13 +289,17 @@ Implemented in Phase 4 (`src/adapters/lifecycle.ts`):
 
 ## 9. Operational runbook
 
-Document:
-- Start/stop/restart.
-- View logs.
-- Run health checks.
-- Run tests.
-- Backup database.
-- Restore database.
-- Diagnose a disconnected backend.
-- Rotate agent credentials.
-- Recover after an unclean shutdown.
+Implemented as commands, with the real API surface:
+
+- **Start / stop / restart.** `pnpm start` (compiled) or `pnpm dev`. `SIGINT`/`SIGTERM` runs `gateway.close()`: sessions are terminated as `gateway_shutdown`, connections close, then the store.
+- **View logs.** Pino JSON on stdout. `LOG_LEVEL` controls verbosity.
+- **Health checks.** `curl -s localhost:8787/health` (liveness) and `curl -s localhost:8787/ready` (readiness; `503` means storage or the migration ledger is unreadable).
+- **Snapshot for a bug report.** `curl -s localhost:8787/api/v1/diagnostics` — version, runtime, uptime, migration version, counts; contains no secret or environment value.
+- **Check effective configuration.** `curl -s localhost:8787/api/v1/settings` — read-only, non-secret.
+- **Check backend state.** `curl -s localhost:8787/api/v1/monitoring/backends` for the status distribution; `GET /api/v1/backends/:id/runtime` for one backend's last error.
+- **Run tests.** `pnpm test`; `pnpm typecheck` and `pnpm build` before a commit.
+- **Backup.** SQLite-safe copy (`.backup` or `VACUUM INTO`), never a copy of a live WAL file.
+- **Restore.** Test on a copy first, then replace the file while the process is stopped. Migrations re-verify checksums on the next open.
+- **Diagnose a disconnected backend.** Read `runtime.lastErrorCode`/`lastErrorMessage`, then the `backend.*` activity rows filtered by `backendId`, then the lifecycle log lines (`connect`, `failure`, `retry scheduled`, `retry exhausted`).
+- **Rotate an agent credential.** `POST /api/v1/agents/:agentId/credentials/:credentialId/rotate` — the old token dies immediately and sessions bound to it are invalidated.
+- **Recover after an unclean shutdown.** Start normally: `recover()` rewrites any persisted live state to `disconnected`/`disabled` and reconnects nothing. Then inspect `/ready` and `/api/v1/monitoring/backends`.

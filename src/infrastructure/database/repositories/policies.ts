@@ -90,13 +90,14 @@ export class SqlitePolicyRepository implements PolicyRepository {
   /**
    * Paged listing.
    *
-   * `agentId` and `search` are pushed into SQL; the effect filter is applied
-   * afterwards because an effect lives inside `rules_json` (a policy matches if
-   * *any* rule carries that effect). Bounded by the operator-authored policy
-   * count, which is a control-plane-sized set, not request data.
+   * `agentId`, `search` and `backendId` are pushed into SQL. The effect filter
+   * is applied afterwards because an effect lives inside `rules_json`: SQLite's
+   * `json_each` can answer "does any rule carry this effect" in one statement
+   * and the backend filter already does — so paging and `total` stay honest for
+   * every filter, which they were not when the backend filter ran on a page.
    *
    * ponytail: in-memory effect filter + sort. Move to a `policy_rules` table when
-   * policy counts grow past what one process can cheaply scan (Phase 8+).
+   * policy counts grow past what one process can cheaply scan.
    */
   query(criteria: PolicyQuery): PolicyPage {
     const where: string[] = [];
@@ -112,6 +113,16 @@ export class SqlitePolicyRepository implements PolicyRepository {
       where.push('(p.name LIKE ? ESCAPE \'\\\' OR p.description LIKE ? ESCAPE \'\\\')');
       const pattern = `%${escapeLike(criteria.search)}%`;
       values.push(pattern, pattern);
+    }
+    if (criteria.backendId !== undefined) {
+      // A policy matches a backend when any rule targets that backend id, or
+      // everything (`*`). `json_valid` guards a hand-edited row.
+      where.push(
+        `EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(p.rules_json) THEN p.rules_json ELSE '[]' END) r
+                  WHERE json_extract(r.value, '$.resource') = 'backend'
+                    AND json_extract(r.value, '$.target') IN (?, '*'))`,
+      );
+      values.push(criteria.backendId);
     }
 
     const clause = where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`;

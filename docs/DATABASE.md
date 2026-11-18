@@ -85,6 +85,8 @@ Policies are shared objects; assignment does not copy them. Default deny is stru
 
 Precedence lives in `src/domain/policy.ts` and is not encoded in SQL: system restrictions → highest `priority` → deny over allow at equal priority → policy id → rule index. `priority` is copied into the comparator explicitly so an operator's ordering beats the deny preference, and ties are order-independent.
 
+`GET /api/v1/policies?backendId=` is answered in SQL, not after slicing a page: `EXISTS (SELECT 1 FROM json_each(rules_json) …)` matches a `backend` rule targeting that id or `*`. `json_valid` guards a hand-edited row. Doing it in the query is what keeps `pagination.total` honest.
+
 ### `sessions`
 `id`, `agent_id` (FK → `agents`, cascade), `created_at`, `last_activity_at`, `expires_at`, `revoked_at`, `metadata_json`, plus (Phase 7) `mcp_session_id`, `credential_id` (FK → `agent_credentials`, `ON DELETE SET NULL`), `status`, `terminated_at`, `termination_reason`.
 
@@ -111,7 +113,9 @@ Never contains tool arguments or results.
 ### `audit_events` (administrative/security)
 `id`, `actor_type` (`admin` | `agent` | `system`), `actor_id`, `action`, `target_type`, `target_id`, `result`, `request_id`, `metadata_json`, `created_at`.
 
-Append-only: the repository interface exposes no update or delete.
+Append-only: the repository interface exposes no update or delete. Administratively unreachable as well — no REST verb exists on `/api/v1/audit` except `GET`.
+
+`metadata_json` is read by `findById` and omitted by `query`. The list view (`AuditListItem`) has no metadata field at all, so a collection response cannot carry free-form context by accident; reading one record is the deliberate disclosure boundary.
 
 ### `admin_users`
 `id`, `username` (unique), `password_hash`, `role` (`owner` | `admin` | `viewer`), `enabled`, `created_at`, `updated_at`.
@@ -161,18 +165,34 @@ Declared in `src/domain/repositories.ts` in domain terms — no SQL, no driver t
 
 | Interface | Implemented operations |
 | --- | --- |
-| `BackendRepository` | create, findById, findByName, list, query, update, softDelete, countActive |
+| `BackendRepository` | create, findById, findByName, list, query, update, softDelete, countActive, counts |
 | `BackendRuntimeRepository` | upsert, findByBackendId |
-| `AgentRepository` | create, findById, findByName, list, query, update, touchAuthentication, softDelete, countActive |
+| `AgentRepository` | create, findById, findByName, list, query, update, touchAuthentication, softDelete, countActive, counts |
 | `CredentialRepository` | create, findById, findByHash, listByAgentId, revoke, touch, revokeAllForAgent |
 | `PolicyRepository` | create, findById, findByName, list, query, update, delete, assign, unassign, listPoliciesForAgent, unassignAll |
-| `SessionRepository` | create, findById, findByMcpSessionId, listByAgentId, query, touch, end, endWhere, expire, count, countByStatus |
-| `ActivityRepository` | append, list, count |
-| `AuditRepository` | append, list, count |
+| `SessionRepository` | create, findById, findByMcpSessionId, listByAgentId, query, touch, end, endWhere, expire, count, countByStatus, counts |
+| `ActivityRepository` | append, list, findById, query, count, countByType, countByOutcome |
+| `AuditRepository` | append, list, findById, query, count, countByResult, countByActorType |
 
 `query(criteria)` is the only listing method that filters and paginates. Every value is a bound parameter; the sort column and direction are interpolated only from a fixed whitelist (`SORT_COLUMNS`) because SQLite cannot parameterize identifiers. Ordering always tie-breaks on `id` so equal names or timestamps cannot produce unstable pages, and `total` is a separate `COUNT(*)` over the same `WHERE` before `LIMIT`.
 
-Search uses `instr(lower(column), lower(?)) > 0` rather than `LIKE`, so `%` and `_` in user input stay literal characters instead of acting as wildcards.
+Search uses `instr(lower(column), lower(?)) > 0` rather than `LIKE`, so `%` and `_` in user input stay literal characters instead of acting as wildcards. (Event log search uses `LIKE ... ESCAPE '\'` with the term escaped, which has the same property.)
+
+### 7.1 Read-only aggregates (Phase 8)
+
+The operations surface needed counts, not rows. Each is one statement, so `/overview` cannot become an N+1 as the registry grows:
+
+| Method | Statement shape |
+| --- | --- |
+| `backends.counts()` / `agents.counts()` | One `SELECT COUNT(*) + SUM(CASE …)` over `WHERE deleted_at IS NULL`, returning `{ total, enabled, disabled }`. |
+| `sessions.counts(now, idleCutoff)` | One scan returning per-status totals, where `active`/`expired` are derived from the same two lifetime rules `query()` filters on — so the breakdown can never contradict the list beside it. |
+| `activity.countByType()` / `countByOutcome()` | `GROUP BY` one column. |
+| `audit.countByResult()` / `countByActorType()` | `GROUP BY` one column. |
+
+`EventQuery`/`AuditQuery` add filtered listing with `after`/`before` (inclusive, compared as stored ISO strings), `search`, and `order`, with the same bound-parameter and whitelisted-sort-column rules as the other queries. Two details worth knowing:
+
+- **Audit list and detail are different reads.** `query()` returns `AuditListItem`, which has no `metadata` column; `findById()` returns the full `AuditEvent`. The detail endpoint is the disclosure boundary, and the type makes that structural rather than a convention.
+- **No migration was needed for Phase 8.** `idx_activity_created`, `idx_audit_created`, and the composite `(agent_id, created_at)` / `(action, created_at)` / `(target_id, created_at)` indexes already cover the new range and filter shapes. A `0006` that only restated them would be a second index on the same column.
 
 `update(id, input, now, expectedVersion?)` performs a compare-and-set: with `expectedVersion` set, the statement is `UPDATE ... WHERE id = ? AND deleted_at IS NULL AND version = ?`. Zero changed rows on an existing row can only mean a stale version, which surfaces as `RESOURCE_CONFLICT`. The check and the write are the same statement, so no writer can slip between them.
 

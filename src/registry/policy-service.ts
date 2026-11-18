@@ -45,6 +45,12 @@ export class PolicyService {
 
   list(query: PolicyQuery): PolicyPage {
     if (query.agentId !== undefined) this.requireAgent(query.agentId);
+    // Validate the referenced backend so a typo is `404`, not a silent empty page.
+    if (query.backendId !== undefined && this.store.backends.findById(query.backendId) === undefined) {
+      throw new AppError('RESOURCE_NOT_FOUND', 'The requested backend does not exist.', {
+        details: { backendId: query.backendId },
+      });
+    }
     return this.store.policies.query(query);
   }
 

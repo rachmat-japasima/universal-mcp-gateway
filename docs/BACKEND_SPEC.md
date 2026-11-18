@@ -2,7 +2,9 @@
 
 ## 1. Scope
 
-Defines the management API, registry domain, MCP adapters, routing, and lifecycle. Sections 2–4, 5, 6, and 9 describe **what Phase 4 implements**. Section 7 (tool routing) is the Phase 5 target and says so explicitly.
+Defines the management API, registry domain, MCP adapters, routing, and lifecycle. Everything described here is implemented through Phase 8; `docs/API_REFERENCE.md` is the endpoint-by-endpoint inventory and `docs/ROADMAP.md` lists what is still unbuilt.
+
+Every route in this document is also described, machine-readably, by `GET /api/v1/openapi.json`. `tests/openapi.test.ts` holds the two in sync.
 
 ## 2. API conventions (implemented)
 
@@ -23,7 +25,7 @@ Defines the management API, registry domain, MCP adapters, routing, and lifecycl
 
 - Codes come from the fixed `ErrorCode` set in `src/shared/errors.ts`. `UNAUTHENTICATED`, `FORBIDDEN`, `BACKEND_NOT_FOUND`, `TOOL_NOT_FOUND` from earlier drafts are **not** used; the implemented set is `VALIDATION_ERROR`, `RESOURCE_NOT_FOUND`, `RESOURCE_CONFLICT`, `AUTHENTICATION_ERROR`, `AUTHORIZATION_ERROR`, `MCP_PROTOCOL_ERROR`, `BACKEND_CONNECTION_ERROR`, `BACKEND_TIMEOUT`, `BACKEND_UNAVAILABLE`, `DATABASE_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`.
 - `X-Request-Id` is echoed on every response. A well-formed inbound value is kept for log correlation; anything else is replaced.
-- Every input is validated with Zod: body, query, and route parameters. Unknown body/query keys are rejected (`.strict()`).
+- Every input is validated with Zod: body, query, and route parameters. Unknown **body** keys are rejected (`.strict()`). Unknown **query** *names* are ignored, because browsers and proxies add them freely (`utm_*`, cache busters); an unknown query *value* — a status outside its enum, a malformed UUID or date, `limit` above the cap — is still a `400`.
 - Internal exception text is never serialized. Non-`AppError` failures become a generic `INTERNAL_ERROR`.
 - Validation messages name the failing path and the rule, never a received value. A path segment is echoed only if it is a field the gateway defines; otherwise it is `(redacted)`. Zod's `unrecognized_keys` message is rewritten without the caller-supplied key names, because a pasted secret can arrive as a *name* rather than a value.
 - Env keys must be POSIX names and header keys must be RFC 7230 tokens. See `docs/SECURITY.md` for the one accepted limit: a header *name* is config text and is displayed, not redacted.
@@ -56,7 +58,7 @@ Defines the management API, registry domain, MCP adapters, routing, and lifecycl
 
 **Documented deviation.** Earlier drafts put validation at `POST /api/v1/backends/:backendId/validate`. Validating a proposed configuration has no persisted entity to address, so it lives at `/backends/validate` (declared before `/:backendId` so the literal is never parsed as an id). ADR-027. The same ordering rule protects `/backends/runtime`.
 
-**Not implemented (later phases):** `:backendId/health`, `:backendId/tools`, and all `tools`/`agents`/`policies`/`sessions`/`settings` routes.
+**Not implemented (later phases):** `:backendId/health`. A health probe of a live backend still does not exist; `unhealthy` is in the state machine but nothing sets it.
 
 ### 3.1 List query parameters
 
@@ -287,7 +289,7 @@ drift.
 | `GET` | `/api/v1/tools/discovery` | Last discovery report per backend |
 | `GET` | `/api/v1/tools/conflicts` | Public names withheld, with every claimant |
 | `POST` | `/api/v1/tools/refresh` | Rediscover every connected backend; per-backend result |
-| `GET` | `/api/v1/backends/:id/tools` | One backend's tools plus its report |
+| `GET` | `/api/v1/backends/:id/tools` | One backend's tools plus its report (`404` for an unknown backend) |
 | `POST` | `/api/v1/backends/:id/tools/refresh` | Rediscover one backend; `503` on failure |
 
 There is deliberately **no** HTTP tool-invocation endpoint. Invocation stays on
@@ -324,7 +326,7 @@ operation.
 ### Policies
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `GET` | `/api/v1/policies` | Paginated; filters `effect`, `agentId`, `backendId`, `search`. |
+| `GET` | `/api/v1/policies` | Paginated; filters `effect`, `agentId`, `backendId`, `search`. Every filter runs in the query, so `total` describes the filtered set. |
 | `POST` | `/api/v1/policies` | Create. |
 | `GET` | `/api/v1/policies/:policyId` | Detail. |
 | `PATCH` | `/api/v1/policies/:policyId` | Update name/description/priority/rules. |
@@ -447,6 +449,97 @@ reason is in the `session.access.denied` audit row, not on the wire. Session ids
 credentials: a session-bearing request with no valid bearer is a `401` before any session
 lookup happens.
 
+## 7.4 Activity and audit endpoints (Phase 8)
+
+Two read-only surfaces over two deliberately separate logs. Neither has a write
+verb: `ActivityRepository`/`AuditRepository` expose no update or delete method, so
+append-only is a property of the interface rather than a permission check a future
+route could bypass.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/activity` | Operational history. |
+| `GET` | `/api/v1/activity/:eventId` | One event. `404` when absent. |
+| `GET` | `/api/v1/audit` | Administrative history. `metadata` omitted. |
+| `GET` | `/api/v1/audit/:eventId` | One event, `metadata` included. |
+
+### Activity query parameters
+
+| Name | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `page` / `limit` | integers | `1` / `20` | `limit ≤ 100` |
+| `type` | closed enum | — | `mcp.initialize`, `tools.list`, `tools.call`, `backend.connected`, `backend.disconnected`, `backend.error`, `request.failed` |
+| `outcome` | `success` \| `failure` \| `denied` | — | |
+| `agentId`, `backendId` | uuid | — | Exact match |
+| `toolName` | string 1–200 | — | Exact public tool name |
+| `search` | string 1–200 | — | Substring over `tool_name` and `request_id` |
+| `after`, `before` | ISO datetime | — | Inclusive bounds on `created_at` |
+| `order` | `asc` \| `desc` | `desc` | Tie-broken by `id` |
+
+### Audit query parameters
+
+`action` (from `AUDIT_ACTIONS`), `actorType` (`admin`/`agent`/`system`),
+`actorId`, `targetType` (`backend`/`agent`/`credential`/`policy`/`session`/
+`settings`), `targetId`, `result` (`success`/`failure`/`denied`), `search`
+(substring over `target_id` and `request_id`), `after`, `before`, `order`, plus
+`page`/`limit`.
+
+**Metadata is the disclosure boundary.** `GET /audit` renders the bounded columns
+only; `GET /audit/:eventId` renders `metadata`. Reading one record is an explicit
+operator act, and a list endpoint that forwarded free-form context would become
+the leak path the day a caller put something in it.
+
+## 7.5 Operational endpoints (Phase 8)
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/overview` | Dashboard landing payload: one snapshot of every aggregate. |
+| `GET` | `/api/v1/monitoring` | Summary: runtime, storage, backends, sessions, tools, activity. |
+| `GET` | `/api/v1/monitoring/health` | Storage and backend health summary. |
+| `GET` | `/api/v1/monitoring/backends` | Counts, every runtime state, discovery reports, conflicts. |
+| `GET` | `/api/v1/monitoring/sessions` | Effective session distribution, or `available: false`. |
+| `GET` | `/api/v1/monitoring/runtime` | Version, Node, platform, uptime. |
+| `GET` | `/api/v1/diagnostics` | Safe incident facts. Read-only. |
+| `GET` | `/api/v1/settings` | Effective, non-secret configuration. Read-only. |
+| `GET` | `/api/v1/openapi.json` | The OpenAPI 3.1 document. |
+
+### Three rules the payloads keep
+
+1. **Every number is real.** All counts come from a repository, the lifecycle
+   manager, or the in-memory catalog. An empty registry reports zeros; nothing is
+   sampled, estimated, or seeded with demo data.
+2. **Unavailable is `null`, never `0`.** When a storage read fails, the
+   storage-backed fields become `null` and `status` becomes `degraded`. The
+   in-memory catalog is still reported, because it survives the outage.
+3. **One snapshot.** `/overview`, `/monitoring*`, and `/diagnostics` all read
+   through `opsSnapshot()` (`src/api/ops.ts`), so two endpoints cannot report
+   different backend counts for the same instant.
+
+`/ready` is outside `/api/v1` (infrastructure probes should not follow an API
+version) and asks a different question from `/health`: liveness is "is this
+process alive", readiness is "can it serve". It checks the database and the
+migration ledger, and deliberately **not** optional backends — a gateway with
+every backend disconnected is still ready to accept work. It is mounted only when
+a store exists, because without one the gateway has no evidence to report.
+
+`/settings` and `/diagnostics` are the two most tempting places to dump
+`process.env`. Neither does: the key list is explicit, availability is reported as
+booleans rather than values, and the credential HMAC secret is not part of
+`Config` at all — which is what makes "no secret is reachable here" structural
+rather than a promise in a comment.
+
+## 7.6 Phase 8 contract changes
+
+Two behaviour changes, both documented rather than silent:
+
+| Route | Before | After | Why |
+| --- | --- | --- | --- |
+| `GET /api/v1/backends/:id/tools` | `200` + `[]` for an unknown backend | `404 RESOURCE_NOT_FOUND` | An unknown backend is not a backend with no tools. `GET /tools?backendId=` still answers an empty page, because that is a filter over a collection. |
+| `GET /api/v1/policies?backendId=&limit=&page=` | `total` described the *unfiltered* page | `total` describes the filtered set | The filter ran after slicing, so a page could be short and its total wrong. It now runs in SQL (`EXISTS ... json_each`), like every other filter. |
+
+A `backendId` or `agentId` policy filter that names nothing is a `404`, not an
+empty page: a typo must not look like "no policies".
+
 ## 8. Error codes
 
 Implemented: see section 2, plus the Phase 5 additions:
@@ -480,4 +573,4 @@ Phases 5–6 add:
 
 **Not implemented, and the API must not be described as production-secure:** management-API authentication (there is still no operator identity), per-caller rate limiting, and CSRF tokens. Any caller that can reach loopback — any local process or user — can call this API, including minting an agent credential. See `docs/SECURITY.md`.
 
-Deferred: dashboard authentication and operator sessions (Phase 8), owner confirmation flows for destructive or exposure-changing operations.
+Deferred: dashboard authentication and operator sessions (Phase 9–10), owner confirmation flows for destructive or exposure-changing operations.

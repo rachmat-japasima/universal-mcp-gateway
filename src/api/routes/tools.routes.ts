@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 
 import type { CatalogTool, DiscoveryReport } from '../../domain/tool.js';
+import type { Database } from '../../infrastructure/database/index.js';
 import type { Logger } from '../../monitoring/logger.js';
 import type { ToolCatalog } from '../../routing/catalog.js';
 import type { ToolDiscovery } from '../../routing/discovery.js';
@@ -89,6 +90,17 @@ export interface ToolsRouteDependencies {
   catalog: ToolCatalog;
   discovery: ToolDiscovery;
   logger: Logger;
+  /** Used to answer `404` for an unknown backend instead of an empty page. */
+  store: Database;
+}
+
+/** A catalog lookup for a backend that does not exist is a `404`, not an empty list. */
+function requireBackend(store: Database, backendId: string): void {
+  if (store.backends.findById(backendId) === undefined) {
+    throw new AppError('RESOURCE_NOT_FOUND', 'The requested backend does not exist.', {
+      details: { backendId },
+    });
+  }
 }
 
 export function toolsRoutes(deps: ToolsRouteDependencies): Hono {
@@ -169,7 +181,7 @@ export function toolsRoutes(deps: ToolsRouteDependencies): Hono {
 }
 
 export function backendToolsRoutes(deps: ToolsRouteDependencies): Hono {
-  const { catalog, discovery } = deps;
+  const { catalog, discovery, store } = deps;
   const routes = new Hono();
 
   /**
@@ -180,6 +192,7 @@ export function backendToolsRoutes(deps: ToolsRouteDependencies): Hono {
    */
   routes.get('/', (c) => {
     const { backendId } = parseParam(backendIdParamSchema, c.req.param(), getRequestId(c));
+    requireBackend(deps.store, backendId);
     const query = parseQuery(c, backendToolsQuerySchema);
 
     const tools = catalog.listByBackend(backendId).filter((tool) => {

@@ -34,22 +34,14 @@ export function policiesRoutes(service: PolicyService): Hono {
     const query = parseQuery(c, listPoliciesQuerySchema);
 
     /**
-     * `backendId` is a filter over rule targets, not a stored column. It is
-     * applied here rather than in SQL because a rule target lives in
-     * `rules_json`; the policy set is operator-sized, so this stays cheap.
+     * Every filter, including `backendId`, is applied by the repository so
+     * `pagination.total` describes the filtered set. A filter applied after
+     * slicing would report a page of the wrong size with the wrong total.
      */
     const page = service.list(query);
-    const items =
-      query.backendId === undefined
-        ? page.items
-        : page.items.filter((policy) =>
-            policy.rules.some(
-              (rule) => rule.resource === 'backend' && (rule.target === query.backendId || rule.target === '*'),
-            ),
-          );
 
-    return ok(c, items.map(toPublicPolicy), {
-      pagination: pageMetadata(query.page, query.limit, query.backendId === undefined ? page.total : items.length),
+    return ok(c, page.items.map(toPublicPolicy), {
+      pagination: pageMetadata(query.page, query.limit, page.total),
     });
   });
 

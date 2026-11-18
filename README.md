@@ -26,8 +26,8 @@ Next.js, React, TypeScript, and **Astryx directly** as the UI component library/
 
 ## Current status
 
-Phases 1–7 are complete.
-- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 437 tests).
+Phases 1–8 are complete.
+- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 486 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
 - `tools/list` serves the live catalog, filtered per agent; no backend is
@@ -61,6 +61,12 @@ Phases 1–7 are complete.
   terminate, cleanup, and inspect endpoints; and `session.*` audit events. 65
   new tests → 437 total. Session serving is single-process by construction
   (`docs/ARCHITECTURE.md` §10).
+- Phase 8: management API completion — overview, monitoring (+ four
+  sub-resources), `/ready`, diagnostics, read-only settings, filterable and
+  paginated activity and audit, and an OpenAPI 3.1 document checked against the
+  live route table. One snapshot reader feeds every ops endpoint so counts
+  cannot disagree; an unavailable store reports `null`, never `0`. 49 new tests
+  → 486 total.
 - `/health` reports `backendCount: 0`; production backend registry is empty.
 
 **Nothing connects by itself.** Registration, validation, and enable/disable are
@@ -209,6 +215,17 @@ curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/<sessionId>/terminate
 # Expire idle/lapsed sessions now (row-retaining, safe to repeat)
 curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/cleanup
 
+# Operations (Phase 8). Read-only.
+curl -s http://127.0.0.1:8787/api/v1/overview
+curl -s http://127.0.0.1:8787/api/v1/monitoring/backends
+curl -s http://127.0.0.1:8787/api/v1/settings
+curl -s http://127.0.0.1:8787/api/v1/diagnostics
+# History: filters are closed enums; unknown values are 400, not empty pages.
+curl -s 'http://127.0.0.1:8787/api/v1/activity?type=tools.call&order=desc&limit=50'
+curl -s 'http://127.0.0.1:8787/api/v1/audit?result=failure&actorType=agent&limit=50'
+# Readiness (distinct from /health): 503 when storage or the ledger is unreadable.
+curl -i http://127.0.0.1:8787/ready
+
 # Then call /mcp as that agent
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'authorization: Bearer umg_live_…' \
@@ -256,10 +273,38 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 | `GET` | `/api/v1/sessions/:sessionId` |
 | `POST` | `/api/v1/sessions/:sessionId/terminate` |
 | `POST` | `/api/v1/sessions/cleanup` |
+| `GET` | `/api/v1/activity` |
+| `GET` | `/api/v1/activity/:eventId` |
+| `GET` | `/api/v1/audit` |
+| `GET` | `/api/v1/audit/:eventId` |
+| `GET` | `/api/v1/overview` |
+| `GET` | `/api/v1/monitoring` |
+| `GET` | `/api/v1/monitoring/health` |
+| `GET` | `/api/v1/monitoring/backends` |
+| `GET` | `/api/v1/monitoring/sessions` |
+| `GET` | `/api/v1/monitoring/runtime` |
+| `GET` | `/api/v1/diagnostics` |
+| `GET` | `/api/v1/settings` |
+| `GET` | `/api/v1/openapi.json` |
+| `GET` | `/api/v1/backends/:backendId/tools` |
+| `POST` | `/api/v1/backends/:backendId/tools/refresh` |
+| `GET` | `/api/v1/tools` |
+| `GET` | `/api/v1/tools/discovery` |
+| `GET` | `/api/v1/tools/conflicts` |
+| `POST` | `/api/v1/tools/refresh` |
+| `GET` | `/api/v1/tools/:publicName` |
+
+Outside the version prefix: `GET /health` (liveness) and `GET /ready`
+(readiness), plus `ALL /mcp` for the authenticated MCP surface.
+
+`GET /api/v1/openapi.json` is the authoritative contract (OpenAPI 3.1). It is
+generated from a literal table and checked against the live route table by
+`tests/openapi.test.ts`, so it cannot describe a route that does not exist.
 
 Every request body must be `application/json`. Errors use one envelope:
-`{ "error": { "code", "message", "requestId" } }`. Contracts and validation
-rules are in `docs/BACKEND_SPEC.md`.
+`{ "error": { "code", "message", "requestId" } }`. The endpoint-by-endpoint
+contract — pagination, filters, envelopes, operational payloads, and the two
+Phase 8 behaviour changes — is `docs/API_REFERENCE.md`.
 
 ## Documentation
 
@@ -267,6 +312,7 @@ rules are in `docs/BACKEND_SPEC.md`.
 - `ARCHITECTURE.md` — system architecture.
 - `DASHBOARD.md` — complete dashboard and Astryx requirements.
 - `BACKEND_SPEC.md` — management API and backend domain.
+- `API_REFERENCE.md` — endpoint inventory, envelopes, filters, OpenAPI.
 - `SECURITY.md` — security requirements.
 - `DATABASE.md` — database model and persistence.
 - `MONITORING.md` — logs, metrics, audit, operations.
@@ -276,10 +322,9 @@ rules are in `docs/BACKEND_SPEC.md`.
 
 ## Next task
 
-Phase 8 — management API completion: activity and settings surfaces, remaining
-agent/policy gaps, secure backup/restore, and per-backend `limited` queueing
-(`docs/ARCHITECTURE.md` §11.2). Dashboard and operator authentication stay out
-of it until Phase 9.
-
-Not started, and not to be added without approval: real backends, agent client
-config changes, dashboard work, OAuth, non-loopback exposure.
+Phase 9 — Astryx dashboard foundation, against the contract in
+`docs/API_REFERENCE.md` and the live OpenAPI document. Not started, and not to
+be added without approval: real backends, agent client config changes, OAuth,
+non-loopback exposure. Still deferred from Phase 7–8: per-backend `limited`
+queueing (`docs/ARCHITECTURE.md` §11.2), backup/restore APIs, and audit
+retention.

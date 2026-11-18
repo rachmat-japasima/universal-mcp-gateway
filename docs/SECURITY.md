@@ -43,13 +43,27 @@ What is actually enforced, per request:
 | Outbound destination | SSRF policy below, applied before every HTTP request |
 | Process execution | no shell; single executable token plus an argument array |
 
-These controls prevent *remote and cross-origin* misuse. They do **not** provide identity, and they do not stop another local process or another local user. Treat the API as a local operator tool, equivalent in trust to a CLI on the same machine. This is a documented limitation, not an oversight; dashboard authentication is Phase 8.
+These controls prevent *remote and cross-origin* misuse. They do **not** provide identity, and they do not stop another local process or another local user. Treat the API as a local operator tool, equivalent in trust to a CLI on the same machine. This is a documented limitation, not an oversight; dashboard authentication is Phase 9–10.
 
 Phase 6 authenticates the **MCP** surface only. The management API still has no operator identity: it can now mint, rotate, and revoke the credentials that MCP callers use, so a local caller who can reach it can issue themselves an agent credential. That is why it stays loopback-only and why it is not a lower bar to clear than it was in Phase 4.
 
 `GET /api/v1/system` reports `capabilities.authentication: true` and a live `authentication` field (`required` or `unavailable`) so a client can tell whether the MCP surface can currently verify anything.
 
-**What changed in Phase 4.** Before this phase the API could only mutate rows. It can now cause process spawns and outbound sockets, which widens the blast radius of a local caller from "edit configuration" to "run a command as the gateway user". The mitigations are structural (no shell, argument arrays, destination policy, no auto-connect) but they are **not** a substitute for authentication. Do not expose this API — including via a tunnel or reverse proxy — until the dashboard has an operator identity (Phase 8).
+**What changed in Phase 4.** Before this phase the API could only mutate rows. It can now cause process spawns and outbound sockets, which widens the blast radius of a local caller from "edit configuration" to "run a command as the gateway user". The mitigations are structural (no shell, argument arrays, destination policy, no auto-connect) but they are **not** a substitute for authentication. Do not expose this API — including via a tunnel or reverse proxy — until the dashboard has an operator identity (Phase 9–10).
+
+**What changed in Phase 8.** The API gained read surfaces over everything it already held: `/overview`, `/monitoring*`, `/diagnostics`, `/settings`, `/activity`, `/audit`, and the OpenAPI document. Read-only is not the same as harmless — a log endpoint is a disclosure surface — so each was designed around what it must *not* return:
+
+| Endpoint | Deliberately never returns |
+| --- | --- |
+| `/settings` | Any secret, token, or credential value. The key list is explicit; the HMAC secret is not on `Config` at all, so there is no field that could carry it. Availability is reported as booleans, not as reasons that would require inspecting the secret. |
+| `/diagnostics` | `process.env`, environment values, database paths, secret presence. Node version, platform, uptime, migration version, and counts only. |
+| `/activity` | Tool arguments, tool results, or remote schema bodies — the table never stores them. |
+| `/audit` (list) | `metadata`. Only `GET /audit/:eventId` renders it, so reading free-form context is one explicit act rather than a collection response. |
+| `/audit` and `/activity` (any verb) | Any write. The repository interfaces declare no update or delete, so append-only cannot be bypassed by a route. |
+
+Neither `settings` nor `diagnostics` mutates state, and `settings` answers `404` to every write verb because no mutation path exists.
+
+One tightening landed with these: `GET /api/v1/backends/:id/tools` now answers `404` for an unknown backend instead of `200` with an empty list. That is an information-quality fix, not a security one — an unknown backend and an empty backend were indistinguishable to an operator.
 
 ## 3.2 Outbound destination policy (SSRF)
 
@@ -72,7 +86,7 @@ TLS verification is never disabled: no `rejectUnauthorized: false`, no `NODE_TLS
 ## 4. Authentication
 
 Separate dashboard and MCP authentication:
-- Dashboard: secure local owner login/session (Phase 8).
+- Dashboard: secure local owner login/session (Phase 9–10).
 - MCP: unique credential per agent/client (Phase 6, implemented).
 - Backend: separate secret references for backend credentials.
 
@@ -379,13 +393,26 @@ Phase 7 additions (covered by `tests/mcp-sessions.test.ts`, `tests/sessions.test
 - Graceful shutdown: every active session becomes `terminated` / `gateway_shutdown`, and transports are released before the store closes.
 - `/api/v1/sessions`, its detail, terminate, and cleanup endpoints read for credential hashes, tokens, and transport state (never present).
 
+Phase 8 additions (covered by `tests/ops-api.test.ts`, `tests/openapi.test.ts`, `tests/policies-api.test.ts`):
+
+- `/settings` and `/diagnostics` searched for the hashing secret, a token, `process.env`, a database path, and the words `secret`/`token`/`password`/`authorization` (never present).
+- A credential issued to a real agent, then `/overview` searched for its raw token (never present).
+- `/audit` list response checked for `metadata`; the detail response checked for it (the list must not carry it).
+- Every write verb against `/audit`, `/audit/:id`, `/activity`, `/activity/:id`, and `/settings`: `404`, and the audit row count is unchanged afterwards.
+- `/activity` searched for `arguments` and `result` (the table never stores them).
+- Unknown enum values, malformed dates, malformed UUIDs, and `limit` above 100 on both log endpoints: `400 VALIDATION_ERROR`, not a silently empty page.
+- Error bodies from those refusals: no `at `, `sqlite`, or `SELECT` text.
+- `/ready` closed-database case: `503` with `database: unavailable`, and no secret in the body.
+- `/policies?backendId=` naming nothing: `404` rather than an empty page, so a policy filter cannot be used to probe which backend ids exist more cheaply than by id lookup (the same `404`).
+- Policy `backendId` filtering moved into SQL, so a filtered page and its `total` cannot be read as proof of how many policies the gateway holds.
+
 ## 11. Release gate
 
 No non-loopback exposure until:
-- Authentication and authorization are implemented. **MCP is done (Phase 6); the management API still has no operator identity (Phase 8).** The API is loopback-only; see 3.1.
+- Authentication and authorization are implemented. **MCP is done (Phase 6); the management API still has no operator identity (Phase 9–10).** The API is loopback-only; see 3.1.
 - TLS/reverse-proxy assumptions are documented.
 - Host/Origin and CSRF defenses are tested.
 - Secrets are protected — `CREDENTIAL_HASH_SECRET` is required in production and never enters `Config`, but it is still a symmetric secret in the environment with the limits in 6.3.
 - Threat review and operational rollback plan are complete.
 
-**Explicitly not satisfied by Phase 6 or Phase 7:** dashboard login, dashboard sessions/CSRF, TLS, per-operator identity on the management API (Phase 8), and any form of non-loopback exposure. Do not put this behind a tunnel yet. The session management API is an operator surface on the *unauthenticated* loopback boundary — it can terminate a client's session, so it inherits §3.1 in full: loopback only, no proxy, no tunnel.
+**Explicitly not satisfied by Phases 6–8:** dashboard login, dashboard sessions/CSRF, TLS, per-operator identity on the management API (Phase 9–10), and any form of non-loopback exposure. Do not put this behind a tunnel yet. The session management API is an operator surface on the *unauthenticated* loopback boundary — it can terminate a client's session, so it inherits §3.1 in full: loopback only, no proxy, no tunnel. Phase 8's read surfaces inherit it too: `/audit` renders administrative history, and administrative history is exactly what an attacker wants.

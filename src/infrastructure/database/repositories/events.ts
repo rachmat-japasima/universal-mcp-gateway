@@ -4,7 +4,11 @@ import type { AuditEvent } from '../../../domain/audit-event.js';
 import { auditEventSchema } from '../../../domain/audit-event.js';
 import type {
   ActivityRepository,
+  AuditListItem,
+  AuditQuery,
   AuditRepository,
+  EventPage,
+  EventQuery,
   SessionPage,
   SessionQuery,
   SessionRepository,
@@ -93,10 +97,103 @@ export class SqliteActivityRepository implements ActivityRepository {
     return rows.map(toActivity);
   }
 
+  findById(id: string): ActivityEvent | undefined {
+    const row = this.database.prepare('SELECT * FROM activity_events WHERE id = ?').get(id) as
+      | ActivityRow
+      | undefined;
+
+    return row === undefined ? undefined : toActivity(row);
+  }
+
+  query(criteria: EventQuery): EventPage<ActivityEvent> {
+    const { where, params } = activityFilter(criteria);
+    const direction = criteria.order === 'asc' ? 'ASC' : 'DESC';
+
+    const total = (
+      this.database.prepare(`SELECT COUNT(*) AS count FROM activity_events ${where}`).get(...params) as {
+        count: number;
+      }
+    ).count;
+
+    const rows = this.database
+      .prepare(
+        `SELECT * FROM activity_events ${where} ORDER BY created_at ${direction}, id ${direction} LIMIT ? OFFSET ?`,
+      )
+      .all(...params, criteria.limit, criteria.offset) as ActivityRow[];
+
+    return { items: rows.map(toActivity), total };
+  }
+
   count(): number {
     const row = this.database.prepare('SELECT COUNT(*) AS count FROM activity_events').get() as { count: number };
     return row.count;
   }
+
+  countByType(): Record<string, number> {
+    return groupedCounts(this.database, 'activity_events', 'type');
+  }
+
+  countByOutcome(): Record<string, number> {
+    return groupedCounts(this.database, 'activity_events', 'outcome');
+  }
+}
+
+/** Shared filter builder: every value is bound, no identifier comes from the caller. */
+function activityFilter(criteria: EventQuery): { where: string; params: unknown[] } {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+
+  if (criteria.type !== undefined) {
+    clauses.push('type = ?');
+    params.push(criteria.type);
+  }
+  if (criteria.agentId !== undefined) {
+    clauses.push('agent_id = ?');
+    params.push(criteria.agentId);
+  }
+  if (criteria.backendId !== undefined) {
+    clauses.push('backend_id = ?');
+    params.push(criteria.backendId);
+  }
+  if (criteria.toolName !== undefined) {
+    clauses.push('tool_name = ?');
+    params.push(criteria.toolName);
+  }
+  if (criteria.outcome !== undefined) {
+    clauses.push('outcome = ?');
+    params.push(criteria.outcome);
+  }
+  if (criteria.after !== undefined) {
+    clauses.push('created_at >= ?');
+    params.push(criteria.after);
+  }
+  if (criteria.before !== undefined) {
+    clauses.push('created_at <= ?');
+    params.push(criteria.before);
+  }
+  if (criteria.search !== undefined) {
+    const pattern = `%${escapeLike(criteria.search)}%`;
+    clauses.push("(tool_name LIKE ? ESCAPE '\\' OR request_id LIKE ? ESCAPE '\\')");
+    params.push(pattern, pattern);
+  }
+
+  return { where: clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`, params };
+}
+
+function groupedCounts(database: SqliteDatabase, table: 'activity_events' | 'audit_events', column: 'type' | 'outcome' | 'result' | 'actor_type'): Record<string, number> {
+  const rows = database.prepare(`SELECT ${column} AS key, COUNT(*) AS count FROM ${table} GROUP BY ${column}`).all() as Array<{
+    key: string;
+    count: number;
+  }>;
+
+  const counts: Record<string, number> = {};
+  for (const row of rows) counts[row.key] = row.count;
+  return counts;
+}
+
+/** `%`, `_`, and the escape character are literal in a search term, not wildcards. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
 }
 
 interface AuditRow {
@@ -131,6 +228,21 @@ function toAudit(row: AuditRow): AuditEvent {
       }),
     { auditId: row.id },
   );
+}
+
+/** The rendered list view: metadata stays out of collection responses. */
+function toAuditListItem(row: AuditRow): AuditListItem {
+  return {
+    id: row.id,
+    actorType: row.actor_type as AuditListItem['actorType'],
+    ...(row.actor_id === null ? {} : { actorId: row.actor_id }),
+    action: row.action as AuditListItem['action'],
+    ...(row.target_type === null ? {} : { targetType: row.target_type as AuditListItem['targetType'] }),
+    ...(row.target_id === null ? {} : { targetId: row.target_id }),
+    result: row.result as AuditListItem['result'],
+    ...(row.request_id === null ? {} : { requestId: row.request_id }),
+    createdAt: row.created_at,
+  };
 }
 
 export class SqliteAuditRepository implements AuditRepository {
@@ -173,9 +285,78 @@ export class SqliteAuditRepository implements AuditRepository {
     return rows.map(toAudit);
   }
 
+  findById(id: string): AuditEvent | undefined {
+    const row = this.database.prepare('SELECT * FROM audit_events WHERE id = ?').get(id) as AuditRow | undefined;
+    return row === undefined ? undefined : toAudit(row);
+  }
+
+  query(criteria: AuditQuery): EventPage<AuditListItem> {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+
+    if (criteria.action !== undefined) {
+      clauses.push('action = ?');
+      params.push(criteria.action);
+    }
+    if (criteria.actorType !== undefined) {
+      clauses.push('actor_type = ?');
+      params.push(criteria.actorType);
+    }
+    if (criteria.actorId !== undefined) {
+      clauses.push('actor_id = ?');
+      params.push(criteria.actorId);
+    }
+    if (criteria.targetType !== undefined) {
+      clauses.push('target_type = ?');
+      params.push(criteria.targetType);
+    }
+    if (criteria.targetId !== undefined) {
+      clauses.push('target_id = ?');
+      params.push(criteria.targetId);
+    }
+    if (criteria.result !== undefined) {
+      clauses.push('result = ?');
+      params.push(criteria.result);
+    }
+    if (criteria.after !== undefined) {
+      clauses.push('created_at >= ?');
+      params.push(criteria.after);
+    }
+    if (criteria.before !== undefined) {
+      clauses.push('created_at <= ?');
+      params.push(criteria.before);
+    }
+    if (criteria.search !== undefined) {
+      const pattern = `%${escapeLike(criteria.search)}%`;
+      clauses.push("(target_id LIKE ? ESCAPE '\\' OR request_id LIKE ? ESCAPE '\\')");
+      params.push(pattern, pattern);
+    }
+
+    const where = clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`;
+    const direction = criteria.order === 'asc' ? 'ASC' : 'DESC';
+
+    const total = (
+      this.database.prepare(`SELECT COUNT(*) AS count FROM audit_events ${where}`).get(...params) as { count: number }
+    ).count;
+
+    const rows = this.database
+      .prepare(`SELECT * FROM audit_events ${where} ORDER BY created_at ${direction}, id ${direction} LIMIT ? OFFSET ?`)
+      .all(...params, criteria.limit, criteria.offset) as AuditRow[];
+
+    return { items: rows.map(toAuditListItem), total };
+  }
+
   count(): number {
     const row = this.database.prepare('SELECT COUNT(*) AS count FROM audit_events').get() as { count: number };
     return row.count;
+  }
+
+  countByResult(): Record<string, number> {
+    return groupedCounts(this.database, 'audit_events', 'result');
+  }
+
+  countByActorType(): Record<string, number> {
+    return groupedCounts(this.database, 'audit_events', 'actor_type');
   }
 }
 
@@ -454,6 +635,32 @@ export class SqliteSessionRepository implements SessionRepository {
       count: number;
     };
     return row.count;
+  }
+
+  counts(now: string, idleCutoff: string): Record<SessionStatus, number> {
+    // One scan, not four. Both derived lifetimes are evaluated here so the
+    // breakdown can never contradict `query()`'s effective-status filter.
+    const row = this.database
+      .prepare(
+        `SELECT
+           COUNT(*) AS total,
+           SUM(CASE WHEN status = 'terminated' THEN 1 ELSE 0 END) AS terminated,
+           SUM(CASE WHEN status = 'invalidated' THEN 1 ELSE 0 END) AS invalidated,
+           SUM(CASE WHEN status = 'expired'
+                     OR (status = 'active' AND expires_at IS NOT NULL AND expires_at <= ?)
+                     OR (status = 'active' AND last_activity_at <= ?) THEN 1 ELSE 0 END) AS expired,
+           SUM(CASE WHEN status = 'active' AND (expires_at IS NULL OR expires_at > ?)
+                     AND last_activity_at > ? THEN 1 ELSE 0 END) AS active
+         FROM sessions`,
+      )
+      .get(now, idleCutoff, now, idleCutoff) as Record<string, number | null>;
+
+    return {
+      active: row['active'] ?? 0,
+      expired: row['expired'] ?? 0,
+      terminated: row['terminated'] ?? 0,
+      invalidated: row['invalidated'] ?? 0,
+    };
   }
 
   count(): number {

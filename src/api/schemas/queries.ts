@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+import { activityOutcomeSchema, activityTypeSchema } from '../../domain/activity-event.js';
+import { auditActionSchema, auditActorTypeSchema, auditResultSchema } from '../../domain/audit-event.js';
+
 /** Query contracts for the management API. Bounds are enforced here, not in handlers. */
 
 export const MAX_PAGE_SIZE = 100;
@@ -114,6 +117,57 @@ export const issueCredentialBodySchema = z
     expiresAt: z.iso.datetime().optional(),
   })
   .strict();
+
+const paginationFields = {
+  page: z.coerce.number().int().min(1).max(1_000_000).default(1),
+  limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(20),
+};
+
+/**
+ * Activity listing.
+ *
+ * Filters mirror `ACTIVITY_TYPES`/`ACTIVITY_OUTCOMES`: an unknown value is a
+ * `400`, never a silently empty page. Ordering is newest-first by default and
+ * always tie-broken by id, so paging cannot repeat or skip a row.
+ */
+export const listActivityQuerySchema = z
+  .object({
+    ...paginationFields,
+    type: activityTypeSchema.optional(),
+    outcome: activityOutcomeSchema.optional(),
+    agentId: z.uuid().optional(),
+    backendId: z.uuid().optional(),
+    toolName: z.string().trim().min(1).max(200).optional(),
+    /** Substring match on request id or tool name. */
+    search: z.string().trim().min(1).max(200).optional(),
+    after: z.iso.datetime().optional(),
+    before: z.iso.datetime().optional(),
+    order: z.enum(['asc', 'desc']).default('desc'),
+  })
+  .transform(({ page, limit, ...rest }) => ({ ...rest, limit, offset: (page - 1) * limit, page }));
+
+/**
+ * Audit listing. Deliberately not the same filter set as activity: audit rows
+ * have an actor, an action, a target and a result, and no tool name.
+ */
+export const listAuditQuerySchema = z
+  .object({
+    ...paginationFields,
+    action: auditActionSchema.optional(),
+    actorType: auditActorTypeSchema.optional(),
+    actorId: z.string().trim().min(1).max(200).optional(),
+    targetType: z.enum(['backend', 'agent', 'credential', 'policy', 'session', 'settings']).optional(),
+    targetId: z.string().trim().min(1).max(200).optional(),
+    result: auditResultSchema.optional(),
+    /** Substring match on target id or request id. */
+    search: z.string().trim().min(1).max(200).optional(),
+    after: z.iso.datetime().optional(),
+    before: z.iso.datetime().optional(),
+    order: z.enum(['asc', 'desc']).default('desc'),
+  })
+  .transform(({ page, limit, ...rest }) => ({ ...rest, limit, offset: (page - 1) * limit, page }));
+
+export const activityEventIdParamSchema = z.object({ eventId: z.uuid() });
 
 /**
  * `?expectedVersion=` on update/enable/disable. Optional: a caller that omits it

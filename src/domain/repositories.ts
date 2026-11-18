@@ -49,6 +49,8 @@ export interface BackendRepository {
   /** Tombstones the backend: it disappears from lists, history keeps the reference. */
   softDelete(id: string, now: string): void;
   countActive(): number;
+  /** Enabled/disabled split, excluding tombstones. */
+  counts(): { total: number; enabled: number; disabled: number };
 }
 
 export interface BackendRuntimeRepository {
@@ -86,6 +88,8 @@ export interface AgentRepository {
   touchAuthentication(id: string, now: string): void;
   softDelete(id: string, now: string): void;
   countActive(): number;
+  /** Enabled/disabled split, excluding tombstones. */
+  counts(): { total: number; enabled: number; disabled: number };
 }
 
 export interface CredentialRepository {
@@ -105,6 +109,8 @@ export interface PolicyQuery {
   effect?: 'allow' | 'deny';
   /** Only policies assigned to this agent. */
   agentId?: string;
+  /** Only policies with a rule targeting this backend id (or `*`). */
+  backendId?: string;
   limit: number;
   offset: number;
   sort: 'name' | 'createdAt' | 'updatedAt' | 'priority';
@@ -131,11 +137,63 @@ export interface PolicyRepository {
   unassignAll(agentId: string): number;
 }
 
+/** Filters shared by both event logs. Bounds and allowlists live in the API layer. */
+export interface EventQuery {
+  type?: string;
+  agentId?: string;
+  backendId?: string;
+  /** Exact public tool name. */
+  toolName?: string;
+  outcome?: string;
+  /** Inclusive lower bound on `created_at`, absolute UTC instant. */
+  after?: string;
+  /** Inclusive upper bound on `created_at`. */
+  before?: string;
+  /** Substring match on the ids and names the row can carry. */
+  search?: string;
+  limit: number;
+  offset: number;
+  order: 'asc' | 'desc';
+}
+
+export interface EventPage<T> {
+  items: T[];
+  total: number;
+}
+
 /** Operational history: append + bounded read. No update, no delete. */
 export interface ActivityRepository {
   append(event: ActivityEvent): ActivityEvent;
   list(limit: number): ActivityEvent[];
+  findById(id: string): ActivityEvent | undefined;
+  query(criteria: EventQuery): EventPage<ActivityEvent>;
   count(): number;
+  /** Grouped counts over the whole table: one statement, no per-type query. */
+  countByType(): Record<string, number>;
+  countByOutcome(): Record<string, number>;
+}
+
+/** Administrative history, as exposed by the management API's list. */
+export interface AuditListItem {
+  id: string;
+  actorType: AuditEvent['actorType'];
+  actorId?: string;
+  action: AuditEvent['action'];
+  targetType?: AuditEvent['targetType'];
+  targetId?: string;
+  result: AuditEvent['result'];
+  requestId?: string;
+  createdAt: string;
+}
+
+export interface AuditQuery extends EventQuery {
+  /** Audit calls it `action`; the shared filter name stays `type`. */
+  actorType?: string;
+  actorId?: string;
+  action?: string;
+  targetType?: string;
+  targetId?: string;
+  result?: string;
 }
 
 /**
@@ -145,7 +203,12 @@ export interface ActivityRepository {
 export interface AuditRepository {
   append(event: AuditEvent): AuditEvent;
   list(limit: number): AuditEvent[];
+  /** Full record, metadata included: the detail endpoint is the disclosure boundary. */
+  findById(id: string): AuditEvent | undefined;
+  query(criteria: AuditQuery): EventPage<AuditListItem>;
   count(): number;
+  countByResult(): Record<string, number>;
+  countByActorType(): Record<string, number>;
 }
 
 export interface SessionQuery {
@@ -205,6 +268,12 @@ export interface SessionRepository {
   expire(now: string, idleCutoff: string): Session[];
   count(): number;
   countByStatus(status: SessionStatus): number;
+  /**
+   * Effective counts per status, in one statement. `active`/`expired` are
+   * derived from the same two lifetime rules `query()` filters on, so a
+   * dashboard never sees a total that disagrees with the list next to it.
+   */
+  counts(now: string, idleCutoff: string): Record<SessionStatus, number>;
 }
 
 /** Every repository a store provides, wired once at startup. */

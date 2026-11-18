@@ -256,10 +256,16 @@ describe('discovery and conflicts endpoints', () => {
     expect(body.discovery.backendId).toBe(id);
   });
 
+  /**
+   * Phase 8 tightened this: an unknown backend id is a `404`, not a `200` with
+   * an empty list. A dashboard typo must not look like "this backend has no
+   * tools". The filter-by-backend path on `/tools` still answers an empty page,
+   * because that is a query over a collection rather than a sub-resource.
+   */
   it('rejects an unknown backend id', async () => {
     const response = await call('GET', '/backends/00000000-0000-4000-8000-000000000000/tools');
-    expect(response.status).toBe(200);
-    expect((await json<{ data: unknown[] }>(response)).data).toEqual([]);
+    expect(response.status).toBe(404);
+    expect((await json<{ error: { code: string } }>(response)).error.code).toBe('RESOURCE_NOT_FOUND');
 
     const invalid = await call('GET', '/backends/not-a-uuid/tools');
     expect(invalid.status).toBe(400);

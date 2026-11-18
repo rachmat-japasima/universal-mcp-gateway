@@ -120,17 +120,33 @@ The full product scope is approved in this document. Implement sequentially; do 
 - [x] Migration `0005_session_isolation.sql`: additive, five nullable columns plus a defaulted `status`, one back-fill of `revoked_at`, four indexes, four triggers; verified against a real 0004 database.
 - [x] 65 new tests (`mcp-sessions` 14 socket, `sessions` 32 service, `sessions-api` 17 API) → 437 total; Phase 1–6 tests unmodified.
 - [x] `pnpm typecheck`, `pnpm test`, `pnpm build` pass; no real backend connected; bind still `127.0.0.1`.
-- [ ] **Deferred to Phase 8:** per-backend tool-call queueing for `concurrency_mode = 'limited'`. Connection state is still serialized per backend, so two concurrent connects open one connection; tool calls are not queue-gated. The columns exist, so no migration will be needed.
+- [ ] **Deferred from Phase 7, still open after Phase 8:** per-backend tool-call queueing for `concurrency_mode = 'limited'`. Connection state is still serialized per backend, so two concurrent connects open one connection; tool calls are not queue-gated. The columns exist, so no migration will be needed.
 
 **Not in this phase (by decision):** dashboard session views, operator identity on the management API, Redis or any cross-process session registry, OAuth. Session serving is single-process by construction; what is cross-process is the row and its constraints. See `docs/ARCHITECTURE.md` §10–§11 and ADR-043.
 
-## Phase 8 — Management API completion
-- Activity, settings, and (remaining) agent/policy gaps in the API surface. *(Sessions landed in Phase 7.)*
-- Per-backend tool-call queueing for `concurrency_mode = 'limited'`, with bounded wait and a documented `CONCURRENCY_TIMEOUT`.
-- Validation, pagination, filtering.
-- API contracts and integration tests.
-- Secure backup/restore APIs.
-- Dashboard owner authentication and operator identity for the management API (currently unauthenticated on loopback).
+## Phase 8 — Management API completion (completed)
+
+- [x] `GET /api/v1/overview` — one snapshot of every aggregate a dashboard home screen needs; a single `opsSnapshot()` reader feeds it, `/monitoring*`, and `/diagnostics`, so their counts cannot disagree.
+- [x] `GET /api/v1/monitoring` + `/health`, `/backends`, `/sessions`, `/runtime`.
+- [x] `GET /ready` — readiness over the database and the migration ledger, mounted outside `/api/v1`; `503` when either is unreadable. Optional backends excluded by design; `/health` stays liveness-only.
+- [x] `GET /api/v1/diagnostics` — version, runtime, uptime, migration version, counts, limits. Read-only, non-secret.
+- [x] `GET /api/v1/settings` — effective, non-secret configuration; write verbs answer `404` because no mutation path exists.
+- [x] `GET /api/v1/activity` + `/:eventId` — filters `type`, `outcome`, `agentId`, `backendId`, `toolName`, `search`, `after`, `before`, `order`; closed enums, so an unknown value is a `400`.
+- [x] `GET /api/v1/audit` + `/:eventId` — filters `action`, `actorType`, `actorId`, `targetType`, `targetId`, `result`, `search`, date range. Audit stays immutable: no repository update/delete and no REST write verb. `metadata` is omitted from the list and rendered only by the detail read.
+- [x] Canonical pagination everywhere: `page`/`limit` (max 100), allowlisted sort/filter fields, deterministic `id` tie-break, `total` measured over the filtered set.
+- [x] Fixed a real pagination bug: policy `backendId` filtering moved from post-slice route code into SQL (`EXISTS … json_each`), so `total` describes the filtered set. A `backendId`/`agentId` filter that names nothing is now `404`.
+- [x] Documented one tightening: `GET /api/v1/backends/:id/tools` answers `404` for an unknown backend (was `200` + `[]`); `GET /tools?backendId=` still answers an empty page.
+- [x] OpenAPI 3.1 at `GET /api/v1/openapi.json`, hand-written (`src/api/openapi.ts`) with query parameters derived from the same Zod schemas the handlers parse. `tests/openapi.test.ts` checks the document against the live Hono route table **in both directions**, resolves every `$ref`, and asserts the pagination and error-envelope shapes. No new dependency — `z.toJSONSchema` ships with Zod 4.
+- [x] `null` vs `0`: when a storage read fails, storage-backed fields are `null` and `status` is `degraded`; the in-memory catalog is still reported. An empty registry reports legitimate zeros.
+- [x] Single-statement aggregate queries: enabled/disabled splits, runtime distribution, session effective-status counts, activity/audit groupings — no N+1.
+- [x] No migration needed: the existing `created_at` and composite event indexes cover the new range/filter shapes. Production `data/gateway.db` untouched (migrations `0001–0005`, 0 backends, 0 agents).
+- [x] 49 new tests (`ops-api` 31, `openapi` 8, `policies-api` 10) → 486 total; Phase 1–7 tests kept, one updated with a comment for the documented `404`.
+- [x] `pnpm typecheck`, `pnpm test`, `pnpm build` pass; no real backend connected; bind still `127.0.0.1`.
+- [x] New `docs/API_REFERENCE.md`; `ARCHITECTURE`, `BACKEND_SPEC`, `SECURITY`, `DATABASE`, `MONITORING`, `ROADMAP`, and `README` updated.
+- [ ] **Still deferred:** per-backend tool-call queueing for `concurrency_mode = 'limited'`. The columns exist, so no migration will be needed.
+- [ ] **Still deferred:** backup/restore APIs and dashboard owner authentication. Phase 8 was scoped to the read/management surface the dashboard consumes; the server remains unauthenticated on loopback, and that is why it must not be exposed.
+
+**Not in this phase (by decision):** any frontend code, any real backend integration, any new dependency, Redis or any cache, a metrics/time-series store, audit retention, and OAuth. The management API remains unauthenticated and loopback-only.
 
 ## Phase 9 — Astryx dashboard foundation
 - Read current official Astryx docs.

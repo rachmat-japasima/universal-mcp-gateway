@@ -134,7 +134,7 @@ apps/
 
 This is a target structure, not a requirement to move existing files immediately. Preserve the current working bootstrap and refactor incrementally.
 
-### 4.1 Implemented module layout (Phase 7)
+### 4.1 Implemented module layout (Phase 8)
 
 ```text
 src/
@@ -190,6 +190,10 @@ src/
       policies.routes.ts policies, assignments
       sessions.routes.ts list, get, terminate, cleanup (Phase 7)
       tools.routes.ts    catalog, discovery reports, conflicts, refresh
+      events.routes.ts   activity + audit, list + detail (Phase 8)
+      ops.routes.ts      overview, monitoring, diagnostics, settings, openapi + readyHandler
+    ops.ts             one snapshot reader: every ops count flows from here
+    openapi.ts         OpenAPI 3.1 document, checked against the live route table
   registry/
     backend-service.ts   business rules, transactions, audit, sanitization
     agent-service.ts     agent lifecycle, tombstone + cascade in one transaction
@@ -269,6 +273,48 @@ The API is not mounted at all when no store is configured, rather than mounted a
 The catalog is served through a **low-level `Server`**, not `McpServer`: `McpServer.registerTool` binds its request handlers once at construction, which cannot describe a catalog that changes during the process's life. One server instance is created per exchange and holds no state.
 
 **Lifecycle coupling.** The manager exposes `setConnectionObserver()`; discovery registers an observer that fires on connect and disconnect. The setter (rather than a constructor argument) breaks the mutual reference, and the observer is fire-and-forget so an observer bug can never fail a connect or block a teardown. `activeClient(backendId)` returns a client only when the runtime status is exactly `connected`, resolved per call and never cached.
+
+## 4.5 Operational read surface (Phase 8)
+
+Overview, monitoring, readiness, diagnostics, settings, activity and audit are
+read-only views over state the gateway already owns. They add no tables, no
+cache, and no background sampler; they answer from the same repositories and the
+same in-memory catalog everything else uses.
+
+Three structural choices:
+
+- **One snapshot reader.** `src/api/ops.ts` exports `opsSnapshot()` and every
+  consumer calls it: `/overview`, `/monitoring*`, `/diagnostics`. Three endpoints
+  computing backend counts down three code paths is the classic dashboard bug;
+  with one reader the numbers cannot disagree, and a single fix corrects all of
+  them.
+- **`null` is a different claim from `0`.** A storage read that fails yields
+  `database: "unavailable"` and `null` for every storage-backed field. The
+  in-memory catalog is still reported, because it survived the outage. A
+  dashboard branches on `null`, never on `0`.
+- **The count queries are single statements.** Enabled/disabled splits, the
+  runtime distribution, session effective-status counts, and activity/audit
+  groupings are one `SELECT` each — no per-row or per-type query, so the overview
+  cannot become an N+1 by accident.
+
+Readiness is separated from liveness on purpose. `/health` answers while the
+process can serve and never inspects a dependency. `/ready` asks whether storage
+answers and the migration ledger is readable, and **not** whether optional
+backends are connected: a gateway with every backend disconnected is still ready
+to accept work. Both are mounted outside `/api/v1`, because an infrastructure
+probe should not follow an API version.
+
+Audit immutability is a property of the repository interface: `AuditRepository`
+declares no update and no delete method, so no route can acquire a write path by
+accident. The list endpoint omits `metadata`; only the detail read renders it —
+one explicit operator act, not a collection response carrying free-form context.
+
+`GET /api/v1/openapi.json` is a hand-written literal table
+(`src/api/openapi.ts`), because Hono exposes no typed route metadata: a generator
+would describe the schemas and guess which one belongs to which handler. Query
+parameters are derived from the same Zod schemas the handlers parse, and
+`tests/openapi.test.ts` compares the document against the live route table in both
+directions, so neither an undocumented route nor an invented one survives.
 
 ## 5. Inbound MCP lifecycle
 
@@ -354,7 +400,7 @@ staleness the spec forbids.
 ## 9. Authentication and authorization
 
 Separate:
-- Dashboard user identity (Phase 8).
+- Dashboard user identity (Phase 9–10).
 - MCP client/agent identity (Phase 6, implemented).
 - Backend credentials.
 
@@ -517,8 +563,9 @@ Per-backend/resource modes (`parallel` | `serialized` | `limited`) are modelled 
 *connection state* per backend with one promise chain (§4.3), so two concurrent connects open one
 connection. Tool-call concurrency across backends is not queue-gated in this phase: each call
 resolves the owning client and awaits it, and cancellation comes from the transport's abort
-signal. A per-backend queue with a bounded `limited` mode remains Phase 8 work — the columns exist
-so no migration is needed then.
+signal. A per-backend queue with a bounded `limited` mode is **still deferred**: Phase 8
+standardized the API surface instead, and the columns exist so no migration will be needed when
+it lands. Until then `concurrencyMode` is stored and validated but not enforced at call time.
 
 ## 12. Data persistence
 
@@ -537,8 +584,9 @@ Retention and backup policy are still to be defined. Do not store sensitive tool
 
 - Next.js application.
 - Astryx as the direct UI component library and design system.
-- Typed API client generated or maintained from backend API contracts.
+- Typed API client generated or maintained from backend API contracts. As of Phase 8 the contract is served at `GET /api/v1/openapi.json` and checked against the live route table by `tests/openapi.test.ts`, so a client can be generated from it without the document drifting.
 - Feature-oriented page modules.
+- Every figure on screen comes from a real endpoint; `null` renders as "unavailable", never as `0`.
 - Server-side authorization for protected dashboard routes and APIs.
 - Loading, empty, error, and confirmation states.
 - No business rules implemented only in the browser.
@@ -548,7 +596,7 @@ Retention and backup policy are still to be defined. Do not store sensitive tool
 ## 14. Security boundaries
 
 - Loopback binding by default; a non-loopback `HOST` is refused at config load.
-- The MCP surface requires a per-agent bearer credential (Phase 6). The management API is **still unauthenticated**: its boundary is local-only access (socket address, `HOST`, `Host`, `Origin`) plus a JSON content-type requirement — not identity. Since Phase 4 a local caller can also cause a process spawn and an outbound connection, and since Phase 6 can mint a credential, so the blast radius is larger than in Phase 3. Do not expose it via tunnel, proxy, or non-loopback bind before the dashboard has an operator identity (Phase 8).
+- The MCP surface requires a per-agent bearer credential (Phase 6). The management API is **still unauthenticated**: its boundary is local-only access (socket address, `HOST`, `Host`, `Origin`) plus a JSON content-type requirement — not identity. Since Phase 4 a local caller can also cause a process spawn and an outbound connection, and since Phase 6 can mint a credential, so the blast radius is larger than in Phase 3. Phase 8 added `/settings` and `/diagnostics`; both report effective configuration and deliberately never a secret, an environment value, a token, or a private path. Do not expose the API via tunnel, proxy, or non-loopback bind before the dashboard has an operator identity (Phase 9–10).
 - MCP authorization is default-deny, evaluated per request, with `tools/list` filtered and `tools/call` re-checked before resolution. A denial is byte-identical to an unknown tool.
 - Outbound Streamable HTTP destinations pass a documented policy: `http`/`https` only, no embedded credentials, DNS-resolved address classification, per-request re-check, same-origin redirects. `ALLOW_PRIVATE_NETWORK` opens loopback/private/CGNAT for local fixtures and never metadata or link-local.
 - Registration, enable, and process start never connect; a connection requires an explicit `connect`, and a restart rewrites persisted live state to `disconnected` without reconnecting.

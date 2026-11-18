@@ -74,6 +74,25 @@ Widgets:
 
 Each widget must show loading, empty, unavailable, and error states. Charts must use real aggregated data.
 
+Phase 8 status, per widget:
+
+| Widget | Endpoint | Available |
+| --- | --- | --- |
+| Gateway status | `/api/v1/overview` (`status`, `database`) | yes |
+| Backend totals by state | `/api/v1/overview` (`backends`) | yes |
+| Registered agents | `/api/v1/overview` (`agents`) | yes |
+| Active sessions | `/api/v1/overview` (`sessions`) | yes |
+| Discovered tools | `/api/v1/overview` (`tools`) | yes |
+| Recent events | `/api/v1/activity` | yes |
+| Backend health summary | `/api/v1/monitoring/backends` | yes |
+| Error rate | `/api/v1/activity?outcome=failure` | partial — counts only, no rate over time |
+| Request throughput | — | **not collected** |
+| Latency percentiles | — | **not collected** |
+
+Render the last three as "not collected" rather than a flat line at zero. `/overview` is one
+snapshot, so no two widgets on this page can disagree about the same instant; branch on `null`
+(unavailable) before formatting a number.
+
 ### 4.2 Backends — `/dashboard/backends`
 - Search and filters by status and transport.
 - Table/list with name, transport, health, enabled state, tools count, last connected.

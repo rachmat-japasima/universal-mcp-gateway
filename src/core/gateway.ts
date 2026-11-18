@@ -15,6 +15,7 @@ import { hostHeaderValidation, originValidation } from '@modelcontextprotocol/ho
 import { Hono } from 'hono';
 
 import { API_PREFIX, createManagementApi } from '../api/index.js';
+import { readyHandler } from '../api/routes/ops.routes.js';
 import type { BackendLifecycleManager } from '../adapters/lifecycle.js';
 import { BackendLifecycleManager as Lifecycle } from '../adapters/lifecycle.js';
 import type { Config } from '../config/config.js';
@@ -325,7 +326,18 @@ export function createGateway(options: GatewayOptions): Gateway {
     });
   });
 
-  if (store !== undefined && lifecycle !== undefined) {
+  /**
+   * Readiness, next to liveness but with a different question: `/health` asks
+   * "is this process alive?", `/ready` asks "can it serve?". It lives outside
+   * the version prefix because infrastructure probes should not follow an API
+   * version, and it never consults an optional backend.
+   *
+   * Only mounted when there is a store: without one, the gateway genuinely has
+   * no evidence either way, and a `503` would be a claim it cannot support.
+   */
+  if (store !== undefined) {
+    app.get('/ready', readyHandler(store));
+  }  if (store !== undefined && lifecycle !== undefined) {
     app.route(
       API_PREFIX,
       createManagementApi({
