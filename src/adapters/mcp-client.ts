@@ -64,9 +64,21 @@ export class McpBackendClient {
     return result.tools;
   }
 
-  async callTool(name: string, args: Record<string, unknown> = {}): Promise<CallToolResult> {
-    return this.run(`Calling tool "${name}" failed`, () =>
-      this.client.callTool({ name, arguments: args }, { timeout: this.timeoutMs }),
+  async callTool(
+    name: string,
+    args: Record<string, unknown> = {},
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<CallToolResult> {
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
+
+    return this.run(
+      `Calling tool "${name}" failed`,
+      () =>
+        this.client.callTool(
+          { name, arguments: args },
+          { timeout: timeoutMs, ...(options.signal === undefined ? {} : { signal: options.signal }) },
+        ),
+      timeoutMs,
     );
   }
 
@@ -97,11 +109,11 @@ export class McpBackendClient {
     await this.client.close().catch(() => undefined);
   }
 
-  private async run<T>(message: string, work: () => Promise<T>): Promise<T> {
+  private async run<T>(message: string, work: () => Promise<T>, timeoutMs = this.timeoutMs): Promise<T> {
     if (this.closed) throw new AppError('BACKEND_UNAVAILABLE', 'The backend connection is closed.');
 
     try {
-      return await withTimeout(work, this.timeoutMs);
+      return await withTimeout(work, timeoutMs);
     } catch (error) {
       throw normalizeMcpError(error, message);
     }

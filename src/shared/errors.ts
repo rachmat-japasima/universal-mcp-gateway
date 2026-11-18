@@ -14,6 +14,9 @@ export type ErrorCode =
   | 'BACKEND_CONNECTION_ERROR'
   | 'BACKEND_TIMEOUT'
   | 'BACKEND_UNAVAILABLE'
+  | 'TOOL_NOT_FOUND'
+  | 'TOOL_UNAVAILABLE'
+  | 'TOOL_CANCELLED'
   | 'DATABASE_ERROR'
   | 'INTERNAL_ERROR';
 
@@ -31,6 +34,12 @@ const DEFINITIONS: Record<ErrorCode, { category: ErrorCategory; httpStatus: numb
   BACKEND_CONNECTION_ERROR: { category: 'unavailable', httpStatus: 502, jsonRpcCode: -32603 },
   BACKEND_TIMEOUT: { category: 'unavailable', httpStatus: 504, jsonRpcCode: -32603 },
   BACKEND_UNAVAILABLE: { category: 'unavailable', httpStatus: 503, jsonRpcCode: -32603 },
+  /** Unknown public tool name. A caller mistake, so `-32602` not a server fault. */
+  TOOL_NOT_FOUND: { category: 'client', httpStatus: 404, jsonRpcCode: -32602 },
+  /** The tool exists but its backend is not currently callable (stale/disconnected). */
+  TOOL_UNAVAILABLE: { category: 'unavailable', httpStatus: 503, jsonRpcCode: -32603 },
+  /** The caller cancelled. JSON-RPC `-32800` is the MCP cancellation code. */
+  TOOL_CANCELLED: { category: 'unavailable', httpStatus: 408, jsonRpcCode: -32800 },
   DATABASE_ERROR: { category: 'internal', httpStatus: 500, jsonRpcCode: -32603 },
   INTERNAL_ERROR: { category: 'internal', httpStatus: 500, jsonRpcCode: -32603 },
 };

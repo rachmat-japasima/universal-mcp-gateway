@@ -196,3 +196,31 @@ Teardown is not instantaneous: a child gets stdin end → SIGTERM → grace → 
 - The transition set is declared as data (`BACKEND_TRANSITIONS`) and enforced in `persist()`; an illegal edge throws `INTERNAL_ERROR` rather than storing an impossible status. This catches manager bugs at the write instead of at a later read.
 - `disconnecting` is transient and never survives a restart: recovery treats it as dead-process state like `connected`.
 - **Accepted limit:** the status is only as truthful as the last write. A `SIGKILL` of the gateway itself leaves whatever was last persisted; recovery exists precisely because that cannot be avoided.
+
+## ADR-036 — Namespacing is total, deterministic, and identity-derived
+**Status:** Accepted  
+`publicToolName(backendId, originalName)` = two normalized segments joined by `__`.
+- Normalization replaces **every** character outside `[A-Za-z0-9._-]` with `_`. Total rather than permissive, so a name that survives is always safe to put in a JSON-RPC message, a log line, and a URL path segment, and so two originals that differ only in punctuation (`search items`, `search_items`) become the *same* public name and are therefore caught by collision detection instead of quietly aliasing.
+- Names over 128 characters are cut and suffixed with `__<8 hex of SHA-256(backendId, NUL, originalName)>`. The suffix comes from identity, not randomness: the same tool keeps the same public name across restarts and rediscoveries, so a persisted agent config or a client's cached tool list stays valid.
+- Rejected alternative: appending a counter or UUID to every name. It would make collisions impossible to *detect*, which hides the real problem — two backends claiming one name — and it breaks the "same name every time" property above.
+- Rejected alternative: permissive normalization that preserves the original characters. It would push escaping into every consumer and still allow collisions to differ only by a character no downstream system can represent.
+- **Accepted limit:** normalization is lossy, so two genuinely different tools can collapse onto one public name. That is reported, not hidden: the catalog withholds both claimants.
+
+## ADR-037 — Forward the backend's JSON Schema; validate with AJV; never rebuild it in Zod
+**Status:** Accepted  
+A backend's `inputSchema` is carried as an opaque `Record<string, unknown>` from `tools/list` to the wire, and compiled for argument checking with `fromJsonSchema`.
+- Rebuilding each remote schema in Zod would lose `$defs`, `$ref` chains, formats, `additionalProperties`, and vendor extensions — and a gateway that loses schema detail silently weakens the backend's contract. Zod reconstructs the gateway's own contracts; it is the wrong tool for forwarding someone else's.
+- `compileInputSchema` caches by schema object identity (WeakMap), so a schema is compiled once per discovery, not once per call.
+- A schema that fails to compile (unresolvable `$ref`, unknown `$schema`) is forwarded **unvalidated**, with `unvalidatedReason` logged. The alternative — substituting `{type: 'object'}` — makes "we could not check" indistinguishable from "there are no constraints", and would also silently discard the schema the client was shown.
+- Validation does not coerce. `{limit: "2"}` where the backend declared an integer is a client bug, and quietly fixing it produces a call the backend never expected.
+- The advertised `outputSchema`, when present, is passed to `projectCallToolResult` so the SDK projects the result for the correct protocol era.
+- **Accepted limit:** an uncompilable schema means no local validation for that tool. The backend is still the authority and will reject bad arguments; the gateway's rejection just arrives later.
+
+## ADR-038 — The catalog is in-memory only
+**Status:** Accepted  
+`ToolCatalog` is derived state. There is no table, no migration, and no cache file.
+- A persisted catalog outlives the connection it describes. It would either be served — lying about reachability — or distrusted on every read, which is the same as not storing it, plus a migration. Recovery already rewrites live connection state for exactly this reason (ADR-034); persisting the tools would recreate the problem one level up.
+- A restart starts empty and rediscovery refills it. Discovery is idempotent, so "rebuild by asking again" is not just safe, it is the only description guaranteed to be current.
+- The catalog is authoritative **within** its lifetime: routing reads it, but re-checks `isConnected` at call time rather than trusting the entry. A hint plus a fact beats two sources of truth.
+- Conflict counts are computed at read time from the whole index rather than stored on each snapshot, because a conflict is a property of the catalog, not of one backend's discovery — and a stored count would go stale the moment a *different* backend connected or disconnected.
+- **Accepted limit:** a process restart costs one `tools/list` per connected backend before their tools are callable. Acceptable for a local gateway with a handful of backends; a persisted snapshot with a validity check would be the upgrade path if that stops being true.

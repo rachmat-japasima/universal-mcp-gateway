@@ -245,27 +245,56 @@ references fail loudly as `CONFIGURATION_ERROR` — the secret store is Phase 6 
 rather than being sent literally, which would look like an auth failure and hide
 the real problem.
 
-## 7. Tool routing (Phase 5, not implemented)
+## 7. Tool routing (implemented in Phase 5)
 
-1. Resolve public tool name.
-2. Resolve backend and original tool name.
-3. Authenticate agent.
-4. Evaluate effective policy.
-5. Validate arguments.
-6. Acquire scoped concurrency control.
-7. Invoke backend with timeout/cancellation.
-8. Release lock/queue slot in `finally`.
-9. Normalize result/error.
-10. Record safe activity metadata.
+Implemented in `src/routing/`, served on `/mcp`. Steps 1–2 and 5–9 of the original
+sketch exist; steps 3–4 and 6 wait for Phases 6–7.
 
-Phase 4 stops before step 1: it can open a connection and read a catalog, but the
-gateway's own `/mcp` surface still advertises an empty tool list.
+1. Resolve public tool name against the in-memory catalog.
+2. Resolve backend and original tool name; re-check the backend is enabled and
+   connected at call time, so a stale mapping is refused rather than dialled.
+3. Authenticate agent — **Phase 6**.
+4. Evaluate effective policy — **Phase 6**.
+5. Validate arguments against the backend's own JSON Schema. A schema that
+   cannot be compiled is forwarded **unvalidated** with the reason logged, never
+   replaced by a permissive stub (ADR-037).
+6. Acquire scoped concurrency control — **Phase 7**. Today a call is forwarded
+   immediately; there is no gateway-side lock.
+7. Invoke backend with timeout/cancellation. Bound is
+   `min(TOOL_CALL_TIMEOUT_MS, backend.timeoutMs)`.
+8. Release lock/queue slot in `finally` — n/a until Phase 7.
+9. Normalize result/error: a backend `isError` result is passed through as a
+   result; a routing failure becomes a JSON-RPC error.
+10. Record `tools.call` activity: backend, public name, outcome, error code,
+    duration, and the bounded JSON-RPC id. Never arguments or results.
+
+### 7.1 Catalog endpoints (implemented)
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/tools` | Catalog page; filters `backendId`, `availability`, `search` |
+| `GET` | `/api/v1/tools/:publicName` | One tool, or `RESOURCE_NOT_FOUND` |
+| `GET` | `/api/v1/tools/discovery` | Last discovery report per backend |
+| `GET` | `/api/v1/tools/conflicts` | Public names withheld, with every claimant |
+| `POST` | `/api/v1/tools/refresh` | Rediscover every connected backend; per-backend result |
+| `GET` | `/api/v1/backends/:id/tools` | One backend's tools plus its report |
+| `POST` | `/api/v1/backends/:id/tools/refresh` | Rediscover one backend; `503` on failure |
+
+There is deliberately **no** HTTP tool-invocation endpoint. Invocation stays on
+`/mcp`, so there is exactly one place where an agent can reach a backend and one
+place where Phase 6 authorization has to be enforced.
 
 ## 8. Error codes
 
-Implemented: see section 2. The following remain **proposals** for later phases and must be added to `ErrorCode` before use — inventing them at a call site would break the contract:
+Implemented: see section 2, plus the Phase 5 additions:
 
-- `TOOL_NOT_FOUND`, `TOOL_NAME_COLLISION`, `TOOL_CALL_FAILED`, `CONCURRENCY_TIMEOUT`, `SESSION_NOT_FOUND`, `BACKEND_NOT_FOUND` (today covered by `RESOURCE_NOT_FOUND`), `UNAUTHENTICATED`/`FORBIDDEN` (today `AUTHENTICATION_ERROR`/`AUTHORIZATION_ERROR`).
+- `TOOL_NOT_FOUND` → HTTP 404 / JSON-RPC `-32602`
+- `TOOL_UNAVAILABLE` → HTTP 503 / JSON-RPC `-32603`
+- `TOOL_CANCELLED` → HTTP 408 / JSON-RPC `-32800`
+
+The following remain **proposals** and must be added to `ErrorCode` before use — inventing them at a call site would break the contract:
+
+- `CONCURRENCY_TIMEOUT`, `SESSION_NOT_FOUND`, `BACKEND_NOT_FOUND` (today covered by `RESOURCE_NOT_FOUND`), `UNAUTHENTICATED`/`FORBIDDEN` (today `AUTHENTICATION_ERROR`/`AUTHORIZATION_ERROR`).
 
 ## 9. API security
 

@@ -148,6 +148,7 @@ src/
     repositories.ts      persistence interfaces (SQL/persistence-free)
   shared/
     errors.ts        AppError, ErrorCode, toAppError, log view
+    service.ts       SERVICE_INFO, so routing can name the gateway
   config/
     config.ts        pure parseConfig/loadConfig/redactConfig
   security/
@@ -158,6 +159,13 @@ src/
     http-adapter.ts      Streamable HTTP transport
     mcp-client.ts        SDK Client wrapper, error normalization
     lifecycle.ts         BackendLifecycleManager — sole owner of live connections
+  routing/         # Phase 5: discovery → catalog → route
+    namespacing.ts       publicToolName, normalization, length bound
+    schema.ts            remote JSON Schema → AJV validator (cached)
+    catalog.ts           in-memory authoritative catalog, collision policy
+    discovery.ts         discovery, coalescing, lifecycle observer
+    router.ts            public name → backend call (timeout, cancel, audit)
+    mcp-server.ts        tools/list + tools/call on the low-level SDK Server
   api/
     index.ts             management API assembly + middleware order
     http.ts              request id, envelopes, JSON parsing, error boundary
@@ -168,6 +176,7 @@ src/
     routes/
       system.routes.ts
       backends.routes.ts
+      tools.routes.ts    catalog, discovery reports, conflicts, refresh
   registry/
     backend-service.ts   business rules, transactions, audit, sanitization
   core/
@@ -226,18 +235,33 @@ The API is not mounted at all when no store is configured, rather than mounted a
 
 `docs/BACKEND_SPEC.md` §6 describes the transports; `tests/lifecycle.test.ts` and `tests/lifecycle-api.test.ts` exercise them against isolated fixtures only.
 
+## 4.4 Tool discovery and routing (Phase 5)
+
+`src/routing/` is one pipeline with four separable pieces; each file has one job and can be read alone.
+
+- **`namespacing.ts` — identity.** `publicToolName(backendId, originalName)` joins two normalized segments with `__`. Normalization replaces every character outside `[A-Za-z0-9._-]` with `_`; a name longer than 128 characters is cut and suffixed with `__<8 hex>` derived from `SHA-256(backendId, NUL, originalName)`. Same inputs, same name, always (ADR-036).
+- **`catalog.ts` — truth.** The catalog is in memory and authoritative. It holds one snapshot per backend (tools keyed by original name) plus an index from public name to owner. Collisions are computed at read time from the whole index, and **every** claimant is withheld rather than routing by discovery order. Nothing is persisted: a catalog row on disk would be a claim about a connection that a restart cannot honour (ADR-038).
+- **`discovery.ts` — acquisition.** Calls `tools/list`, validates metadata, builds the snapshot, and swaps it atomically. Concurrent discoveries for one backend coalesce onto one request. A listing that fails leaves the previous snapshot untouched but does not resurrect it after a disconnect — the lifecycle observer removes the backend entirely, so a stale map cannot outlive its connection.
+- **`router.ts` — dispatch.** Resolves at call time, re-checks runtime truth (`enabled`, `connected`), validates arguments against the backend's own schema, then calls the owning client. The timeout is `min(toolCallTimeoutMs, backend.timeoutMs)` so a backend's configured budget is never widened. Cancellation is classified from `context.signal.aborted`, not from the error's shape.
+
+`mcp-server.ts` projects a catalog tool into the protocol payload. Its only assertion — `Tool[]` — is justified because `toDefinition` has already validated the shape; the alternative is rebuilding every remote schema in Zod, which would lose `$defs`, vendor extensions, and formats (ADR-037).
+
+The catalog is served through a **low-level `Server`**, not `McpServer`: `McpServer.registerTool` binds its request handlers once at construction, which cannot describe a catalog that changes during the process's life. One server instance is created per exchange and holds no state.
+
+**Lifecycle coupling.** The manager exposes `setConnectionObserver()`; discovery registers an observer that fires on connect and disconnect. The setter (rather than a constructor argument) breaks the mutual reference, and the observer is fire-and-forget so an observer bug can never fail a connect or block a teardown. `activeClient(backendId)` returns a client only when the runtime status is exactly `connected`, resolved per call and never cached.
+
 ## 5. Inbound MCP lifecycle
 
 1. Client connects to `/mcp`.
 2. Transport validates HTTP request and host/origin according to SDK guidance.
-3. Client identity is authenticated.
+3. Client identity is authenticated — **not yet implemented** (Phase 6); today the loopback bind is the only control.
 4. MCP initialize lifecycle is handled by official SDK.
 5. The server establishes the selected stateless/sessionful behavior.
-6. `tools/list` obtains the catalog filtered by the authenticated agent's policy.
-7. `tools/call` checks identity, permission, schema, timeout, and concurrency.
-8. Router dispatches to the correct backend adapter.
-9. Adapter returns MCP-compatible result/error.
-10. Observability records safe metadata and correlation ID.
+6. `tools/list` reads the in-memory catalog: only tools from connected, enabled backends, with colliding names withheld. Full list, no pagination (protocol-legal; the catalog is bounded at 2000 tools per backend).
+7. `tools/call` resolves the public name, re-checks runtime truth, validates arguments against the backend's own JSON Schema, and applies the call timeout.
+8. `ToolRouter` dispatches to the owning backend through the lifecycle's `activeClient`. A cancelled request is classified from the transport's abort signal.
+9. Adapter returns MCP-compatible result/error. A backend tool-level failure is a `CallToolResult` with `isError`, never a protocol error; routing failures map onto JSON-RPC codes (`-32602` unknown/invalid, `-32800` cancelled, `-32603` otherwise).
+10. Observability records safe metadata and correlation ID: `tools.list`/`tools.call` activity with backend, public name, outcome, error code, duration — no arguments or results.
 11. Session/transport resources are cleaned up according to SDK lifecycle.
 
 ## 6. Outbound adapter lifecycle
@@ -278,18 +302,33 @@ Do not store plaintext secrets in ordinary registry JSON/YAML or database column
 
 ## 8. Tool catalog and naming
 
-Proposed public tool name: `<backend_id>__<original_tool_name>`. Validate compatibility and length constraints before final adoption.
+Implemented in Phase 5 (`src/routing/`, ADR-036/037/038). Public name:
+`<normalized_backend_id>__<normalized_original_tool_name>`.
 
-Catalog record:
-- public tool name
-- original tool name
-- backend ID
-- description
-- input schema
-- discovered timestamp
-- enabled/visibility status
+Normalization is total and deterministic: every character outside
+`[A-Za-z0-9._-]` becomes `_`, so `search items` and `search_items` produce the
+same public name and therefore genuinely collide. Names over 128 characters are
+cut and suffixed with `__<8 hex of SHA-256(backendId NUL originalName)>` — the
+suffix is derived from identity, never random, so the same tool keeps the same
+name across restarts and rediscoveries.
 
-Collision must be explicit and fail closed. Never route a duplicate name based on ordering.
+Catalog record (`src/domain/tool.ts`):
+
+- public name, original name, backend ID
+- description, input schema (the backend's own JSON Schema, forwarded verbatim)
+- availability: `available` | `unavailable` | `conflict` | `rejected`
+- discovery/update timestamps
+
+**Collision must be explicit and fail closed.** Every claimant of a colliding
+public name is withheld; no first-writer-wins, no last-wins. Within one backend,
+two originals that normalize to one name keep the first and mark the rest
+`rejected` with the reason, so the report says what happened. Conflicts are
+recomputed from the whole index on every read, so a backend disconnecting
+releases the names it was blocking.
+
+Nothing is persisted: the catalog is derived state, rebuilt by rediscovery. A
+stored catalog would outlive the connection it described, which is the exact
+staleness the spec forbids.
 
 ## 9. Authentication and authorization
 

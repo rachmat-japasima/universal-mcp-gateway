@@ -39,6 +39,20 @@ Current behavior (Phase 1):
   version, wrong content type) logs at `warn` with the message only — no stack,
   since the gateway itself is healthy.
 
+Discovery and routing (Phase 5):
+- `tools.list` / `tools.call` activity rows: `backendId`, public tool name,
+  outcome, `errorCode`, `durationMs`, bounded request id. Discovery also logs at
+  `info` with `{ backendId, requestId, added, removed, changed }` counts, and at
+  `warn` when a tool is rejected or a listing fails.
+- A schema that cannot be compiled is logged with `{ backendId, tool }` and
+  `unvalidatedReason` — the call still forwards, so the operator must be able to
+  find it.
+- A name collision is logged once at `error` with the public name and every
+  claimant, and recorded as a failed `tools.list` activity: a silently withheld
+  tool otherwise looks like a discovery bug.
+- Never logged: tool arguments, tool results, or the remote schema body. Names
+  and counts only; a result can contain anything the backend decided to return.
+
 Do not log:
 - authorization tokens
 - passwords

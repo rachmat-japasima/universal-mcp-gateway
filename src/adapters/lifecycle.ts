@@ -54,6 +54,14 @@ export interface LifecycleOptions {
   random?: () => number;
 }
 
+/** Emitted once per successful open and once per teardown that released a client. */
+export interface ConnectionChangeEvent {
+  backendId: string;
+  type: 'opened' | 'closed';
+  /** Present on `closed` so the observer can say why. */
+  reason?: string;
+}
+
 /** Public runtime view. Deliberately excludes pids, handles, and connection config. */
 export interface RuntimeView {
   backendId: string;
@@ -105,6 +113,8 @@ export class BackendLifecycleManager {
   private readonly reconnectPolicy: ReconnectPolicy;
   private readonly now: () => string;
   private readonly random: () => number;
+  /** Set by the owner after construction, so discovery can follow the runtime. */
+  private connectionObserver: (event: ConnectionChangeEvent) => void = () => undefined;
   private shuttingDown = false;
 
   constructor(options: LifecycleOptions) {
@@ -114,6 +124,18 @@ export class BackendLifecycleManager {
     this.reconnectPolicy = options.reconnect;
     this.now = options.now ?? (() => new Date().toISOString());
     this.random = options.random ?? Math.random;
+  }
+
+  /**
+   * Registers the connection observer.
+   *
+   * A setter rather than a constructor option because the two services are
+   * mutually referential: discovery needs the lifecycle to find clients, and the
+   * lifecycle needs discovery to follow connections. The setter breaks the cycle
+   * without a lazy accessor or a second constructor argument.
+   */
+  setConnectionObserver(observer: (event: ConnectionChangeEvent) => void): void {
+    this.connectionObserver = observer;
   }
 
   // ---------------------------------------------------------------- startup
@@ -406,6 +428,8 @@ export class BackendLifecycleManager {
       { backendId: backend.id, transport, requestId, state: 'connected', durationMs: Date.now() - startedAt },
       'Backend connected',
     );
+
+    this.notify({ backendId: backend.id, type: 'opened' });
   }
 
   private async handleUnexpectedClose(entry: Entry, detail: string): Promise<void> {
@@ -429,6 +453,8 @@ export class BackendLifecycleManager {
       },
       'Backend connection lost',
     );
+
+    this.notify({ backendId: entry.backendId, type: 'closed', reason: 'connection-lost' });
 
     if (entry.runtime.status === 'connected' || entry.runtime.status === 'disconnecting') {
       this.persist(entry, { status: 'unhealthy', lastErrorCode: 'BACKEND_UNAVAILABLE', lastErrorAt: this.now(), lastErrorMessage: detail });
@@ -515,6 +541,22 @@ export class BackendLifecycleManager {
     entry.timer = undefined;
   }
 
+  /**
+   * Observer dispatch. Never awaited and never allowed to throw: the observer is
+   * a catalog update, and a catalog bug must not unwind a connection attempt or
+   * leave a teardown half-done.
+   */
+  private notify(event: ConnectionChangeEvent): void {
+    try {
+      this.connectionObserver(event);
+    } catch (error) {
+      this.logger.warn(
+        { backendId: event.backendId, type: event.type, error: error instanceof Error ? error.name : 'unknown' },
+        'Connection observer failed',
+      );
+    }
+  }
+
   /** Terminal teardown. Caller holds the lock. */
   private async teardown(entry: Entry, reason: string): Promise<void> {
     const adapter = entry.adapter;
@@ -548,6 +590,8 @@ export class BackendLifecycleManager {
       { backendId: entry.backendId, transport: adapter.transport, reason, durationMs: Date.now() - startedAt },
       'Backend disconnected',
     );
+
+    this.notify({ backendId: entry.backendId, type: 'closed', reason });
   }
 
   /**
@@ -627,6 +671,30 @@ export class BackendLifecycleManager {
   /** Diagnostic only; used by tests and by shutdown logging. */
   get activeCount(): number {
     return [...this.entries.values()].filter((entry) => entry.adapter !== undefined).length;
+  }
+
+  /**
+   * The live client for a backend, or `undefined` when there is none.
+   *
+   * This is the only hand-off from the lifecycle to the router. It is
+   * deliberately a *lookup at call time*, not a cached reference: a client held
+   * across a disconnect would be a stale mapping, and the whole point of the
+   * catalog is that a call cannot outlive its connection.
+   *
+   * Gated on `connected`: `unhealthy` means the transport reported a loss and a
+   * reconnect may be pending, so it is not a safe moment to hand out a client.
+   */
+  activeClient(backendId: string): McpBackendClient | undefined {
+    const entry = this.entries.get(backendId);
+    if (entry === undefined) return undefined;
+    if (entry.runtime.status !== 'connected') return undefined;
+    return entry.client;
+  }
+
+  /** True when `activeClient` would return a client. Cheaper for listing. */
+  isConnected(backendId: string): boolean {
+    const entry = this.entries.get(backendId);
+    return entry !== undefined && entry.runtime.status === 'connected' && entry.client !== undefined;
   }
 
   /** A random id for logs emitted outside a request. */

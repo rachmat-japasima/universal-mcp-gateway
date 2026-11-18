@@ -85,6 +85,8 @@ Do not use a client-supplied `agentName` or arbitrary metadata as proof of ident
 - Re-evaluate access on every call, not only at session initialization.
 - Define and test allow/deny precedence.
 
+**Phase 5 is not authorization.** Every discovered tool is visible to every caller that can reach `/mcp`, and every listed tool is callable. The only gates today are the loopback bind, the name-ownership check, and the backend's own schema. `tools/list` filtering by agent policy and a `tools/call` permission re-check are Phase 6, and the catalog is indexed by public name specifically so filtering can be added at read time without changing routing.
+
 ## 6. Credentials and secrets
 
 - Show generated agent token only once.
@@ -173,6 +175,19 @@ Connect, disconnect, failure, retry scheduling, retry exhaustion, and shutdown e
 
 - Fields are `{ backendId, transport, requestId, state, durationMs }` plus `{ code }` on failure and `{ attempts, delayMs }` on a scheduled retry. Never `connection`, headers, env values, URLs with query strings, or command lines.
 - The transport target is stored on the adapter for logs only and strips credentials and the query string (some servers put a token there).
+
+### 9.1.2 Tool arguments and results (Phase 5)
+
+The tool surface is a new trust boundary in both directions: a caller supplies arguments, and a backend supplies results. Neither is logged.
+
+- `tools.call` activity holds only `backendId`, the public tool name, outcome, `errorCode`, `durationMs`, and the bounded JSON-RPC id. `activity_events` has **no** column for arguments or results — omission is structural, not a filter someone can forget.
+- Discovery logs counts, names, and codes. A remote schema body is never logged: it can embed descriptions and defaults the operator did not write.
+- A tool that normalizes to an unusable name is reported by count only, because a malformed tool can carry arbitrary strings in its `name` field — logging it would hand a hostile backend a log-injection primitive.
+- **Arguments are validated against the backend's own JSON Schema** before dispatch, with AJV and no coercion. This is a correctness control first: forwarding `{limit: "2"}` where the backend declared an integer is how a tool silently does the wrong thing. It is not an authorization control — a schema describes shape, not entitlement.
+- If a backend's schema cannot be compiled, the call is forwarded **unvalidated** and the reason is logged at `warn`. The alternative — substituting an empty permissive schema — would erase the distinction between "no constraints" and "constraints we could not check", and would hide the bug (ADR-037).
+- Only tools from a connected, enabled backend are listed or callable, and that is re-checked at call time. A catalog entry is a hint; `isConnected` is the fact.
+- There is **no HTTP tool-invocation endpoint**. Invocation exists only on `/mcp`, so there is one place to authenticate and one place to redact. A REST "test call" would need its own authorization model and its own result contract, and Phase 5 has neither.
+- Cancellation is derived from the transport's abort signal, not from an error's shape, so a backend cannot fabricate a "cancelled" outcome by throwing a lookalike error.
 - Child stderr is bounded and credential-redacted; only the last line reaches an error message, which is itself truncated to the 500-character column limit.
 - An SDK or transport error is normalized to a generic message before storage: SDK errors can carry response bodies, URLs, or a command line.
 - Runtime state (`backendRuntime`) holds no connection detail at all — no pid, no command, no URL. The `RuntimeView` returned by the API is an explicit projection.

@@ -68,15 +68,24 @@ The full product scope is approved in this document. Implement sequentially; do 
 - [x] `pnpm typecheck`, `pnpm test`, `pnpm build` pass.
 - [x] Production registry remains empty; no real backend connected; no agent configuration touched.
 
-## Phase 5 — Tool catalog and routing
-- Discover tools from connected backends.
-- Namespacing and collision detection.
-- Tool call routing.
-- Timeout/cancellation.
-- Error normalization.
-- Tool catalog cache/invalidation.
-- Health probing of live backends (sets `unhealthy`).
-- Integration tests with isolated fixtures.
+## Phase 5 — Tool catalog and routing (completed)
+- [x] Discovery from connected backends over `tools/list`, coalesced per backend, with a hard deadline (`TOOL_DISCOVERY_TIMEOUT_MS`).
+- [x] Deterministic namespacing `<backend_id>__<tool>`, total character normalization, 128-char bound with an identity-derived suffix.
+- [x] Collision detection that withholds **every** claimant and surfaces them on `GET /api/v1/tools/conflicts`; no ordering-based routing.
+- [x] In-memory authoritative catalog; nothing persisted, rebuilt by rediscovery on restart.
+- [x] Lossless JSON Schema forwarding: `$defs`, `$ref`, `enum`, `additionalProperties`, and vendor extensions survive untouched.
+- [x] Argument validation against the backend's own schema (AJV, no coercion); uncompilable schemas forwarded unvalidated with the reason logged.
+- [x] `tools/call` routing with per-call timeout `min(TOOL_CALL_TIMEOUT_MS, backend.timeoutMs)` and cancellation mapped to JSON-RPC `-32800`.
+- [x] `tools/list` on the low-level SDK `Server`, serving both protocol eras with one stateless instance per exchange.
+- [x] Lifecycle synchronization: connect discovers, disconnect/disable removes; stale entries are refused at call time regardless.
+- [x] Error normalization: `TOOL_NOT_FOUND` (404/`-32602`), `TOOL_UNAVAILABLE` (503/`-32603`), `TOOL_CANCELLED` (408/`-32800`).
+- [x] Catalog API: list/detail/discovery/conflicts/refresh, per-backend tools, per-backend refresh. No invocation endpoint.
+- [x] `tools.list` / `tools.call` activity events with no arguments or results.
+- [x] 47 new tests (`routing` 26, `tools-api` 12, `mcp-tools` 9) → 303 total, using local fixtures only.
+- [x] `pnpm typecheck`, `pnpm test`, `pnpm build` pass.
+- [x] No real backend connected; no agent configuration touched; no non-loopback exposure.
+
+**Deferred by design:** health probing (an `unhealthy` state still has no setter), catalog persistence (ADR-038), and `tools/list` pagination (full list is protocol-legal and bounded).
 
 ## Phase 6 — Identity, authentication, and policies
 - Agent profiles.

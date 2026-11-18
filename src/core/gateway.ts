@@ -14,6 +14,11 @@ import { BackendLifecycleManager as Lifecycle } from '../adapters/lifecycle.js';
 import type { Config } from '../config/config.js';
 import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
+import { ToolCatalog } from '../routing/catalog.js';
+import { ToolDiscovery } from '../routing/discovery.js';
+import { createGatewayServerFactory } from '../routing/mcp-server.js';
+import { ToolRouter } from '../routing/router.js';
+import { SERVICE_INFO } from '../shared/service.js';
 
 export interface GatewayOptions {
   config: Config;
@@ -34,13 +39,18 @@ export interface Gateway {
   app: Hono;
   /** Releases in-flight MCP exchanges. Safe to call more than once. */
   close(): Promise<void>;
+  /** Shared services, exposed for tests and for the management API wiring. */
+  readonly catalog: ToolCatalog;
+  readonly discovery?: ToolDiscovery;
+  readonly router?: ToolRouter;
 }
 
-export const SERVICE_INFO = { name: 'universal-mcp-gateway', version: '1.0.0' } as const;
+export { SERVICE_INFO };
 
 /**
- * Builds the MCP surface served for one exchange. The default exposes an empty
- * tool catalog: backends are registered in later phases.
+ * Builds the MCP surface served for one exchange when no store is configured:
+ * the gateway is running as a bare protocol endpoint with no backends, so the
+ * catalog is empty and `tools/call` has nothing to route to.
  */
 export function createEmptyServer(): McpServer {
   return new McpServer(SERVICE_INFO, { capabilities: { tools: {} } });
@@ -51,6 +61,13 @@ const CLIENT_ERROR_PREFIXES = ['Rejected inbound request', 'Rejected 2025-era re
 
 export function createGateway(options: GatewayOptions): Gateway {
   const { config, logger, store } = options;
+
+  /**
+   * The catalog exists even without a store so `createGateway` has one shape.
+   * It stays empty in that mode because nothing can be discovered without a
+   * registry or a lifecycle.
+   */
+  const catalog = new ToolCatalog();
 
   /**
    * One lifecycle manager per process, created here so the API, the runtime
@@ -77,7 +94,49 @@ export function createGateway(options: GatewayOptions): Gateway {
 
   lifecycle?.recover();
 
-  const handler = createMcpHandler(options.createServer ?? createEmptyServer, {
+  /**
+   * Discovery and routing need a registry and a lifecycle; without both there is
+   * nothing to discover and nowhere to route, so the empty server stays.
+   */
+  const discovery =
+    store !== undefined && lifecycle !== undefined
+      ? new ToolDiscovery({
+          store,
+          logger,
+          lifecycle,
+          catalog,
+          timeoutMs: config.toolDiscoveryTimeoutMs,
+        })
+      : undefined;
+
+  const router =
+    store !== undefined && lifecycle !== undefined
+      ? new ToolRouter({
+          store,
+          logger,
+          lifecycle,
+          catalog,
+          timeoutMs: config.toolCallTimeoutMs,
+        })
+      : undefined;
+
+  /**
+   * Wired after construction because the two services are mutually referential:
+   * discovery needs the lifecycle to find clients, the lifecycle needs discovery
+   * to follow connections. The observer is registered before any route can be
+   * reached, so no connect can happen unobserved.
+   */
+  if (discovery !== undefined && lifecycle !== undefined) {
+    lifecycle.setConnectionObserver(discovery.onConnectionChange);
+  }
+
+  const createServer =
+    options.createServer ??
+    (router === undefined
+      ? createEmptyServer
+      : createGatewayServerFactory({ catalog, router, logger }));
+
+  const handler = createMcpHandler(createServer, {
     maxRequestBodySize: config.requestBodyLimitBytes,
     onerror: (error) => {
       if (CLIENT_ERROR_PREFIXES.some((prefix) => error.message.startsWith(prefix))) {
@@ -123,7 +182,18 @@ export function createGateway(options: GatewayOptions): Gateway {
   });
 
   if (store !== undefined && lifecycle !== undefined) {
-    app.route(API_PREFIX, createManagementApi({ config, logger, store, lifecycle }));
+    app.route(
+      API_PREFIX,
+      createManagementApi({
+        config,
+        logger,
+        store,
+        lifecycle,
+        catalog,
+        // `discovery` is defined whenever `store` and `lifecycle` are.
+        discovery: discovery!,
+      }),
+    );
   }
 
   // The transport parses the body itself, so malformed JSON answers a JSON-RPC
@@ -141,6 +211,9 @@ export function createGateway(options: GatewayOptions): Gateway {
 
   return {
     app,
+    catalog,
+    ...(discovery === undefined ? {} : { discovery }),
+    ...(router === undefined ? {} : { router }),
     async close() {
       shuttingDown = true;
       // Order matters: stop serving, then release outbound connections, then let

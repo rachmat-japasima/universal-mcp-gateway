@@ -26,11 +26,12 @@ Next.js, React, TypeScript, and **Astryx directly** as the UI component library/
 
 ## Current status
 
-Phases 1–3 are complete.
-- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 256 tests).
+Phases 1–5 are complete.
+- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 303 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
-- `tools/list` returns an empty catalog; no backend is registered and none is connected.
+- `tools/list` serves the live catalog; no backend is registered and none is
+  connected in the production registry, so it is empty there by default.
 - Phase 1: 19 integration tests cover handshake, malformed input, Host/Origin
   validation, per-exchange server isolation, and shutdown.
 - Phase 2: domain + Zod 4 contracts, error taxonomy, centralized configuration,
@@ -45,13 +46,23 @@ Phases 1–3 are complete.
   recovery, an SSRF destination policy, and `connect`/`disconnect`/`reconnect`/
   `runtime` endpoints. 61 new tests, including real child processes and a
   loopback HTTP fixture.
+- Phase 5: generic tool discovery, deterministic namespacing, a fail-closed
+  collision policy, lossless JSON Schema forwarding, `tools/list` + `tools/call`
+  over a low-level SDK `Server`, per-call timeout and cancellation, lifecycle
+  synchronization, and a catalog management API. 47 new tests → 303 total.
 - `/health` reports `backendCount: 0`; production backend registry is empty.
 
 **Nothing connects by itself.** Registration, validation, and enable/disable are
 configuration operations: no process is spawned and no socket is dialled. A
 connection happens only on an explicit `POST /backends/:id/connect`, and a
 restart rewrites every persisted live state to `disconnected` without
-reconnecting. Tool discovery aggregation and routing remain Phase 5+.
+reconnecting. Connecting discovers tools; disconnecting removes them.
+
+**Tools are namespaced `<backend_id>__<tool_name>`.** Two backends claiming the
+same public name have **both** tools withheld — never routed by discovery order.
+Schemas are forwarded verbatim, validated with AJV where they compile, and
+forwarded unvalidated (with the reason logged) where they do not. There is no
+HTTP tool-invocation endpoint: calls go through `/mcp` only.
 
 **Backends can now run processes and make outbound connections.** The outbound
 policy (scheme, credentials, DNS-resolved destinations, redirects) is in
@@ -59,9 +70,11 @@ policy (scheme, credentials, DNS-resolved destinations, redirects) is in
 loopback/private/CGNAT and never metadata or link-local. TLS verification is
 never disabled.
 
-**The management API is unauthenticated.** It is loopback-only and applies
-Host/Origin, JSON content-type, and size guards — but any local process can call
-it. Do not expose it beyond loopback. See `docs/SECURITY.md` §3.1.
+**The management API is unauthenticated, and so is the tool surface.** Both are
+loopback-only and apply Host/Origin, JSON content-type, and size guards — but any
+local process can call them, and every discovered tool is callable by any caller
+that reaches `/mcp`. Agent identity and authorization are Phase 6. Do not expose
+this beyond loopback. See `docs/SECURITY.md` §3.1 and §5.
 
 ## Configuration
 
@@ -84,6 +97,8 @@ Environment variables, with defaults:
 | `RECONNECT_MAX_ATTEMPTS` | `5` | Attempts before giving up (1–100) |
 | `RECONNECT_JITTER_RATIO` | `0.2` | ± fraction of each delay (0–1) |
 | `ALLOW_PRIVATE_NETWORK` | `false` | Permit loopback/private HTTP backends (fixtures only) |
+| `TOOL_DISCOVERY_TIMEOUT_MS` | `15000` | Bound on one backend's `tools/list` |
+| `TOOL_CALL_TIMEOUT_MS` | `60000` | Ceiling on one `tools/call` (backend `timeoutMs` still wins if lower) |
 
 Precedence: explicit overrides → environment → defaults. Invalid configuration
 fails fast at startup with a message naming the setting. No YAML is read; no
@@ -172,5 +187,6 @@ rules are in `docs/BACKEND_SPEC.md`.
 
 ## Next task
 
-Phase 5 — tool discovery, namespacing, and routing across connected backends.
+Phase 6 — agent profiles, per-agent credentials, dashboard owner authentication,
+and the policy engine (default deny; filter `tools/list`; re-check `tools/call`).
 Do not add real backends or modify agent configurations without approval.

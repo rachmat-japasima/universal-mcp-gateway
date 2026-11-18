@@ -71,6 +71,18 @@ export const configSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((value) => value === 'true'),
+    /**
+     * Bound on one `tools/list` during discovery. Separate from a backend's own
+     * `timeoutMs` so a slow catalog cannot make a healthy backend look dead, and
+     * so discovery can be tightened without touching per-call behaviour.
+     */
+    toolDiscoveryTimeoutMs: z.coerce.number().int().min(100).max(120_000).default(15_000),
+    /**
+     * Outer bound on one routed tool call. The backend's own `timeoutMs` applies
+     * inside the client; this stops a misconfigured backend from pinning an
+     * inbound request open.
+     */
+    toolCallTimeoutMs: z.coerce.number().int().min(100).max(600_000).default(60_000),
   })
   .strict();
 
@@ -93,6 +105,8 @@ export interface ConfigEnv {
   RECONNECT_MAX_ATTEMPTS?: string;
   RECONNECT_JITTER_RATIO?: string;
   ALLOW_PRIVATE_NETWORK?: string;
+  TOOL_DISCOVERY_TIMEOUT_MS?: string;
+  TOOL_CALL_TIMEOUT_MS?: string;
 }
 
 function envValue(env: ConfigEnv, key: keyof ConfigEnv): string | undefined {
@@ -121,6 +135,8 @@ export function parseConfig(
     reconnectMaxAttempts: envValue(env, 'RECONNECT_MAX_ATTEMPTS'),
     reconnectJitterRatio: envValue(env, 'RECONNECT_JITTER_RATIO'),
     allowPrivateNetwork: envValue(env, 'ALLOW_PRIVATE_NETWORK'),
+    toolDiscoveryTimeoutMs: envValue(env, 'TOOL_DISCOVERY_TIMEOUT_MS'),
+    toolCallTimeoutMs: envValue(env, 'TOOL_CALL_TIMEOUT_MS'),
     ...overrides,
   };
 
