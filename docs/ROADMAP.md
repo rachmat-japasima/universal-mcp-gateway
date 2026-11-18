@@ -53,21 +53,29 @@ The full product scope is approved in this document. Implement sequentially; do 
 - [x] 190 tests; `pnpm typecheck`, `pnpm test`, `pnpm build` pass.
 - [x] Registry remains empty until the user adds a backend. No backend connected.
 
-## Phase 4 — Adapter framework
-- Implement stdio adapter.
-- Implement Streamable HTTP adapter.
-- Use official MCP Client SDK.
-- Implement process lifecycle, timeouts, reconnect, cleanup.
-- Wire the `connect`/`disconnect`/`reconnect` endpoints deferred from Phase 3.
-- Use test fixtures only; do not add permanent production backends.
+## Phase 4 — Adapter framework (completed)
+- [x] stdio adapter: executable + argument array, `shell: false`, inherited env limited to the SDK default set plus explicit references, bounded credential-redacted stderr tail, SDK escalating teardown.
+- [x] Streamable HTTP adapter: guarded `fetch` re-checked per request, same-origin redirects, TLS verification never disabled, SDK reconnection disabled.
+- [x] Official MCP Client SDK for both transports, wrapped so failures map onto the gateway's error taxonomy.
+- [x] Process lifecycle: serialized per backend, one promise chain, idempotent connect/disconnect.
+- [x] Persisted state machine with a `disconnecting` state (migration `0003`), enforced at the write.
+- [x] Bounded exponential-backoff reconnect with jitter, transient-only, off by default.
+- [x] Startup recovery: persisted live state rewritten to a resting state, never reconnected.
+- [x] `connect`, `disconnect`, `reconnect`, and `runtime` endpoints; `enable` does not connect, `disable` tears down.
+- [x] SSRF destination policy: scheme, credentials, DNS-resolved address classes, per-request re-check. `ALLOW_PRIVATE_NETWORK` opens only loopback/private/CGNAT.
+- [x] 256 tests (`network-policy` 16, `lifecycle` 25, `lifecycle-api` 14, plus config/domain additions), using isolated fixtures and a loopback HTTP fixture only.
+- [x] Live-verified on `127.0.0.1` with a temp database: spawn/teardown, disable/enable, metadata URL refused, SIGTERM cleanup, restart recovery with zero children spawned.
+- [x] `pnpm typecheck`, `pnpm test`, `pnpm build` pass.
+- [x] Production registry remains empty; no real backend connected; no agent configuration touched.
 
 ## Phase 5 — Tool catalog and routing
-- Discover tools.
+- Discover tools from connected backends.
 - Namespacing and collision detection.
 - Tool call routing.
 - Timeout/cancellation.
 - Error normalization.
 - Tool catalog cache/invalidation.
+- Health probing of live backends (sets `unhealthy`).
 - Integration tests with isolated fixtures.
 
 ## Phase 6 — Identity, authentication, and policies

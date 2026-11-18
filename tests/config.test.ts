@@ -110,3 +110,50 @@ describe('redaction', () => {
     expect(JSON.stringify(redacted)).not.toMatch(/password|token|secret|apiKey/i);
   });
 });
+
+describe('lifecycle configuration', () => {
+  it('defaults to no automatic reconnect and no private-network access', () => {
+    expect(expectValidParse({})).toMatchObject({
+      reconnectEnabled: false,
+      reconnectInitialDelayMs: 1_000,
+      reconnectMaxDelayMs: 60_000,
+      reconnectMaxAttempts: 5,
+      reconnectJitterRatio: 0.2,
+      allowPrivateNetwork: false,
+    });
+  });
+
+  it('reads every lifecycle variable', () => {
+    expect(
+      expectValidParse({
+        RECONNECT_ENABLED: 'true',
+        RECONNECT_INITIAL_DELAY_MS: '500',
+        RECONNECT_MAX_DELAY_MS: '5000',
+        RECONNECT_MAX_ATTEMPTS: '3',
+        RECONNECT_JITTER_RATIO: '0.5',
+        ALLOW_PRIVATE_NETWORK: 'true',
+      }),
+    ).toMatchObject({
+      reconnectEnabled: true,
+      reconnectInitialDelayMs: 500,
+      reconnectMaxDelayMs: 5_000,
+      reconnectMaxAttempts: 3,
+      reconnectJitterRatio: 0.5,
+      allowPrivateNetwork: true,
+    });
+  });
+
+  it('rejects out-of-range lifecycle values', () => {
+    for (const env of [
+      { RECONNECT_ENABLED: 'yes' },
+      { RECONNECT_INITIAL_DELAY_MS: '10' },
+      { RECONNECT_MAX_ATTEMPTS: '0' },
+      { RECONNECT_MAX_ATTEMPTS: '101' },
+      { RECONNECT_JITTER_RATIO: '2' },
+      { RECONNECT_JITTER_RATIO: '-0.1' },
+      { ALLOW_PRIVATE_NETWORK: 'sometimes' },
+    ]) {
+      expect(parseConfig(env).ok, JSON.stringify(env)).toBe(false);
+    }
+  });
+});

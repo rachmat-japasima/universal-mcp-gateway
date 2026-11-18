@@ -13,12 +13,40 @@ export const BACKEND_STATUSES = [
   'connecting',
   'connected',
   'unhealthy',
+  'disconnecting',
   'error',
   'disabled',
 ] as const;
 
 export const backendStatusSchema = z.enum(BACKEND_STATUSES);
 export type BackendStatus = z.infer<typeof backendStatusSchema>;
+
+/**
+ * Legal lifecycle edges. Declared as data so the manager cannot invent a
+ * transition and a test can enumerate every pair.
+ *
+ * Notes on the non-obvious edges:
+ *   * `connected -> unhealthy` is a live connection that reported an error but
+ *     has not been torn down yet; `unhealthy -> connecting` is its retry.
+ *   * `connected/unhealthy -> disconnecting -> disconnected` is the only way
+ *     back to rest, so a "disconnect" can never look instantaneous.
+ *   * `error` is reachable from every live state, and leaves only towards a new
+ *     attempt, a teardown, or `disabled`.
+ *   * `disabled` is a configuration fact, never a connection fact.
+ */
+export const BACKEND_TRANSITIONS: Readonly<Record<BackendStatus, readonly BackendStatus[]>> = {
+  disconnected: ['connecting', 'disabled'],
+  connecting: ['connected', 'error', 'disconnected'],
+  connected: ['disconnecting', 'unhealthy', 'error'],
+  unhealthy: ['connecting', 'disconnecting', 'error'],
+  disconnecting: ['disconnected', 'error'],
+  error: ['connecting', 'disconnecting', 'disconnected', 'disabled'],
+  disabled: ['disconnected'],
+};
+
+export function canTransition(from: BackendStatus, to: BackendStatus): boolean {
+  return BACKEND_TRANSITIONS[from].includes(to);
+}
 
 export const backendErrorCodeSchema = z.enum([
   'BACKEND_CONNECTION_ERROR',

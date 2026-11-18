@@ -318,20 +318,25 @@ export class SqliteBackendRuntimeRepository implements BackendRuntimeRepository 
 
     if (row === undefined) return undefined;
 
-    return parseStored(
-      () =>
-        backendRuntimeSchema.parse({
-          backendId: row.backend_id,
-          status: row.status,
-          ...(row.last_connected_at === null ? {} : { lastConnectedAt: row.last_connected_at }),
-          ...(row.last_health_check_at === null ? {} : { lastHealthCheckAt: row.last_health_check_at }),
-          ...(row.last_error_code === null ? {} : { lastErrorCode: row.last_error_code }),
-          ...(row.last_error_at === null ? {} : { lastErrorAt: row.last_error_at }),
-          ...(row.last_error_message === null ? {} : { lastErrorMessage: row.last_error_message }),
-          reconnectAttempts: row.reconnect_attempts,
-          updatedAt: row.updated_at,
-        }),
-      { backendId },
-    );
+    return parseStored(() => toRuntime(row), { backendId });
   }
+
+  list(): BackendRuntime[] {
+    const rows = this.database.prepare('SELECT * FROM backend_runtime ORDER BY backend_id').all() as RuntimeRow[];
+    return rows.map((row) => parseStored(() => toRuntime(row), { backendId: row.backend_id }));
+  }
+}
+
+function toRuntime(row: RuntimeRow): BackendRuntime {
+  return backendRuntimeSchema.parse({
+    backendId: row.backend_id,
+    status: row.status,
+    ...(row.last_connected_at === null ? {} : { lastConnectedAt: row.last_connected_at }),
+    ...(row.last_health_check_at === null ? {} : { lastHealthCheckAt: row.last_health_check_at }),
+    ...(row.last_error_code === null ? {} : { lastErrorCode: row.last_error_code }),
+    ...(row.last_error_at === null ? {} : { lastErrorAt: row.last_error_at }),
+    ...(row.last_error_message === null ? {} : { lastErrorMessage: row.last_error_message }),
+    reconnectAttempts: row.reconnect_attempts,
+    updatedAt: row.updated_at,
+  });
 }

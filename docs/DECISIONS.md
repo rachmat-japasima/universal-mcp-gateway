@@ -160,3 +160,39 @@ Error messages must help a caller fix a request without ever repeating what they
 - Two name positions are additionally constrained at the schema, which settles most of this by construction: env keys must be POSIX variables (`^[A-Za-z_][A-Za-z0-9_]{0,127}$`, so no hyphens) and header keys must be RFC 7230 tokens.
 - Accepted limit: a header *name* that looks like a secret is a legal header name, and header names must be displayed for the config to be legible. It is treated as caller-supplied text (same class as `description`), not as a credential. Attempting to redact it would hide legitimate names like `X-Api-Key`.
 - Trade-off: adding a schema field without adding it to `KNOWN_FIELDS` makes its name appear as `(redacted)` in error text. That is cosmetic and fails safe. Both `tests/api.test.ts` and `tests/backend-service.test.ts` assert a pasted-key secret never appears in a response or in `audit_events`.
+
+## ADR-032 — Outbound destination policy before the socket, enforced per request
+**Status:** Accepted  
+Phase 4 makes the gateway dial operator-supplied URLs, which is an SSRF primitive unless destinations are constrained. A definition containing `http://169.254.169.254/` would otherwise turn the loopback-only API into a network scanner.
+- Order: scheme (`http`/`https` only) → embedded credentials refused → hostname **resolved** → every returned address classified. String matching is insufficient: `metadata.google.internal` looks public.
+- Checked inside the `fetch` the transport uses, not once at connect, so every request and every redirect hop is covered. `redirectPolicy: 'same-origin'` keeps a redirect from reaching a destination that was never checked.
+- `ALLOW_PRIVATE_NETWORK=true` opens **only** loopback, RFC 1918, and CGNAT. Link-local (`169.254/16`, `fe80::/10`), unspecified, multicast, and reserved stay refused. This was tightened after a live test showed the original single-list implementation let `169.254.169.254` through when the flag was set — the opt-in exists for local fixtures, not as a general bypass.
+- Rejected alternative: a per-backend egress allowlist. Premature — there is no policy engine until Phase 6, and an allowlist with one operator would encode the same host every time.
+- **Accepted limit:** check-then-connect leaves a DNS-rebinding window between our lookup and the socket. Closing it needs a custom dialing agent that connects to the resolved IP; the remaining exposure requires a hostile DNS server for a hostname the operator chose themselves.
+- TLS verification is never disabled anywhere: no `rejectUnauthorized: false`, no `NODE_TLS_REJECT_UNAUTHORIZED`, no custom agent.
+
+## ADR-033 — One lifecycle manager per process, explicit connect only
+**Status:** Accepted  
+`src/adapters/lifecycle.ts` is constructed once in `createGateway()` and shared by the connect routes, the runtime reads, startup recovery, and shutdown. Duplicating it per request would give two views of "is this backend connected", and the second one would be wrong.
+- The service layer stays synchronous and connection-free; the manager is the sole owner of processes and HTTP clients. Live objects never enter SQLite.
+- **Nothing connects implicitly.** Create, update, and `enable` reconcile runtime state but never dial. A connection needs an explicit `POST /backends/:id/connect`. Before this phase the worst a local caller could do was edit rows; now it can spawn a process, so implicit dialling would widen the blast radius for no benefit.
+- One promise chain per backend serializes concurrent connects, so a double-click cannot spawn two children.
+- Retry: bounded exponential backoff with ± jitter, transient-only (`BACKEND_TIMEOUT`, `BACKEND_UNAVAILABLE`), off by default. A bad executable, a policy refusal, or rejected credentials is permanent — retrying cannot change the answer.
+- Shutdown is sequenced inside `Gateway.close()`: MCP handler → lifecycle → store. A store closed under a running teardown could not persist a truthful row.
+- **Accepted limit:** no health probing yet, so `unhealthy` is a legal state nothing sets in Phase 4. Adding a probe without tool discovery would be a timer that only proves the process is alive.
+
+## ADR-034 — Startup recovery rewrites live state; `reconcile` after commit
+**Status:** Accepted  
+Two related choices about who decides what a change means for a live connection.
+- **Recovery distrusts the database.** A persisted `connected` is a claim by a process that no longer exists. `recover()` rewrites `connected`/`connecting`/`unhealthy`/`disconnecting` to `disconnected` (or `disabled` when the config says so), resets `reconnectAttempts`, preserves `lastConnectedAt` as history, and **does not reconnect**. Trusting the row would either lie to the operator or auto-dial on boot — both unacceptable. A persisted `error` is preserved: it is still true.
+- **One `reconcile()` per mutation, after the transaction commits.** Each mutating route calls `lifecycle.reconcile(id)` once; the manager re-reads the committed row, compares a connection fingerprint (`connection`, `timeoutMs`, `enabled`), and tears down a live connection whose fingerprint changed. The alternative — five change detectors, one per field — duplicates knowledge of the domain in the route layer and drifts. The manager is the only place that knows what a connection depends on.
+- Fingerprint comparison, not a dirty flag: a `PATCH` that changes only `description` leaves the connection alone, which a flag would get wrong.
+- Rejected alternative: an event bus between the service and the manager. One process, one caller, no fan-out — an emitter would add ordering questions with nothing to answer them.
+
+## ADR-035 — A `disconnecting` state, added by a table rebuild
+**Status:** Accepted  
+Teardown is not instantaneous: a child gets stdin end → SIGTERM → grace → SIGKILL. Reporting `connected` while a process is being killed is a lie, and reporting `disconnected` before it exits is worse — the next connect could race the old child.
+- `backend_runtime.status` gains `disconnecting` (migration `0003`). SQLite cannot alter a `CHECK`, so the migration rebuilds the table and copies every row inside the runner's transaction.
+- The transition set is declared as data (`BACKEND_TRANSITIONS`) and enforced in `persist()`; an illegal edge throws `INTERNAL_ERROR` rather than storing an impossible status. This catches manager bugs at the write instead of at a later read.
+- `disconnecting` is transient and never survives a restart: recovery treats it as dead-process state like `connected`.
+- **Accepted limit:** the status is only as truthful as the last write. A `SIGKILL` of the gateway itself leaves whatever was last persisted; recovery exists precisely because that cannot be avoided.

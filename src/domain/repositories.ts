@@ -55,6 +55,8 @@ export interface BackendRuntimeRepository {
   /** Creates or replaces the runtime row for a backend. */
   upsert(runtime: BackendRuntime): BackendRuntime;
   findByBackendId(backendId: string): BackendRuntime | undefined;
+  /** Every runtime row. Bounded by the registry size; used for startup recovery. */
+  list(): BackendRuntime[];
 }
 
 export interface AgentRepository {

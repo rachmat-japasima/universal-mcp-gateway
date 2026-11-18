@@ -131,14 +131,14 @@ apps/
 
 This is a target structure, not a requirement to move existing files immediately. Preserve the current working bootstrap and refactor incrementally.
 
-### 4.1 Implemented module layout (Phase 3)
+### 4.1 Implemented module layout (Phase 4)
 
 ```text
 src/
   domain/          # contracts, no infrastructure imports
     primitives.ts        ids, timestamps, secret references
     backend.ts           definition + create/update schemas
-    backend-runtime.ts   runtime state + status enum
+    backend-runtime.ts   runtime state, status enum, BACKEND_TRANSITIONS
     agent.ts
     agent-credential.ts  verifier hash, derived status
     policy.ts            rules, effects, deterministic ordering
@@ -150,6 +150,14 @@ src/
     errors.ts        AppError, ErrorCode, toAppError, log view
   config/
     config.ts        pure parseConfig/loadConfig/redactConfig
+  security/
+    network-policy.ts    outbound destination policy (SSRF), guardedFetch
+  adapters/
+    adapter.ts           BackendAdapter interface + createAdapter()
+    stdio-adapter.ts     child-process transport
+    http-adapter.ts      Streamable HTTP transport
+    mcp-client.ts        SDK Client wrapper, error normalization
+    lifecycle.ts         BackendLifecycleManager — sole owner of live connections
   api/
     index.ts             management API assembly + middleware order
     http.ts              request id, envelopes, JSON parsing, error boundary
@@ -163,13 +171,14 @@ src/
   registry/
     backend-service.ts   business rules, transactions, audit, sanitization
   core/
-    gateway.ts       Hono app + MCP handler + health + API mount
+    gateway.ts       Hono app + MCP handler + health + API mount + lifecycle
   infrastructure/
     database/
       connection.ts        pragmas, one handle per process
       migration-runner.ts  transactional, checksummed migrations
       migrations/0001_initial_schema.sql
       migrations/0002_backend_version.sql
+      migrations/0003_runtime_disconnecting.sql
       repositories/        SQLite implementations
   monitoring/
     logger.ts        Pino + redaction paths
@@ -182,7 +191,9 @@ Boundaries that matter:
 
 - **Domain vs persistence.** Repository interfaces live in `src/domain/repositories.ts` and speak in entities; SQL and `better-sqlite3` types never appear there. An in-memory fake satisfies the same contract.
 - **Route vs service vs repository.** A route parses HTTP and formats the response; `BackendService` owns uniqueness, transactions, audit, and sanitization; repositories own SQL. No handler contains a statement or a business rule.
-- **Definition vs runtime.** `backends` holds configuration; `backend_runtime` holds observed connection state. A persisted backend never implies a live connection.
+- **Definition vs runtime.** `backends` holds configuration; `backend_runtime` holds observed connection state. A persisted backend never implies a live connection. Live objects (child processes, HTTP clients) live only in the lifecycle manager, never in either table.
+- **Service vs lifecycle.** `BackendService` is synchronous and owns no connections. After a mutating transaction commits, the route calls `lifecycle.reconcile(id)` once: the manager re-reads the committed row, compares a connection fingerprint, and decides what the change means for live state (ADR-034). The service never spawns or dials.
+- **Who owns the manager.** One `BackendLifecycleManager` per process, constructed in `createGateway()` and passed to the management API, so `connect` routes, `runtime` reads, startup `recover()`, and `shutdown()` all see the same connections. It is injectable for tests.
 - **Activity vs audit.** Separate entities, tables, and interfaces. Operational volume must not dilute administrative history, and audit is append-only.
 - **Contracts vs secrets.** Agent tokens are not part of the `Agent` entity; only a verifier hash is stored. Backend `env`/`headers` accept secret *references* only.
 
@@ -201,6 +212,20 @@ The MCP surface keeps the SDK's `hostHeaderValidation`/`originValidation` middle
 
 The API is not mounted at all when no store is configured, rather than mounted against a missing database.
 
+## 4.3 Outbound connection lifecycle (Phase 4)
+
+`src/adapters/lifecycle.ts` is the only place a backend is spawned or dialled. `docs/BACKEND_SPEC.md` §6.1 is the method-by-method contract; the architecture points are:
+
+- **Serialized per backend.** Each backend gets one promise chain, so two concurrent `connect` calls open one connection, not two.
+- **Explicit only.** Create, update, `enable`, and process start never connect. `enable` makes a backend eligible; `disable` cancels a pending retry and tears the connection down.
+- **Recovery is safe, not eager.** On start, any persisted `connected`/`connecting`/`unhealthy`/`disconnecting` is a claim by a dead process. `recover()` rewrites it to `disconnected` (or `disabled`) and does not dial. A persisted `error` is preserved.
+- **State machine enforced at the write.** `BACKEND_TRANSITIONS` declares every legal edge and `persist()` refuses anything else, so an impossible status cannot reach the table.
+- **Backoff is bounded and jittered.** `initialDelay * 2^(n-1)`, capped, ± `jitterRatio`, at most `maxAttempts`. Only `BACKEND_TIMEOUT` and `BACKEND_UNAVAILABLE` retry; a bad executable, a policy refusal, or a rejected credential is permanent. Off by default (`RECONNECT_ENABLED=false`).
+- **Shutdown order.** `Gateway.close()` closes the MCP handler, then awaits `lifecycle.shutdown()`, then the caller closes the store — so a teardown can still write a truthful runtime row.
+- **Destination policy before the socket.** `src/security/network-policy.ts` validates scheme, credentials, and every DNS-resolved address, and wraps `fetch` so the check runs per request (SSRF; `docs/SECURITY.md` §3.2).
+
+`docs/BACKEND_SPEC.md` §6 describes the transports; `tests/lifecycle.test.ts` and `tests/lifecycle-api.test.ts` exercise them against isolated fixtures only.
+
 ## 5. Inbound MCP lifecycle
 
 1. Client connects to `/mcp`.
@@ -217,18 +242,11 @@ The API is not mounted at all when no store is configured, rather than mounted a
 
 ## 6. Outbound adapter lifecycle
 
-Adapter interface should cover:
-- validate configuration
-- connect/start
-- initialize MCP client
-- list tools
-- call tool
-- health/status
-- reconnect
-- close/stop
-- expose sanitized diagnostics
+Implemented in Phase 4 (`src/adapters/`, `docs/BACKEND_SPEC.md` §5–6). The adapter interface is deliberately narrow: connect to the official MCP Client SDK client, close, and expose a loggable target. Lifecycle, retry, health, and state persistence belong to the manager, so adding a transport does not mean reimplementing them.
 
-Use official MCP Client SDK. Keep process launch and transport details inside adapters. A backend failure must not crash the whole gateway.
+`McpBackendClient` wraps the SDK `Client` to normalize SDK/transport/OS failures onto the gateway's `AppError` taxonomy and own the per-call timeout. It walks the error's cause chain, so a wrapped `ECONNREFUSED` is still recognized as transient and a wrapped policy refusal still surfaces its real message.
+
+A backend failure never crashes the gateway: `connect` rejects with a mapped error, the runtime row records a sanitized code, and the process stays up. See §4.3 for ownership and recovery.
 
 ## 7. Registry model
 
@@ -246,7 +264,7 @@ Backend definition fields:
 - `createdAt`, `updatedAt`.
 
 Runtime state is a separate row and never part of a definition:
-- `status` — `disconnected` | `connecting` | `connected` | `unhealthy` | `error` | `disabled`.
+- `status` — `disconnected` | `connecting` | `connected` | `unhealthy` | `disconnecting` | `error` | `disabled`.
 - `lastConnectedAt`, `lastHealthCheckAt`, `lastErrorCode`, `lastErrorAt`, `reconnectAttempts`.
 
 Rules enforced by the registry service:
@@ -337,11 +355,13 @@ Retention and backup policy are still to be defined. Do not store sensitive tool
 ## 14. Security boundaries
 
 - Loopback binding by default; a non-loopback `HOST` is refused at config load.
-- The management API is **unauthenticated** in Phase 3. Its boundary is local-only access (socket address, `HOST`, `Host`, `Origin`) plus a JSON content-type requirement — not identity. Dashboard authentication is Phase 6.
+- The management API is **unauthenticated** in Phase 4. Its boundary is local-only access (socket address, `HOST`, `Host`, `Origin`) plus a JSON content-type requirement — not identity. Since Phase 4 a local caller can also cause a process spawn and an outbound connection, so the blast radius is larger than in Phase 3. Do not expose it via tunnel, proxy, or non-loopback bind before Phase 6.
+- Outbound Streamable HTTP destinations pass a documented policy: `http`/`https` only, no embedded credentials, DNS-resolved address classification, per-request re-check, same-origin redirects. `ALLOW_PRIVATE_NETWORK` opens loopback/private/CGNAT for local fixtures and never metadata or link-local.
+- Registration, enable, and process start never connect; a connection requires an explicit `connect`, and a restart rewrites persisted live state to `disconnected` without reconnecting.
 - Origin/Host validation on both surfaces, each answering in its own protocol's error shape.
 - Redacted logs; secrets exist only as references, so there is nothing to redact in a payload.
 - Safe stdio process launch with executable and argument arrays; no shell interpolation.
-- Controlled environment inheritance.
+- Controlled environment inheritance (SDK default set plus explicitly referenced variables).
 - No public exposure before security review.
 
 ## 15. Error taxonomy

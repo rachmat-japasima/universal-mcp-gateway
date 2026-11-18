@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 
+import type { BackendLifecycleManager } from '../adapters/lifecycle.js';
 import type { Config } from '../config/config.js';
 import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
@@ -13,6 +14,7 @@ export interface ManagementApiOptions {
   config: Config;
   logger: Logger;
   store: Database;
+  lifecycle: BackendLifecycleManager;
 }
 
 export const API_PREFIX = '/api/v1';
@@ -26,10 +28,11 @@ export const API_PREFIX = '/api/v1';
  *   3. body limit      — bound allocation before parsing
  *   4. JSON content type — reject cross-site form posts
  *
- * The service is constructed once per app, sharing the single database handle.
+ * The service is constructed once per app, sharing the single database handle
+ * and the process-wide lifecycle manager.
  */
 export function createManagementApi(options: ManagementApiOptions): Hono {
-  const { config, logger, store } = options;
+  const { config, logger, store, lifecycle } = options;
   const service = new BackendService(store);
 
   const api = new Hono();
@@ -41,8 +44,16 @@ export function createManagementApi(options: ManagementApiOptions): Hono {
   api.use('*', jsonBodyLimit(config));
   api.use('*', requireJsonBody());
 
-  api.route('/system', systemRoutes({ service, environment: config.environment, mcpEndpoint: config.mcpEndpoint, healthEndpoint: config.healthEndpoint }));
-  api.route('/backends', backendsRoutes(service));
+  api.route(
+    '/system',
+    systemRoutes({
+      service,
+      environment: config.environment,
+      mcpEndpoint: config.mcpEndpoint,
+      healthEndpoint: config.healthEndpoint,
+    }),
+  );
+  api.route('/backends', backendsRoutes(service, lifecycle));
 
   // A catch-all rather than `notFound()`: `route()` copies routes into the parent
   // app but not its not-found handler, so the sub-app's handler would never run.

@@ -35,6 +35,7 @@ There is exactly **one connection per process** (`openStore()`), created after c
 
 `0001_initial_schema.sql` — 11 tables. `schema_migrations` is created by the runner.
 `0002_backend_version.sql` — adds `backends.version` (Phase 3).
+`0003_runtime_disconnecting.sql` — rebuilds `backend_runtime` to add the `disconnecting` status (Phase 4).
 
 ### `backends`
 `id`, `name`, `description`, `transport` (`stdio` | `streamable-http`), `config_json`, `enabled`, `timeout_ms`, `concurrency_mode` (`parallel` | `serialized` | `limited`), `concurrency_limit`, `version`, `created_at`, `updated_at`, `deleted_at`.
@@ -46,9 +47,16 @@ There is exactly **one connection per process** (`openStore()`), created after c
 - The active-name uniqueness index is partial (`WHERE deleted_at IS NULL`), so a name is reusable after a tombstone while the old row survives for history.
 
 ### `backend_runtime`
-`backend_id` (PK, FK → `backends`, `ON DELETE CASCADE`), `status` (`disconnected` | `connecting` | `connected` | `unhealthy` | `error` | `disabled`), `last_connected_at`, `last_health_check_at`, `last_error_code`, `last_error_at`, `last_error_message`, `reconnect_attempts`, `updated_at`.
+`backend_id` (PK, FK → `backends`, `ON DELETE CASCADE`), `status` (`disconnected` | `connecting` | `connected` | `unhealthy` | `disconnecting` | `error` | `disabled`), `last_connected_at`, `last_health_check_at`, `last_error_code`, `last_error_at`, `last_error_message`, `reconnect_attempts`, `updated_at`.
 
 Configuration existing never implies a connection: a new backend starts `disconnected` (or `disabled`).
+
+- `disconnecting` was added by migration `0003`, which rebuilds the table because SQLite cannot alter a `CHECK`. Every row is copied verbatim; the rebuild runs inside the migration runner's transaction.
+- The table holds **only** a truthful status. No pid, command, URL, header, or client object is stored.
+- `last_error_code` is constrained to the three codes the column means (`BACKEND_CONNECTION_ERROR`, `BACKEND_TIMEOUT`, `BACKEND_UNAVAILABLE`); `last_error_message` is capped at 500 characters by a `CHECK`.
+- `reconnect_attempts` belongs to one reconnect sequence. It is reset on an explicit connect/reconnect and on startup recovery, so it cannot accumulate across process lifetimes.
+- Legal transitions are declared in `src/domain/backend-runtime.ts` (`BACKEND_TRANSITIONS`) and enforced by the lifecycle manager, which refuses to persist an edge the table's history cannot explain.
+- **Startup recovery:** a persisted `connected`/`connecting`/`unhealthy`/`disconnecting` is a claim by a process that no longer exists. Recovery rewrites it to `disconnected` (or `disabled`) without reconnecting.
 
 ### `agents`
 `id`, `name`, `description`, `client_type`, `enabled`, `created_at`, `updated_at`, `last_seen_at`, `deleted_at`.

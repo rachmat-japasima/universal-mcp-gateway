@@ -2,7 +2,7 @@
 
 ## 1. Scope
 
-Defines the management API, registry domain, MCP adapters, routing, and lifecycle. Sections 2–4 and 7 describe **what Phase 3 implements**. Sections 5, 8, and 9 describe the target for later phases and say so explicitly.
+Defines the management API, registry domain, MCP adapters, routing, and lifecycle. Sections 2–4, 5, 6, and 9 describe **what Phase 4 implements**. Section 7 (tool routing) is the Phase 5 target and says so explicitly.
 
 ## 2. API conventions (implemented)
 
@@ -45,13 +45,18 @@ Defines the management API, registry domain, MCP adapters, routing, and lifecycl
 | `GET` | `/api/v1/backends/:backendId` | Detail, `404` if absent or tombstoned. |
 | `PATCH` | `/api/v1/backends/:backendId` | Partial update. Optional `?expectedVersion=`. |
 | `DELETE` | `/api/v1/backends/:backendId` | Tombstone. `200` with the pre-deletion representation. |
-| `POST` | `/api/v1/backends/:backendId/enable` | Idempotent configuration enable. |
-| `POST` | `/api/v1/backends/:backendId/disable` | Idempotent configuration disable. |
+| `POST` | `/api/v1/backends/:backendId/enable` | Idempotent configuration enable. Does not connect. |
+| `POST` | `/api/v1/backends/:backendId/disable` | Idempotent configuration disable. Disconnects. |
+| `POST` | `/api/v1/backends/:backendId/connect` | Explicit connect. `409` if disabled. |
+| `POST` | `/api/v1/backends/:backendId/disconnect` | Idempotent. Cancels retries. |
+| `POST` | `/api/v1/backends/:backendId/reconnect` | Explicit retry; resets the attempt counter. |
+| `GET` | `/api/v1/backends/:backendId/runtime` | Runtime state, no pids or connection details. |
+| `GET` | `/api/v1/backends/runtime` | Runtime state for every backend. Literal route. |
 | `POST` | `/api/v1/backends/validate` | Validate a *proposed* config; nothing persisted. |
 
-**Documented deviation.** Earlier drafts put validation at `POST /api/v1/backends/:backendId/validate`. Validating a proposed configuration has no persisted entity to address, so it lives at `/backends/validate` (declared before `/:backendId` so the literal is never parsed as an id). ADR-027.
+**Documented deviation.** Earlier drafts put validation at `POST /api/v1/backends/:backendId/validate`. Validating a proposed configuration has no persisted entity to address, so it lives at `/backends/validate` (declared before `/:backendId` so the literal is never parsed as an id). ADR-027. The same ordering rule protects `/backends/runtime`.
 
-**Not implemented (later phases):** `connect`, `disconnect`, `reconnect`, `:backendId/health`, `:backendId/tools`, and all `tools`/`agents`/`policies`/`sessions`/`settings` routes.
+**Not implemented (later phases):** `:backendId/health`, `:backendId/tools`, and all `tools`/`agents`/`policies`/`sessions`/`settings` routes.
 
 ### 3.1 List query parameters
 
@@ -111,7 +116,10 @@ Response:
 
 ### 3.3 Enable, disable, and delete
 
-- `enable`/`disable` are **configuration-state** operations. No process is started or stopped; lifecycle coordination is Phase 4.
+- `enable`/`disable` change configuration **and** runtime: disable cancels a
+  pending retry and tears the connection down; enable makes the backend eligible
+  but never connects it. Lifecycle coordination happens after the transaction
+  commits (`lifecycle.reconcile`), so the service itself stays synchronous and pure.
 - They are idempotent: re-enabling an enabled backend returns `200` unchanged, writes no audit row, and does not bump `version`. A stale `?expectedVersion=` is still refused.
 - Only two runtime transitions happen: disable → `disabled`; enable from `disabled` → `disconnected`. A `connected` state is never fabricated, and an `error` state is left alone.
 - `DELETE` returns `200` with the representation the backend had immediately before deletion, so the caller sees what it removed. Deleting twice yields `404`.
@@ -145,41 +153,99 @@ Live clients, process handles, or transport instances are never persisted.
 **streamable-http**
 - `url` — required, parsed as a URL, scheme restricted to `http`/`https`. `file:`, `javascript:`, and other schemes are rejected.
 - `headers` — record of ≤ 128-char names to secret references, default `{}`.
-- **No outbound request.** Validating `http://10.255.255.1:9/mcp` returns immediately; no DNS lookup or socket is opened. A stored definition cannot cause traffic, so a remote URL in a definition grants no network access.
-- TLS verification, redirect policy, and egress allowlists belong to the Phase 4+ adapter, not to the registry.
+- **Registry validation makes no outbound request.** `POST /backends/validate` performs no DNS lookup and opens no socket. The destination policy runs later, at connect time.
+- Scheme, embedded credentials, resolved-address class, and redirects are enforced by the adapter's destination policy — see section 6.
 
 `POST /backends/validate` answers `200` with `{ valid: boolean, transport?, normalized?, errors? }` — a validation *result*, not a request failure. Each error names a path and a message, never the received value.
 
-## 5. Adapter interface (target — Phase 4, not implemented)
+## 5. Adapter framework (implemented in Phase 4)
+
+Two files per transport plus one shared client wrapper. The interface is smaller
+than the original target because lifecycle, retry, and health are owned by the
+manager, not by adapters:
 
 ```typescript
-interface McpBackendAdapter {
-  validate(config: unknown): Promise<ValidationResult>;
-  connect(): Promise<void>;
-  listTools(): Promise<McpToolDefinition[]>;
-  callTool(name: string, args: unknown, options?: CallOptions): Promise<McpToolResult>;
-  getHealth(): Promise<BackendHealth>;
-  reconnect(): Promise<void>;
-  close(): Promise<void>;
+interface BackendAdapter {
+  readonly transport: 'stdio' | 'streamable-http';
+  readonly target: string;             // loggable; never a secret
+  readonly closedByPeer: boolean;
+  readonly pid: number | undefined;    // stdio only, never exposed by the API
+  connect(): Promise<McpBackendClient>;
+  close(): Promise<void>;              // idempotent, safe after a failed connect
 }
 ```
 
-Adapt exact types to the installed official SDK. Do not copy this illustrative interface blindly if SDK types offer a better contract.
+- `createAdapter()` switches on `connection.type`; adding a transport is one new
+  file plus one case, with no change to the manager.
+- `McpBackendClient` (`src/adapters/mcp-client.ts`) wraps the SDK `Client`. It
+  exists to normalize SDK/transport/OS failures onto the gateway's `AppError`
+  taxonomy, apply the per-call timeout, and own `close()`. It walks the error's
+  cause chain so a wrapped `ECONNREFUSED` is still recognized as transient.
+- Tool aggregation, namespacing, and routing are **not** implemented; the client
+  exposes the read verbs because a health check and operator inspection need
+  them. See section 7.
 
-## 6. Transport configuration (implemented portions)
+## 6. Transport configuration (implemented)
 
-### stdio
-- Executable and argument array as separate fields — implemented.
-- Secret-reference-only environment — implemented.
-- Working directory — implemented as stored configuration; it is **not** yet constrained by policy.
-- Timeout, shutdown behavior, environment inheritance — the fields exist; enforcement is Phase 4.
-- No shell interpolation — structurally unrepresentable, not merely checked.
+### stdio (`src/adapters/stdio-adapter.ts`)
+- `command` is a single executable token and `args` is an array; the SDK spawns
+  with `shell: false`, so there is no shell and nothing to interpolate.
+- The child receives `getDefaultEnvironment()` (`HOME`, `PATH`, `USER`, `SHELL`,
+  `TERM`, `LOGNAME`) plus explicitly referenced variables — never the gateway's
+  whole environment.
+- `cwd` resolves against the gateway's working directory.
+- stderr is piped with a 2048-byte tail, redacted of credential-shaped tokens,
+  and never logged verbatim. A failed handshake reports the last line.
+- Teardown is the SDK's `close()`: stdin end → SIGTERM → grace → SIGKILL. Not
+  reimplemented.
+- A failed handshake closes the child before throwing, so no process leaks.
 
-### Streamable HTTP
-- URL and secret-reference headers — implemented.
-- Authentication resolution, allowed host/origin policy for outbound calls, request timeout enforcement, reconnect behavior, TLS verification defaults — Phase 4.
+### Streamable HTTP (`src/adapters/http-adapter.ts`)
+- Destination is resolved and classified before any socket opens
+  (`src/security/network-policy.ts`). `fetch` is replaced by a guarded one, so
+  every request is re-checked, which is also how redirects are covered.
+- `redirectPolicy: 'same-origin'`: a cross-origin redirect fails instead of being
+  followed to a new destination.
+- TLS verification is never disabled anywhere in the codebase.
+- Headers come from secret references and are never logged or persisted.
+- SDK-internal reconnection is disabled (`maxRetries: 0`); retry policy belongs
+  to the lifecycle manager.
+- `terminateSession()` is attempted before close; a server answering 405 is not
+  treated as a failure.
 
-## 7. Tool routing (Phase 4+)
+## 6.1 Runtime lifecycle (implemented)
+
+`src/adapters/lifecycle.ts` is the only owner of live connections. Live objects
+never enter the database; the database holds a truthful status row.
+
+| Method | Behaviour |
+| --- | --- |
+| `recover()` | Startup. A persisted `connected`/`connecting`/`unhealthy`/`disconnecting` is rewritten to `disconnected` (or `disabled`). Never reconnects. A persisted `error` is kept. |
+| `connect(id)` | Explicit. Idempotent under concurrency (one promise chain per backend). Refuses a disabled backend with `409`. |
+| `disconnect(id)` | Idempotent. Cancels a pending retry, tears down, ends at `disconnected`. |
+| `reconnect(id)` | Explicit retry. Cancels retries, tears down, resets the attempt counter, opens again. |
+| `reconcile(id)` | Called by the registry after a mutation commits. Compares a connection fingerprint (`connection`, `timeoutMs`, `enabled`). Tears down a live connection whose fingerprint changed, honours disable/delete, and **never connects**. |
+| `getRuntimeState` / `getAllRuntimeStates` | Read paths; fall back to the stored row, then to the initial state. |
+| `shutdown()` | Stops all connections, cancels every timer, refuses new connects. Runs before the store closes. |
+
+**State machine** (`src/domain/backend-runtime.ts`): `BACKEND_TRANSITIONS` declares
+every legal edge and `canTransition()` enforces it. `persist()` throws
+`INTERNAL_ERROR` on an illegal edge — a silently stored impossible status would
+be worse than a crash. `disconnecting` exists because teardown is not
+instantaneous and showing `connected` while a process is being killed is a lie.
+
+**Recovery** uses exponential backoff with ± jitter
+(`initialDelayMs * 2^(n-1)`, capped, then jittered). Only transient failures are
+retried — `BACKEND_TIMEOUT` and `BACKEND_UNAVAILABLE`. A bad executable, a policy
+refusal, or a rejected credential is permanent: retrying cannot change the answer.
+Retries are off by default (`RECONNECT_ENABLED=false`).
+
+**Secrets.** `env:` references are resolved from `process.env`. `secret:`
+references fail loudly as `CONFIGURATION_ERROR` — the secret store is Phase 6 —
+rather than being sent literally, which would look like an auth failure and hide
+the real problem.
+
+## 7. Tool routing (Phase 5, not implemented)
 
 1. Resolve public tool name.
 2. Resolve backend and original tool name.
@@ -191,6 +257,9 @@ Adapt exact types to the installed official SDK. Do not copy this illustrative i
 8. Release lock/queue slot in `finally`.
 9. Normalize result/error.
 10. Record safe activity metadata.
+
+Phase 4 stops before step 1: it can open a connection and read a catalog, but the
+gateway's own `/mcp` surface still advertises an empty tool list.
 
 ## 8. Error codes
 

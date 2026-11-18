@@ -9,6 +9,8 @@ import { hostHeaderValidation, originValidation } from '@modelcontextprotocol/ho
 import { Hono } from 'hono';
 
 import { API_PREFIX, createManagementApi } from '../api/index.js';
+import type { BackendLifecycleManager } from '../adapters/lifecycle.js';
+import { BackendLifecycleManager as Lifecycle } from '../adapters/lifecycle.js';
 import type { Config } from '../config/config.js';
 import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
@@ -24,6 +26,8 @@ export interface GatewayOptions {
   store?: Database;
   /** Override the per-exchange server factory (used by tests to observe isolation). */
   createServer?: McpServerFactory;
+  /** Injected lifecycle manager, so tests can control the clock and backoff. */
+  lifecycle?: BackendLifecycleManager;
 }
 
 export interface Gateway {
@@ -47,6 +51,31 @@ const CLIENT_ERROR_PREFIXES = ['Rejected inbound request', 'Rejected 2025-era re
 
 export function createGateway(options: GatewayOptions): Gateway {
   const { config, logger, store } = options;
+
+  /**
+   * One lifecycle manager per process, created here so the API, the runtime
+   * endpoints, and shutdown all share it. `recover()` runs before any route can
+   * be reached: a persisted `connected` belongs to a process that no longer
+   * exists, so it is rewritten to a resting state and never auto-reconnected.
+   */
+  const lifecycle =
+    options.lifecycle ??
+    (store === undefined
+      ? undefined
+      : new Lifecycle({
+          store,
+          logger,
+          networkPolicy: { allowPrivateNetwork: config.allowPrivateNetwork },
+          reconnect: {
+            enabled: config.reconnectEnabled,
+            initialDelayMs: config.reconnectInitialDelayMs,
+            maxDelayMs: config.reconnectMaxDelayMs,
+            maxAttempts: config.reconnectMaxAttempts,
+            jitterRatio: config.reconnectJitterRatio,
+          },
+        }));
+
+  lifecycle?.recover();
 
   const handler = createMcpHandler(options.createServer ?? createEmptyServer, {
     maxRequestBodySize: config.requestBodyLimitBytes,
@@ -93,8 +122,8 @@ export function createGateway(options: GatewayOptions): Gateway {
     });
   });
 
-  if (store !== undefined) {
-    app.route(API_PREFIX, createManagementApi({ config, logger, store }));
+  if (store !== undefined && lifecycle !== undefined) {
+    app.route(API_PREFIX, createManagementApi({ config, logger, store, lifecycle }));
   }
 
   // The transport parses the body itself, so malformed JSON answers a JSON-RPC
@@ -114,7 +143,11 @@ export function createGateway(options: GatewayOptions): Gateway {
     app,
     async close() {
       shuttingDown = true;
+      // Order matters: stop serving, then release outbound connections, then let
+      // the caller close the store. A store closed under a running teardown would
+      // fail to persist a truthful runtime row.
       await handler.close();
+      await lifecycle?.shutdown();
     },
   };
 }

@@ -36,8 +36,11 @@ export function systemRoutes(deps: SystemDependencies): Hono {
       environment: deps.environment,
       endpoints: { mcp: deps.mcpEndpoint, health: deps.healthEndpoint },
       counts: { backends: backends.total },
-      /** Phase 3 registers configuration only; nothing is connected yet. */
-      capabilities: { backendConnections: false, toolRouting: false, authentication: false },
+      /**
+       * Phase 4 connects on explicit request only. There is no tool routing and
+       * no authentication yet, so both stay `false` until their phase lands.
+       */
+      capabilities: { backendConnections: true, toolRouting: false, authentication: false },
     });
   });
 

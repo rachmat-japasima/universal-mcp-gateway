@@ -27,7 +27,7 @@ Next.js, React, TypeScript, and **Astryx directly** as the UI component library/
 ## Current status
 
 Phases 1–3 are complete.
-- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 190 tests).
+- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 256 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
 - `tools/list` returns an empty catalog; no backend is registered and none is connected.
@@ -39,11 +39,25 @@ Phases 1–3 are complete.
 - Phase 3: backend registry and management API at `/api/v1` — CRUD, validation,
   enable/disable, pagination/filtering/search, optimistic concurrency, and audit
   events. 69 new tests (service + API + real-socket).
+- Phase 4: MCP transport adapters (stdio + Streamable HTTP) over the official
+  MCP Client SDK, a serialized lifecycle manager, a persisted state machine with
+  a `disconnecting` state, bounded exponential-backoff reconnect, startup
+  recovery, an SSRF destination policy, and `connect`/`disconnect`/`reconnect`/
+  `runtime` endpoints. 61 new tests, including real child processes and a
+  loopback HTTP fixture.
 - `/health` reports `backendCount: 0`; production backend registry is empty.
 
-**No backend is connected in Phase 3.** Registration, validation, enable, and
-disable are configuration operations only: nothing is spawned, dialled, or
-resolved. Adapters, tool discovery, and routing are Phase 4+.
+**Nothing connects by itself.** Registration, validation, and enable/disable are
+configuration operations: no process is spawned and no socket is dialled. A
+connection happens only on an explicit `POST /backends/:id/connect`, and a
+restart rewrites every persisted live state to `disconnected` without
+reconnecting. Tool discovery aggregation and routing remain Phase 5+.
+
+**Backends can now run processes and make outbound connections.** The outbound
+policy (scheme, credentials, DNS-resolved destinations, redirects) is in
+`src/security/network-policy.ts`; `ALLOW_PRIVATE_NETWORK` opens only
+loopback/private/CGNAT and never metadata or link-local. TLS verification is
+never disabled.
 
 **The management API is unauthenticated.** It is loopback-only and applies
 Host/Origin, JSON content-type, and size guards — but any local process can call
@@ -64,6 +78,12 @@ Environment variables, with defaults:
 | `REQUEST_TIMEOUT_MS` | `30000` | Per-exchange bound |
 | `SESSION_IDLE_TIMEOUT_MS` | `1800000` | Used from Phase 7 |
 | `SESSION_MAX_LIFETIME_MS` | `43200000` | Used from Phase 7 |
+| `RECONNECT_ENABLED` | `false` | Auto-reconnect after a transient loss |
+| `RECONNECT_INITIAL_DELAY_MS` | `1000` | First backoff step |
+| `RECONNECT_MAX_DELAY_MS` | `60000` | Backoff ceiling |
+| `RECONNECT_MAX_ATTEMPTS` | `5` | Attempts before giving up (1–100) |
+| `RECONNECT_JITTER_RATIO` | `0.2` | ± fraction of each delay (0–1) |
+| `ALLOW_PRIVATE_NETWORK` | `false` | Permit loopback/private HTTP backends (fixtures only) |
 
 Precedence: explicit overrides → environment → defaults. Invalid configuration
 fails fast at startup with a message naming the setting. No YAML is read; no
@@ -100,13 +120,19 @@ curl -s -X POST http://127.0.0.1:8787/api/v1/backends/validate \
   -H 'content-type: application/json' \
   -d '{"name":"fs","connection":{"type":"stdio","command":"node","args":["server.js"]}}'
 
-# Register a backend (configuration only)
+# Register a backend (configuration only — nothing is spawned or dialled)
 curl -s -X POST http://127.0.0.1:8787/api/v1/backends \
   -H 'content-type: application/json' \
   -d '{"name":"fs","connection":{"type":"stdio","command":"node","args":["server.js"],"env":{"KEY":"env:FS_KEY"}}}'
 
 # Inspect, filter, and page
 curl -s 'http://127.0.0.1:8787/api/v1/backends?transport=stdio&enabled=true&page=1&limit=20&sort=name'
+
+# Connect explicitly, then inspect runtime state (Phase 4)
+curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/connect
+curl -s http://127.0.0.1:8787/api/v1/backends/<id>/runtime
+curl -s http://127.0.0.1:8787/api/v1/backends/runtime
+curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/disconnect
 ```
 
 | Method | Path |
@@ -115,11 +141,16 @@ curl -s 'http://127.0.0.1:8787/api/v1/backends?transport=stdio&enabled=true&page
 | `GET` | `/api/v1/system/health` |
 | `GET` | `/api/v1/backends` |
 | `POST` | `/api/v1/backends` |
+| `GET` | `/api/v1/backends/runtime` |
 | `GET` | `/api/v1/backends/:backendId` |
 | `PATCH` | `/api/v1/backends/:backendId` |
 | `DELETE` | `/api/v1/backends/:backendId` |
 | `POST` | `/api/v1/backends/:backendId/enable` |
 | `POST` | `/api/v1/backends/:backendId/disable` |
+| `POST` | `/api/v1/backends/:backendId/connect` |
+| `POST` | `/api/v1/backends/:backendId/disconnect` |
+| `POST` | `/api/v1/backends/:backendId/reconnect` |
+| `GET` | `/api/v1/backends/:backendId/runtime` |
 | `POST` | `/api/v1/backends/validate` |
 
 Every request body must be `application/json`. Errors use one envelope:
@@ -141,7 +172,5 @@ rules are in `docs/BACKEND_SPEC.md`.
 
 ## Next task
 
-Phase 4 — adapter framework: stdio and Streamable HTTP adapters over the official
-MCP Client SDK, with process lifecycle, timeouts, reconnect, and cleanup, plus
-the `connect`/`disconnect`/`reconnect` endpoints deferred from Phase 3. Do not add
-real backends or modify agent configurations without approval.
+Phase 5 — tool discovery, namespacing, and routing across connected backends.
+Do not add real backends or modify agent configurations without approval.

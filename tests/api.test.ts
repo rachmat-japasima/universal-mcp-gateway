@@ -82,7 +82,7 @@ describe('system', () => {
       service: 'universal-mcp-gateway',
       environment: 'test',
       counts: { backends: 0 },
-      capabilities: { backendConnections: false, toolRouting: false, authentication: false },
+      capabilities: { backendConnections: true, toolRouting: false, authentication: false },
     });
   });
 

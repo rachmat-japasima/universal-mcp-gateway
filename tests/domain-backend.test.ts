@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { backendConnectionSchema, backendSchema, createBackendSchema, updateBackendSchema } from '../src/domain/backend.js';
-import { backendRuntimeSchema, initialBackendRuntime } from '../src/domain/backend-runtime.js';
+import {
+  BACKEND_STATUSES,
+  BACKEND_TRANSITIONS,
+  backendRuntimeSchema,
+  canTransition,
+  initialBackendRuntime,
+} from '../src/domain/backend-runtime.js';
 
 const stdio = { type: 'stdio' as const, command: 'node', args: ['server.js'] };
 
@@ -166,5 +172,54 @@ describe('backend runtime state', () => {
       lastErrorMessage: 'connection refused',
     });
     expect(() => backendRuntimeSchema.parse({ ...base, lastErrorMessage: 'x'.repeat(501) })).toThrow();
+  });
+});
+
+describe('runtime state machine', () => {
+  it('declares an edge set for every status, and every target is a real status', () => {
+    expect(Object.keys(BACKEND_TRANSITIONS).sort()).toEqual([...BACKEND_STATUSES].sort());
+
+    for (const [from, targets] of Object.entries(BACKEND_TRANSITIONS)) {
+      for (const to of targets) {
+        expect(BACKEND_STATUSES, `${from} -> ${to}`).toContain(to);
+      }
+    }
+  });
+
+  it('has no self-transition and no unreachable state', () => {
+    for (const status of BACKEND_STATUSES) {
+      expect(canTransition(status, status)).toBe(false);
+    }
+
+    // Every status is reachable from `disconnected`, directly or transitively.
+    const seen = new Set(['disconnected']);
+    const queue = ['disconnected'];
+    while (queue.length > 0) {
+      const current = queue.shift() as (typeof BACKEND_STATUSES)[number];
+      for (const next of BACKEND_TRANSITIONS[current]) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+
+    expect([...seen].sort()).toEqual([...BACKEND_STATUSES].sort());
+  });
+
+  it('allows exactly the transitions the lifecycle manager performs', () => {
+    expect(canTransition('disconnected', 'connecting')).toBe(true);
+    expect(canTransition('connecting', 'connected')).toBe(true);
+    expect(canTransition('connected', 'disconnecting')).toBe(true);
+    expect(canTransition('disconnecting', 'disconnected')).toBe(true);
+    expect(canTransition('connected', 'unhealthy')).toBe(true);
+    expect(canTransition('unhealthy', 'connecting')).toBe(true);
+    expect(canTransition('error', 'connecting')).toBe(true);
+
+    // Illegal on purpose: a live state cannot appear without an attempt, and
+    // `disabled` is a configuration fact, not a connection outcome.
+    expect(canTransition('disconnected', 'connected')).toBe(false);
+    expect(canTransition('connecting', 'disconnecting')).toBe(false);
+    expect(canTransition('disabled', 'connected')).toBe(false);
+    expect(canTransition('connected', 'disabled')).toBe(false);
   });
 });

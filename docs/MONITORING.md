@@ -108,6 +108,28 @@ Audit entries include actor, action, target, timestamp, result, and request ID.
 Login/logout, credential, policy, and settings events arrive with their phases. There are no
 metrics endpoints yet, so no backend counters are exposed beyond `/api/v1/system` counts.
 
+### 6.2 Lifecycle logging (Phase 4)
+
+Connect, disconnect, failure, retry scheduled, retry exhausted, startup recovery, and shutdown
+each emit one structured Pino line. They are **logged, not audited**: `AUDIT_ACTIONS` has no
+lifecycle action yet and inventing one at a call site would break the contract.
+
+| Event | Fields |
+| --- | --- |
+| Connected | `backendId`, `transport`, `requestId`, `durationMs` |
+| Disconnected | `backendId`, `transport`, `reason` (`request`, `disable`, `reconcile`, `shutdown`, `failure`) |
+| Connection failed | `backendId`, `transport`, `code`, `message` (sanitized) |
+| Retry scheduled | `backendId`, `attempts`, `delayMs` |
+| Retry exhausted | `backendId`, `attempts` |
+| Startup recovery | `recovered`, `disconnected`, `disabled`, `error` (counts only) |
+
+Never logged: connection configs, command lines, URLs with query strings, resolved header values,
+resolved env values, or child stderr verbatim. The adapter keeps a credential-stripped target
+string for logs only; runtime rows hold no connection detail at all.
+
+Health polling of live backends is not implemented yet — `unhealthy` exists in the state machine
+but nothing sets it in Phase 4. A health probe arrives with tool discovery in Phase 5.
+
 ## 7. Alerts and notifications
 
 Initial local version:
@@ -118,12 +140,16 @@ Initial local version:
 
 ## 8. Recovery
 
-- Bounded exponential backoff with jitter for reconnects.
-- Clear backend state transitions.
-- Graceful shutdown and cleanup.
-- Avoid retry storms.
-- Expose last sanitized error.
-- Provide manual reconnect action with confirmation where needed.
+Implemented in Phase 4 (`src/adapters/lifecycle.ts`):
+
+- Bounded exponential backoff with jitter: `initialDelayMs * 2^(n-1)`, capped at `maxDelayMs`, ± `jitterRatio`, at most `maxAttempts`. Off by default (`RECONNECT_ENABLED=false`) so a lost backend is not re-dialled behind the operator's back.
+- Only transient failures retry (`BACKEND_TIMEOUT`, `BACKEND_UNAVAILABLE`). A missing executable, a policy refusal, or rejected credentials is permanent — retrying cannot change the answer.
+- Clear backend state transitions enforced by `BACKEND_TRANSITIONS`; an illegal edge throws instead of persisting an impossible status.
+- Graceful shutdown: the manager stops every connection, cancels every timer, and refuses new connects before the store closes.
+- No retry storms: one promise chain per backend, so concurrent attempts collapse into one; jitter prevents lockstep retries.
+- Last sanitized error is exposed on `GET /api/v1/backends/:id/runtime` (`lastErrorCode`, `lastErrorMessage`, capped at 500 chars).
+- Manual `POST /backends/:id/reconnect` resets the attempt counter. No confirmation dialog yet — the API is loopback-only and unauthenticated, so a confirmation would be theatre until the dashboard exists (Phase 9).
+- Startup recovery never reconnects: a persisted live state is a dead process's claim and is rewritten to `disconnected`/`disabled`.
 
 ## 9. Operational runbook
 

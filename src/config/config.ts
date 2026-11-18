@@ -49,6 +49,28 @@ export const configSchema = z
     /** Used once session tracking exists (Phase 7). */
     sessionIdleTimeoutMs: z.coerce.number().int().min(60_000).max(86_400_000).default(1_800_000),
     sessionMaxLifetimeMs: z.coerce.number().int().min(60_000).max(604_800_000).default(43_200_000),
+    /**
+     * Automatic reconnect after an unexpected disconnect or a transient failure.
+     * Off by default: an operator who has just lost a backend should not find it
+     * being dialled again behind their back on first start.
+     */
+    reconnectEnabled: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    reconnectInitialDelayMs: z.coerce.number().int().min(100).max(600_000).default(1_000),
+    reconnectMaxDelayMs: z.coerce.number().int().min(100).max(3_600_000).default(60_000),
+    reconnectMaxAttempts: z.coerce.number().int().min(1).max(100).default(5),
+    /** ± fraction of each delay, so simultaneous failures do not retry in lockstep. */
+    reconnectJitterRatio: z.coerce.number().min(0).max(1).default(0.2),
+    /**
+     * Opt-in for loopback/private Streamable HTTP destinations. Only for local
+     * fixtures; enabling it widens the SSRF surface documented in SECURITY.md.
+     */
+    allowPrivateNetwork: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
   })
   .strict();
 
@@ -65,6 +87,12 @@ export interface ConfigEnv {
   REQUEST_TIMEOUT_MS?: string;
   SESSION_IDLE_TIMEOUT_MS?: string;
   SESSION_MAX_LIFETIME_MS?: string;
+  RECONNECT_ENABLED?: string;
+  RECONNECT_INITIAL_DELAY_MS?: string;
+  RECONNECT_MAX_DELAY_MS?: string;
+  RECONNECT_MAX_ATTEMPTS?: string;
+  RECONNECT_JITTER_RATIO?: string;
+  ALLOW_PRIVATE_NETWORK?: string;
 }
 
 function envValue(env: ConfigEnv, key: keyof ConfigEnv): string | undefined {
@@ -87,6 +115,12 @@ export function parseConfig(
     requestTimeoutMs: envValue(env, 'REQUEST_TIMEOUT_MS'),
     sessionIdleTimeoutMs: envValue(env, 'SESSION_IDLE_TIMEOUT_MS'),
     sessionMaxLifetimeMs: envValue(env, 'SESSION_MAX_LIFETIME_MS'),
+    reconnectEnabled: envValue(env, 'RECONNECT_ENABLED'),
+    reconnectInitialDelayMs: envValue(env, 'RECONNECT_INITIAL_DELAY_MS'),
+    reconnectMaxDelayMs: envValue(env, 'RECONNECT_MAX_DELAY_MS'),
+    reconnectMaxAttempts: envValue(env, 'RECONNECT_MAX_ATTEMPTS'),
+    reconnectJitterRatio: envValue(env, 'RECONNECT_JITTER_RATIO'),
+    allowPrivateNetwork: envValue(env, 'ALLOW_PRIVATE_NETWORK'),
     ...overrides,
   };
 
