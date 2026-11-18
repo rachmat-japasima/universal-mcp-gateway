@@ -27,6 +27,7 @@ flowchart TB
     API[Management API]
     MCP[Streamable HTTP MCP Endpoint]
     AUTH[Identity / Authentication]
+    SES[Session Isolation]
     POLICY[Authorization Policy Engine]
     ROUTER[Tool Catalog and Router]
     REG[Backend Registry]
@@ -52,7 +53,8 @@ flowchart TB
   G --> API
   API --> AUTH
   MCP --> AUTH
-  AUTH --> POLICY
+  AUTH --> SES
+  SES --> POLICY
   POLICY --> ROUTER
   ROUTER --> STDIO
   ROUTER --> HTTP
@@ -60,6 +62,7 @@ flowchart TB
   HTTP --> Y
   HTTP --> Z
   API --> REG
+  SES --> DB
   REG --> DB
   POLICY --> DB
   OBS --> DB
@@ -131,7 +134,7 @@ apps/
 
 This is a target structure, not a requirement to move existing files immediately. Preserve the current working bootstrap and refactor incrementally.
 
-### 4.1 Implemented module layout (Phase 6)
+### 4.1 Implemented module layout (Phase 7)
 
 ```text
 src/
@@ -142,7 +145,7 @@ src/
     agent.ts             profile, enable flag, metadata
     agent-credential.ts  verifier hash, key id, derived status
     policy.ts            rules, effects, deterministic ordering (priority-first)
-    session.ts
+    session.ts           binding, statuses, termination reasons, deadline helpers
     activity-event.ts    operational history
     audit-event.ts       administrative/security history
     repositories.ts      persistence interfaces (SQL/persistence-free)
@@ -163,6 +166,8 @@ src/
     http-adapter.ts      Streamable HTTP transport
     mcp-client.ts        SDK Client wrapper, error normalization
     lifecycle.ts         BackendLifecycleManager — sole owner of live connections
+  sessions/        # Phase 7: the in-process transport registry
+    session-manager.ts   sessionful 2025 serving, initialization binding, transport release
   routing/         # Phase 5: discovery → catalog → route
     namespacing.ts       publicToolName, normalization, length bound
     schema.ts            remote JSON Schema → AJV validator (cached)
@@ -183,12 +188,14 @@ src/
       backends.routes.ts
       agents.routes.ts   agents, enable/disable, access preview, credentials
       policies.routes.ts policies, assignments
+      sessions.routes.ts list, get, terminate, cleanup (Phase 7)
       tools.routes.ts    catalog, discovery reports, conflicts, refresh
   registry/
     backend-service.ts   business rules, transactions, audit, sanitization
     agent-service.ts     agent lifecycle, tombstone + cascade in one transaction
     credential-service.ts issue/rotate/revoke, once-only token return
     policy-service.ts    policy CRUD, target validation, assignments
+    session-service.ts   binding, validation, expiry, invalidation, cleanup, audit
   core/
     gateway.ts       Hono app + MCP handler + health + API mount + lifecycle + auth
   infrastructure/
@@ -199,13 +206,14 @@ src/
       migrations/0002_backend_version.sql
       migrations/0003_runtime_disconnecting.sql
       migrations/0004_agent_authentication.sql
+      migrations/0005_session_isolation.sql
       repositories/        SQLite implementations
   monitoring/
     logger.ts        Pino + redaction paths
   index.ts           process lifecycle, including the credential-key startup policy
 ```
 
-Dependency direction is one-way: `index` → `core` → `api` → `registry` → `infrastructure`/`config` → `shared`/`domain`. `domain` imports only Zod and its own primitives, so it can move into a workspace package without changes (ADR-022). `registry` is the only layer that combines several repositories in one transaction. `auth/*` depends on `domain`, `infrastructure` (repository interfaces via `Database`), and `monitoring` — never on `api`, so the middleware is a thin adapter over a testable service.
+Dependency direction is one-way: `index` → `core` → `api` → `registry` → `infrastructure`/`config` → `shared`/`domain`. `sessions/` sits beside `api/` at the edge: it depends on `registry/session-service` and the SDK, and nothing in `registry` imports it (the service notifies it through an injected callback, so the arrow never points back). `domain` imports only Zod and its own primitives, so it can move into a workspace package without changes (ADR-022). `registry` is the only layer that combines several repositories in one transaction. `auth/*` depends on `domain`, `infrastructure` (repository interfaces via `Database`), and `monitoring` — never on `api`, so the middleware is a thin adapter over a testable service.
 
 Boundaries that matter:
 
@@ -267,14 +275,15 @@ The catalog is served through a **low-level `Server`**, not `McpServer`: `McpSer
 1. Client connects to `/mcp`.
 2. Transport validates HTTP request and host/origin according to SDK guidance.
 3. **Authentication (Phase 6).** `mcpAuthenticate` verifies the bearer credential on this request, writes `auth.succeeded`/`auth.failed`, and either establishes an identity or answers one uniform 401. Nothing else runs on a failure.
-4. MCP initialize lifecycle is handled by official SDK. The identity from step 3 is used to build this exchange's server instance; a session id never substitutes for it.
-5. Serving is stateless: a fresh server instance per exchange, no session registry.
-6. `tools/list` reads the in-memory catalog **through `AuthorizationService.visibleTools(agent)`**: only connected, enabled backends, colliding names withheld, and only tools this agent may call. Full list, no pagination (protocol-legal; the catalog is bounded at 2000 tools per backend).
-7. `tools/call` authorizes **before** resolving — a denial answers `-32602 "Unknown tool"` and writes `access.denied`. On an allow it resolves the public name, re-checks runtime truth, validates arguments against the backend's own JSON Schema, and applies the call timeout.
-8. `ToolRouter` dispatches to the owning backend through the lifecycle's `activeClient`. A cancelled request is classified from the transport's abort signal.
-9. Adapter returns MCP-compatible result/error. A backend tool-level failure is a `CallToolResult` with `isError`, never a protocol error; routing failures map onto JSON-RPC codes (`-32602` unknown/invalid, `-32800` cancelled, `-32603` otherwise).
-10. Observability records safe metadata and correlation ID: `tools.list`/`tools.call` activity with backend, public name, outcome, error code, duration — no arguments or results.
-11. Session/transport resources are cleaned up according to SDK lifecycle.
+4. **Era routing (Phase 7).** `isLegacyRequest` — the SDK's own classifier — decides which protocol era is being served. A 2025-era `initialize`, or any request presenting `mcp-session-id`, goes to `McpSessionManager`; everything else stays on the SDK's stateless leg. Routing both legs through one classifier is what stops the two from disagreeing about a request.
+5. **Session (Phase 7).** On `initialize`, the sessionful transport issues a 256-bit protocol id and the gateway writes a `sessions` row (`agent_id`, `credential_id`, `status`, lifetimes) *before* the response is returned. On every later request carrying that id, the database is consulted first: exists → `active` (including both lifetimes) → owned by this agent → same credential → credential unrevoked/unexpired → agent enabled. Only then does the transport see the request. A failure answers one uniform `404 Session not found`.
+6. The identity from step 3 builds the server instance for this exchange. A session id never substitutes for it, and the 2026 era has no session id at all — it is per-request by protocol design.
+7. `tools/list` reads the in-memory catalog **through `AuthorizationService.visibleTools(agent)`**: only connected, enabled backends, colliding names withheld, and only tools this agent may call. Full list, no pagination (protocol-legal; the catalog is bounded at 2000 tools per backend).
+8. `tools/call` authorizes **before** resolving — a denial answers `-32602 "Unknown tool"` and writes `access.denied`. On an allow it resolves the public name, re-checks runtime truth, validates arguments against the backend's own JSON Schema, and applies the call timeout.
+9. `ToolRouter` dispatches to the owning backend through the lifecycle's `activeClient`. A cancelled request is classified from the transport's abort signal.
+10. Adapter returns MCP-compatible result/error. A backend tool-level failure is a `CallToolResult` with `isError`, never a protocol error; routing failures map onto JSON-RPC codes (`-32602` unknown/invalid, `-32800` cancelled, `-32603` otherwise).
+11. Observability records safe metadata and correlation ID: `tools.list`/`tools.call` activity with backend, public name, outcome, error code, duration — no arguments or results.
+12. Session/transport resources are released through the SDK's own lifecycle: `onsessionclosed` (client `DELETE`) terminates the session as `client_deleted`, and every path that ends a session — API terminate, revocation, cleanup, shutdown — also closes the registered transport. A transient (non-initializing) exchange closes its server immediately.
 
 ## 6. Outbound adapter lifecycle
 
@@ -391,24 +400,125 @@ Three invariants hold this together:
 
 `AuthService` and `AuthorizationService` are composed in `src/core/gateway.ts` and injected; neither reads the environment. The hashing key is loaded by `src/index.ts` through `resolveCredentialKeys`, which throws in production when absent and returns keys that issue nothing otherwise, so a development process without a secret fails closed per request instead of inventing an ephemeral one.
 
-## 10. Session isolation
+## 10. Session isolation (Phase 7)
 
-Document and test selected Streamable HTTP session behavior against the installed SDK version. Keep session-bound data isolated. Define expiration, cleanup, and revocation. Avoid sharing mutable server/transport state between clients unless explicitly supported by the SDK lifecycle.
+Two identifiers, and the distinction is the whole design:
 
-**Current (Phase 1):** serving is stateless per HTTP exchange. `createMcpHandler` builds a fresh `McpServer` from a factory for every exchange, so no mutable state exists to share; `tools/list` and `tools/call` see only that exchange's instance. Session ids are not issued and a client-supplied `mcp-session-id` is ignored. `GET`/`DELETE` answer `405` on the stateless legacy leg.
+| | `sessions.id` | `mcp_session_id` |
+| --- | --- | --- |
+| Owner | gateway | SDK transport, echoed by the client |
+| Purpose | management API and audit target | routing handle |
+| Authenticates | nothing | nothing |
+| Exposed to | operator only | client and operator |
 
-**Phase 6 decision: no session binding.** A session id, if one is ever issued, is a transport optimization, not a permission. Identity comes from the credential presented on *this* request, and authorization is re-derived from the database every time. This costs one indexed SQLite read per request and buys the property that revocation, disabling an agent, and editing a policy all take effect on the next call rather than at the next handshake. `sessions` is untouched by Phase 6; no binding table was added.
+**Guarantee: one protocol session ↔ one agent ↔ one credential.** Enforced in three places, in
+order of strength: a partial `UNIQUE` index on `mcp_session_id` (two bindings are unrepresentable),
+a `BEFORE UPDATE` trigger making `agent_id`/`credential_id`/`mcp_session_id`/`id`/`created_at`
+immutable, and a `BEFORE UPDATE` trigger refusing reactivation. Application code cannot weaken
+that, and neither can a second gateway process.
 
-**Deferred to Phase 7:** server-side session registry, expiry/revocation, resumable streams, and per-session concurrency accounting. Phase 7 may bind a session to an agent for observability, but must not treat that binding as proof of identity.
+**Two eras, because the installed SDK has two.** Verified against server/client `2.4.0`, not
+assumed:
+
+- The **2026 era** (`2026-07-28`) is per-request. `createMcpHandler` issues no `mcp-session-id`;
+  each exchange is a fresh server with a freshly verified identity. There is nothing to bind, and
+  a client-supplied session id is validated against the database if present and refused otherwise.
+- The **2025 era** has a real protocol session. Serving it requires
+  `WebStandardStreamableHTTPServerTransport` with `sessionIdGenerator` +
+  `onsessioninitialized`/`onsessionclosed`, which is exactly what `src/sessions/session-manager.ts`
+  wires. The default `createMcpHandler` (`legacy: 'stateless'`) would never issue an id, so a
+  binding layer on top of it would have been dead code.
+
+**Why only two request shapes take the sessionful leg.** `isLegacyRequest` is the SDK's own
+classifier, and within the legacy era only an `initialize` (where a session is created) or a
+request already carrying `mcp-session-id` goes to the manager. Everything else stays on the
+stateless leg. This is not a shortcut: it is what keeps Phase 1–6 behaviour intact — a one-shot
+`tools/list` with no session id still returns `200` with no session, exactly as before — while a
+client that keeps the id it was given gets full enforcement from the second request onward. The
+earlier alternative (routing *all* legacy traffic through the sessionful transport) was rejected
+because it turned every sessionless one-shot call into `400 Server not initialized`.
+
+**Registry vs database.** `McpSessionManager` keeps a `Map<protocolId, {server, transport,
+internalId}>`. It is a routing table, not a security boundary: a missing entry is refused, and a
+present entry is still re-validated against the database on every request. It is process-local, so
+a session created by one process cannot be served by another — stated as a limitation rather than
+hidden. What survives a process boundary is the row and its constraints.
+
+**Ending a session.** Every path funnels into `SessionService`, which ends the row in a single
+conditional `UPDATE ... WHERE status = 'active'` (so one termination wins and repeats are no-ops),
+audits only an actual transition, then releases the transport through an injected `onEnded`
+callback. That callback exists so the dependency stays one-way: `registry/session-service` never
+imports `sessions/session-manager`.
+
+| Trigger | Status | Reason |
+| --- | --- | --- |
+| operator / API | `terminated` | `operator_terminated` (or an explicit closed-enum reason) |
+| client `DELETE` | `terminated` | `client_deleted` |
+| credential revoked | `invalidated` | `credential_revoked` |
+| credential rotated | `invalidated` | `credential_rotated` |
+| agent disabled | `invalidated` | `agent_disabled` |
+| agent deleted | `invalidated` | `agent_deleted` |
+| idle | `expired` | `idle_timeout` |
+| hard cap | `expired` | `max_lifetime` |
+| shutdown | `terminated` | `gateway_shutdown` |
+
+**Expiry is per request, not per sweep.** Two lifetimes: the idle deadline
+(`lastActivityAt + SESSION_IDLE_TIMEOUT_MS`, default 30 min) and the hard cap (`createdAt +
+SESSION_MAX_LIFETIME_MS`, default 12 h). Both are checked on the request path, so a missed sweep
+cannot extend access. `POST /api/v1/sessions/cleanup` only writes back what a request would already
+refuse, keeps every row, and touches only `status = 'active'` — so a concurrent terminate is never
+overwritten.
+
+**Graceful shutdown.** `Gateway.close()` terminates every active session (`gateway_shutdown`) first,
+then closes transports, then lets the caller close the store. Leaving `active` rows behind would
+make the next process believe sessions are live that nothing can serve.
 
 ## 11. Concurrency
 
-Per-backend/resource modes:
-- `parallel`
-- `serialized`
-- `limited`
+### 11.1 Session state (Phase 7)
 
-Use scoped queues/locks for stateful resources. Include timeout, cancellation, cleanup, and stale lock handling. Do not globally serialize all tool calls.
+The guarantee needed is narrow and worth stating precisely: **two requests can never observe or
+produce an inconsistent session**, and no path can leave a session half-ended.
+
+- **One connection, synchronous driver.** `better-sqlite3` is synchronous and this process holds a
+  single handle, so every statement runs to completion before the next begins. There is no
+  in-process interleaving inside a statement, and therefore no need for an in-memory mutex — and
+  no mutex whose lock could be leaked on a timeout or cancellation.
+- **Decision and write are one statement.** `touch`, `end`, `endWhere`, and `expire` each carry
+  their precondition in the `WHERE` (`status = 'active'`, `last_activity_at <= ?`). A read-then-write
+  sequence would have a window; this design has none. `endWhere` returns the changed rows via
+  `RETURNING`, so the caller releases exactly the transports it ended.
+- **Invariants are in the database, not in memory.** The unique protocol id, the immutability
+  trigger, the no-reactivation trigger, and the terminal-completeness trigger hold across
+  processes. A second gateway pointed at the same file cannot violate them.
+- **Duplicate initialization.** Two transports cannot both bind one protocol id: the second
+  `INSERT` hits the unique index and the initialization fails. Asserted by
+  `tests/sessions.test.ts` (service level) and by the unique index in `verify-0005.ts`.
+- **Terminate vs. request.** The request path validates *before* the transport handles anything,
+  and the terminate path is a single conditional update. A request that validated first may
+  finish; one that arrives after the update sees `terminated`. Neither leaves a row that claims
+  to be usable.
+- **Concurrent cleanup.** Each sweep statement is conditional on `status = 'active'`, so N
+  concurrent sweeps perform exactly one transition; the rest change zero rows. Rows are never
+  deleted, so a sweep cannot race a reader into a missing row.
+- **No unbounded waiting.** There are no locks to acquire and no cross-process wait, so there is
+  nothing to time out, cancel, or leak.
+
+**Multi-process limits, explicitly:** the transport registry is per process, session serving is
+therefore single-process, and `better-sqlite3` serializes writers with SQLite's own write lock
+(`SQLITE_BUSY` on a long-held write from another process is surfaced as `DATABASE_ERROR`, not
+retried). Running more than one gateway process against one database is not a supported topology
+in this phase.
+
+### 11.2 Backend calls
+
+Per-backend/resource modes (`parallel` | `serialized` | `limited`) are modelled in
+`backends.concurrency_*` and validated by the schema. The lifecycle manager serializes
+*connection state* per backend with one promise chain (§4.3), so two concurrent connects open one
+connection. Tool-call concurrency across backends is not queue-gated in this phase: each call
+resolves the owning client and awaits it, and cancellation comes from the transport's abort
+signal. A per-backend queue with a bounded `limited` mode remains Phase 8 work — the columns exist
+so no migration is needed then.
 
 ## 12. Data persistence
 
@@ -418,8 +528,8 @@ Implemented in Phase 2 (details in `docs/DATABASE.md`):
 
 - One connection per process, WAL + `synchronous=FULL` + `foreign_keys=ON`.
 - Transactional, checksummed, additive migrations; applied files are immutable.
-- Soft delete (tombstone) for backends and agents; hard delete with cascade for policies; revocation timestamps for credentials and sessions.
-- Status for credentials and sessions is derived from timestamps, not stored.
+- Soft delete (tombstone) for backends and agents; hard delete with cascade for policies; revocation timestamps for credentials.
+- Credential status is derived from timestamps, not stored. Session status **is** stored as of Phase 7 (a terminal state cannot be expressed by a clock, and an operator's decision must survive one), while a lapsed lifetime is still derived and enforced per request.
 
 Retention and backup policy are still to be defined. Do not store sensitive tool arguments/results by default.
 

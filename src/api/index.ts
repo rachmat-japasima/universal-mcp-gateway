@@ -10,6 +10,7 @@ import { AgentService } from '../registry/agent-service.js';
 import { BackendService } from '../registry/backend-service.js';
 import { CredentialService } from '../registry/credential-service.js';
 import { PolicyService } from '../registry/policy-service.js';
+import type { SessionService } from '../registry/session-service.js';
 import type { ToolCatalog } from '../routing/catalog.js';
 import type { ToolDiscovery } from '../routing/discovery.js';
 import { apiErrorHandler, getRequestId, jsonBodyLimit, requestId } from './http.js';
@@ -17,6 +18,7 @@ import { loopbackOnly, requireJsonBody } from './middleware/guards.js';
 import { agentsRoutes } from './routes/agents.routes.js';
 import { backendsRoutes } from './routes/backends.routes.js';
 import { policiesRoutes } from './routes/policies.routes.js';
+import { sessionsRoutes } from './routes/sessions.routes.js';
 import { systemRoutes } from './routes/system.routes.js';
 import { backendToolsRoutes, toolsRoutes } from './routes/tools.routes.js';
 
@@ -30,6 +32,11 @@ export interface ManagementApiOptions {
   /** Needed for the access preview and for validating credential issuance. */
   authorization: AuthorizationService;
   credentialKeys: CredentialKeys;
+  /**
+   * Session management. Present whenever the gateway has a store; the session
+   * routes are not mounted without one rather than mounted against nothing.
+   */
+  sessions?: SessionService;
 }
 
 export const API_PREFIX = '/api/v1';
@@ -51,8 +58,12 @@ export const API_PREFIX = '/api/v1';
 export function createManagementApi(options: ManagementApiOptions): Hono {
   const { config, logger, store, lifecycle } = options;
   const backends = new BackendService(store);
-  const agents = new AgentService(store);
-  const credentials = new CredentialService({ store, keys: options.credentialKeys });
+  const { sessions } = options;
+  // Session invalidation is part of the same transaction as the credential or
+  // agent change that caused it, so a revocation can never commit without its
+  // sessions being ended.
+  const agents = new AgentService(store, undefined, undefined, sessions);
+  const credentials = new CredentialService({ store, keys: options.credentialKeys, ...(sessions === undefined ? {} : { sessions }) });
   const policies = new PolicyService({ store });
   const toolDeps = { catalog: options.catalog, discovery: options.discovery, logger };
 
@@ -78,6 +89,7 @@ export function createManagementApi(options: ManagementApiOptions): Hono {
   api.route('/backends', backendsRoutes(backends, lifecycle));
   api.route('/agents', agentsRoutes({ agents, credentials, authorization: options.authorization }));
   api.route('/policies', policiesRoutes(policies));
+  if (sessions !== undefined) api.route('/sessions', sessionsRoutes({ sessions }));
   // `/tools` is a sibling of `/backends`, so the nested router is mounted on a
   // parameterised path instead of being folded into `backendsRoutes`: that keeps
   // the literal-before-parameter rule scoped to one file each.

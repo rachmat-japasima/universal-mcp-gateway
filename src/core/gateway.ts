@@ -1,11 +1,14 @@
 import {
   createMcpHandler,
+  isLegacyRequest,
+  legacyStatelessFallback,
   localhostAllowedHostnames,
   localhostAllowedOrigins,
   McpServer,
   ProtocolError,
   ProtocolErrorCode,
   Server,
+  type LegacyHttpHandler,
   type McpServerFactory,
 } from '@modelcontextprotocol/server';
 import { hostHeaderValidation, originValidation } from '@modelcontextprotocol/hono';
@@ -27,6 +30,8 @@ import { CredentialKeys } from '../auth/credential-key.js';
 import { AuthorizationService } from '../auth/authorization.js';
 import { mcpAuthenticate, toAuthInfo } from '../api/middleware/mcp-auth.js';
 import { getRequestId } from '../api/http.js';
+import { isInitializeBody, McpSessionManager, sessionNotFound } from '../sessions/session-manager.js';
+import { SessionService } from '../registry/session-service.js';
 
 export interface GatewayOptions {
   config: Config;
@@ -59,6 +64,8 @@ export interface Gateway {
   readonly router?: ToolRouter;
   readonly authorization?: AuthorizationService;
   readonly auth?: AuthService;
+  readonly sessions?: SessionService;
+  readonly sessionManager?: McpSessionManager;
 }
 
 export { SERVICE_INFO };
@@ -88,6 +95,21 @@ export function createDeniedServer(): Server {
   });
 
   return server;
+}
+
+/**
+ * Reads a JSON body without consuming it.
+ *
+ * The era classifier and the stateless leg both need the body, so the peek works
+ * on a clone. Anything unreadable or non-JSON returns `undefined`, which simply
+ * leaves the request on the stateless leg where the SDK answers the error.
+ */
+async function peekJson(request: Request): Promise<unknown> {
+  try {
+    return JSON.parse(await request.clone().text());
+  } catch {
+    return undefined;
+  }
 }
 
 /** Client-caused rejections are reported through `onerror`; they are not gateway faults. */
@@ -177,6 +199,46 @@ export function createGateway(options: GatewayOptions): Gateway {
     router === undefined || authorization === undefined
       ? undefined
       : createGatewayServerFactory({ catalog, router, authorization, logger });
+
+  /**
+   * Persistent sessions (Phase 7).
+   *
+   * The service owns the database rules; the manager owns the in-process
+   * transport registry. Both need a store, and the manager needs the identity-
+   * scoped surface, so it is only built when both exist. Without a store the
+   * gateway keeps the Phase 1–6 behaviour: stateless serving, no session ids.
+   */
+  /**
+   * Declared before the service because the service notifies it: ending a session
+   * anywhere (API, revocation, cleanup, shutdown) must also release the live
+   * transport, or a dead session would keep an open server in memory.
+   */
+  let sessionManager: McpSessionManager | undefined;
+
+  const sessions =
+    store === undefined
+      ? undefined
+      : new SessionService({
+          store,
+          logger,
+          idleTimeoutMs: config.sessionIdleTimeoutMs,
+          maxLifetimeMs: config.sessionMaxLifetimeMs,
+          onEnded: (ended) => {
+            for (const session of ended) {
+              if (session.mcpSessionId !== undefined) void sessionManager?.close(session.mcpSessionId);
+            }
+          },
+        });
+
+  sessionManager =
+    sessions === undefined || surface === undefined
+      ? undefined
+      : new McpSessionManager({
+          service: sessions,
+          logger,
+          createServer: (identity) => surface({ agent: identity.agent, credentialId: identity.credential.id }),
+          maxRequestBodySize: config.requestBodyLimitBytes,
+        });
 
   /**
    * Identity resolution for one exchange.
@@ -276,14 +338,23 @@ export function createGateway(options: GatewayOptions): Gateway {
         discovery: discovery!,
         authorization: authorization!,
         credentialKeys: options.credentialKeys ?? EMPTY_KEYS,
+        ...(sessions === undefined ? {} : { sessions }),
       }),
     );
   }
 
   /**
-   * Every MCP exchange is authenticated independently. There is no session
-   * state to inherit and nothing a client sends is trusted as identity, so a
-   * previously initialized session cannot be replayed as proof.
+   * Every MCP exchange is authenticated independently. A previously initialized
+   * session is never proof of identity: it is a routing handle that must match
+   * the agent and credential on *this* request, and the check runs before the
+   * SDK sees the request.
+   *
+   * Two eras are served differently, because the installed SDK does:
+   *   * 2025-era traffic carries `mcp-session-id`, so it is served by the
+   *     sessionful transport and validated against the persistent record;
+   *   * 2026-era traffic is per-request by protocol design — there is no session
+   *     id to bind — so identity is re-established on every exchange and a
+   *     session header, if one is presented, is still validated or refused.
    *
    * The shutdown check runs first: a request during teardown is refused for a
    * reason that has nothing to do with its credential.
@@ -309,10 +380,46 @@ export function createGateway(options: GatewayOptions): Gateway {
        * verification of its own. When there is no identity (storeless protocol
        * mode) nothing is passed, and the empty server answers.
        */
-      return handler.fetch(
-        c.req.raw,
-        identity === undefined ? undefined : { authInfo: toAuthInfo(identity) },
-      );
+      const authInfo = identity === undefined ? undefined : toAuthInfo(identity);
+
+      if (sessionManager === undefined || sessions === undefined || identity === undefined) {
+        return handler.fetch(c.req.raw, authInfo === undefined ? undefined : { authInfo });
+      }
+
+      /**
+       * `isLegacyRequest` is the SDK's own era classifier, so the two legs can
+       * never disagree about which request is which; it reads the body from a
+       * clone and leaves the original readable.
+       *
+       * Only an initialization or a session-bearing request goes through the
+       * sessionful transport. Everything else keeps the SDK's stateless leg,
+       * which is why a one-shot call with no session id behaves exactly as it
+       * did in Phase 6.
+       */
+      if (await isLegacyRequest(c.req.raw)) {
+        const presented = c.req.header('mcp-session-id');
+        const parsedBody = presented === undefined ? await peekJson(c.req.raw) : undefined;
+
+        // Hono's `header()` answers `undefined` for an absent header.
+        if (presented !== undefined || isInitializeBody(parsedBody)) {
+          return sessionManager.handle(c.req.raw, identity, {
+            ...(authInfo === undefined ? {} : { authInfo }),
+            ...(parsedBody === undefined ? {} : { parsedBody }),
+          });
+        }
+
+        return handler.fetch(c.req.raw, {
+          ...(authInfo === undefined ? {} : { authInfo }),
+          ...(parsedBody === undefined ? {} : { parsedBody }),
+        });
+      }
+
+      const presented = c.req.header('mcp-session-id');
+      if (presented !== undefined && 'failure' in sessions.validate(presented, identity)) {
+        return sessionNotFound();
+      }
+
+      return handler.fetch(c.req.raw, authInfo === undefined ? undefined : { authInfo });
     },
   );
 
@@ -323,11 +430,25 @@ export function createGateway(options: GatewayOptions): Gateway {
     ...(router === undefined ? {} : { router }),
     ...(authorization === undefined ? {} : { authorization }),
     ...(auth === undefined ? {} : { auth }),
+    ...(sessions === undefined ? {} : { sessions }),
+    ...(sessionManager === undefined ? {} : { sessionManager }),
     async close() {
       shuttingDown = true;
       // Order matters: stop serving, then release outbound connections, then let
       // the caller close the store. A store closed under a running teardown would
       // fail to persist a truthful runtime row.
+      //
+      // Sessions are terminated *before* the transports are released and before
+      // the store closes: the documented shutdown policy is "terminate, never
+      // leave a row claiming to be live in a process that no longer exists".
+      // Terminating first also means a request that slips in during teardown is
+      // refused by the shutdown gate above, not by a half-closed session.
+      try {
+        sessions?.terminateAll('gateway_shutdown');
+      } catch (error) {
+        logger.warn({ err: error }, 'Sessions could not be terminated during shutdown');
+      }
+      await sessionManager?.closeAll();
       await handler.close();
       await lifecycle?.shutdown();
     },

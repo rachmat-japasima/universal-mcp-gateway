@@ -104,7 +104,8 @@ describe('sessions', () => {
     const now = new Date('2026-11-18T12:00:00.000Z');
     expect(sessionStatus(session, now)).toBe('active');
     expect(sessionStatus({ ...session, expiresAt: '2026-11-18T11:00:00.000Z' }, now)).toBe('expired');
-    expect(sessionStatus({ ...session, revokedAt: '2026-11-18T13:00:00.000Z' }, now)).toBe('revoked');
+    expect(sessionStatus({ ...session, status: 'invalidated' }, now)).toBe('invalidated');
+    expect(sessionStatus({ ...session, status: 'terminated' }, now)).toBe('terminated');
   });
 });
 

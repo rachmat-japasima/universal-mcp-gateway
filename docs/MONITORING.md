@@ -171,6 +171,47 @@ string for logs only; runtime rows hold no connection detail at all.
 Health polling of live backends is not implemented yet — `unhealthy` exists in the state machine
 but nothing sets it in Phase 4. A health probe arrives with tool discovery in Phase 5.
 
+Session refusals log one `warn` line with `reason` and `agentId` — the same internal detail the
+audit row carries, never sent to the client. A session whose activity cannot be recorded logs
+a `warn` and the request still proceeds: failing a valid request because a timestamp write
+failed would be a worse outcome than a slightly stale idle clock. Transport close failures are
+logged the same way, after the database has already recorded the end.
+
+### 6.4 Session audit (Phase 7)
+
+Seven actions, all with `target_type = 'session'` and `target_id = sessions.id` (the internal
+id — never a protocol id as the target, so a session row can always be resolved):
+
+| Action | Result | Metadata |
+| --- | --- | --- |
+| `session.created` | `success` | `mcpSessionId`, `agentId`, `credentialId`, `protocolVersion`, `clientType` |
+| `session.authenticated` | `success` | `agentId`, `credentialId`, `suppressed` |
+| `session.access.denied` | `denied` | `reason` (closed enum), `agentId`, `sessionId`, `suppressed` |
+| `session.expired` | `success` | `reason` (`idle_timeout` \| `max_lifetime`), `agentId` |
+| `session.terminated` | `success` | `reason`, `agentId`, `credentialId` |
+| `session.invalidated` | `success` | `reason`, `agentId`/`credentialId`, or `affected` for a bulk end |
+| `session.cleanup.completed` | `success` | `expired` (count) |
+
+- `session.created` is written inside the initialization path, before the client receives the
+  protocol id, so a session a client holds is always one the trail knows about.
+- `session.invalidated` covers revocation, rotation, disable, delete, and explicit invalidation;
+  the `reason` distinguishes them. A bulk end (revocation of a credential with several live
+  sessions) writes **one** row with `affected`, not one per session.
+- A repeated terminate writes nothing: the trail records transitions, not requests.
+- `session.authenticated` is once per session per 60 s and `session.access.denied` once per
+  reason per 60 s, using the same bounded-map pattern as `AuthService` (512 keys, suppressed
+  count folded into the next row). A busy session does not write one row per request.
+- Never present: the bearer token, any `Authorization` value, the HMAC secret, request or tool
+  content, or transport objects. `mcpSessionId` is a routing handle with no authenticating
+  power, and it is the only protocol-side value recorded.
+- Session audit is **best-effort**: a failed write is logged and swallowed. The security
+  decision has already been made by then and must not turn into a `500` — or, worse, into a
+  served request.
+
+Shutdown policy: `gateway.close()` terminates every active session (`gateway_shutdown`) **before**
+closing transports and the store. The alternative — leaving `active` rows behind — would make
+the next process believe sessions are live that nothing can serve.
+
 ## 7. Alerts and notifications
 
 Initial local version:

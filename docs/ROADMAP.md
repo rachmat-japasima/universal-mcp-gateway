@@ -108,15 +108,25 @@ The full product scope is approved in this document. Implement sequentially; do 
 **Not in this phase (by decision):** dashboard owner authentication, session-to-agent binding, and OAuth. The management API remains unauthenticated and loopback-only, and it can now mint a credential — that is why it must not be exposed. Session tracking is Phase 7, which must not turn a session binding into an authorization shortcut.
 
 ## Phase 7 — Session isolation and concurrency
-- Finalize transport/session model.
-- Session tracking and expiration.
-- Per-backend concurrency modes.
-- Resource-scoped queue/locks.
-- Cancellation and stale-lock recovery.
-- Concurrent client tests.
+
+- [x] Transport/session model finalized against the installed SDK (`2.4.0`, not assumed): the 2026 era is per-request and issues no session id; the 2025 era issues one and is served through `WebStandardStreamableHTTPServerTransport` with `sessionIdGenerator`. Recorded as ADR-043.
+- [x] Two-shape routing: a 2025 `initialize` or a request already carrying `mcp-session-id` takes the sessionful leg; everything else keeps the stateless leg, so a one-shot `tools/list` still answers `200` with no session (Phase 1–6 compatibility preserved).
+- [x] Session tracking: `sessions` rows carry `mcp_session_id` (unique), `credential_id`, `status`, `terminated_at`, `termination_reason`; internal id and protocol id are distinct and never interchangeable.
+- [x] Binding: one protocol session ↔ one agent ↔ one credential, enforced by a partial unique index plus immutability and no-reactivation triggers, so a second process cannot violate it either.
+- [x] Expiration: idle timeout (`SESSION_IDLE_TIMEOUT_MS`, default 30 min) and hard cap (`SESSION_MAX_LIFETIME_MS`, default 12 h), both enforced **per request** rather than only by the sweep.
+- [x] Invalidation on revocation, rotation, agent disable, and agent delete, in the same transaction as the change; termination is one-way and idempotent; shutdown terminates everything as `gateway_shutdown` before transports close.
+- [x] Session management API: list (paginated, filterable by agent/status/created/activity), detail, terminate, cleanup — loopback-only, no credential or transport state in any payload.
+- [x] Audit: `session.created`, `session.authenticated`, `session.access.denied`, `session.expired`, `session.terminated`, `session.invalidated`, `session.cleanup.completed`; windowed so a busy session cannot grow the table linearly.
+- [x] Migration `0005_session_isolation.sql`: additive, five nullable columns plus a defaulted `status`, one back-fill of `revoked_at`, four indexes, four triggers; verified against a real 0004 database.
+- [x] 65 new tests (`mcp-sessions` 14 socket, `sessions` 32 service, `sessions-api` 17 API) → 437 total; Phase 1–6 tests unmodified.
+- [x] `pnpm typecheck`, `pnpm test`, `pnpm build` pass; no real backend connected; bind still `127.0.0.1`.
+- [ ] **Deferred to Phase 8:** per-backend tool-call queueing for `concurrency_mode = 'limited'`. Connection state is still serialized per backend, so two concurrent connects open one connection; tool calls are not queue-gated. The columns exist, so no migration will be needed.
+
+**Not in this phase (by decision):** dashboard session views, operator identity on the management API, Redis or any cross-process session registry, OAuth. Session serving is single-process by construction; what is cross-process is the row and its constraints. See `docs/ARCHITECTURE.md` §10–§11 and ADR-043.
 
 ## Phase 8 — Management API completion
-- Sessions, activity, settings, and (remaining) agent/policy gaps in the API surface.
+- Activity, settings, and (remaining) agent/policy gaps in the API surface. *(Sessions landed in Phase 7.)*
+- Per-backend tool-call queueing for `concurrency_mode = 'limited'`, with bounded wait and a documented `CONCURRENCY_TIMEOUT`.
 - Validation, pagination, filtering.
 - API contracts and integration tests.
 - Secure backup/restore APIs.

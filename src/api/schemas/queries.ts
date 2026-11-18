@@ -41,6 +41,31 @@ export const policyIdParamSchema = z.object({
   policyId: z.uuid(),
 });
 
+export const sessionIdParamSchema = z.object({
+  sessionId: z.uuid(),
+});
+
+/**
+ * Session listing.
+ *
+ * `status` filters on the *effective* status, so `expired` finds sessions whose
+ * lifetime lapsed but which the cleanup sweep has not written back yet. Time
+ * filters are absolute UTC instants, matching every other timestamp in the API.
+ */
+export const listSessionsQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).max(1_000_000).default(1),
+    limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(20),
+    agentId: z.uuid().optional(),
+    status: z.enum(['active', 'expired', 'terminated', 'invalidated']).optional(),
+    createdAfter: z.iso.datetime().optional(),
+    createdBefore: z.iso.datetime().optional(),
+    lastActivityAfter: z.iso.datetime().optional(),
+    sort: z.enum(['createdAt', 'lastActivityAt']).default('createdAt'),
+    order: z.enum(['asc', 'desc']).default('desc'),
+  })
+  .transform(({ page, limit, ...rest }) => ({ ...rest, limit, offset: (page - 1) * limit, page }));
+
 export const listAgentsQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).max(1_000_000).default(1),

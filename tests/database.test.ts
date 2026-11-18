@@ -86,7 +86,7 @@ describe('migrations', () => {
       checksum: string;
     }>;
 
-    expect(applied.map((row) => row.version)).toEqual(['0001', '0002', '0003', '0004']);
+    expect(applied.map((row) => row.version)).toEqual(['0001', '0002', '0003', '0004', '0005']);
     for (const row of applied) expect(row.checksum).toMatch(/^[a-f0-9]{64}$/);
 
     store.close();
@@ -121,8 +121,10 @@ describe('migrations', () => {
     const upgrade: Migration[] = [
       ...baseline,
       {
-        version: '0005',
-        filename: '0005_add_note.sql',
+        // Beyond every real migration, so this synthetic upgrade can never
+        // collide with a shipped version number.
+        version: '0099',
+        filename: '0099_add_note.sql',
         sql: 'CREATE TABLE notes (id TEXT PRIMARY KEY); INSERT INTO notes (id) VALUES (\'kept\');',
       },
     ];

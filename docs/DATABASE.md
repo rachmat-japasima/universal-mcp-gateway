@@ -36,6 +36,8 @@ There is exactly **one connection per process** (`openStore()`), created after c
 `0001_initial_schema.sql` — 11 tables. `schema_migrations` is created by the runner.
 `0002_backend_version.sql` — adds `backends.version` (Phase 3).
 `0003_runtime_disconnecting.sql` — rebuilds `backend_runtime` to add the `disconnecting` status (Phase 4).
+`0004_agent_authentication.sql` — adds credential key id/prefix and agent auth timestamps (Phase 6).
+`0005_session_isolation.sql` — adds persistent session binding, status, termination, and indexes (Phase 7).
 
 ### `backends`
 `id`, `name`, `description`, `transport` (`stdio` | `streamable-http`), `config_json`, `enabled`, `timeout_ms`, `concurrency_mode` (`parallel` | `serialized` | `limited`), `concurrency_limit`, `version`, `created_at`, `updated_at`, `deleted_at`.
@@ -84,9 +86,22 @@ Policies are shared objects; assignment does not copy them. Default deny is stru
 Precedence lives in `src/domain/policy.ts` and is not encoded in SQL: system restrictions → highest `priority` → deny over allow at equal priority → policy id → rule index. `priority` is copied into the comparator explicitly so an operator's ordering beats the deny preference, and ties are order-independent.
 
 ### `sessions`
-`id`, `agent_id` (FK → `agents`, cascade), `created_at`, `last_activity_at`, `expires_at`, `revoked_at`, `metadata_json`.
+`id`, `agent_id` (FK → `agents`, cascade), `created_at`, `last_activity_at`, `expires_at`, `revoked_at`, `metadata_json`, plus (Phase 7) `mcp_session_id`, `credential_id` (FK → `agent_credentials`, `ON DELETE SET NULL`), `status`, `terminated_at`, `termination_reason`.
 
-Status derived, not stored. Serving is stateless per exchange, so no rows are written. **Phase 6 deliberately did not touch this table:** authorization is re-derived per HTTP request from the presented credential, not from a stored binding. Session-to-agent binding is Phase 7.
+Two identifiers, deliberately distinct:
+
+| Column | Meaning |
+| --- | --- |
+| `id` | the gateway's internal handle. Never sent to an MCP client; used by the management API and the audit trail. |
+| `mcp_session_id` | the protocol id the SDK issued at initialization and the client echoes in `mcp-session-id`. `UNIQUE` where not null, so one protocol session cannot belong to two agents. |
+
+- `status` is `active` \| `expired` \| `terminated` \| `invalidated`, written explicitly. A terminal status is authoritative: it cannot be overridden by a clock. A lapsed `expires_at` or idle deadline still reads and behaves as `expired` before the sweep writes it back (`sessionStatus()` in `src/domain/session.ts`).
+- `credential_id` records *which* credential opened the session. A revocation ends exactly those sessions rather than every session the agent has.
+- Identity columns (`id`, `agent_id`, `credential_id`, `mcp_session_id`, `created_at`) are immutable. `0005` enforces this with a `BEFORE UPDATE` trigger, so no code path — including another gateway process — can move a session to a different agent.
+- `sessions_no_reactivation` refuses any update that would turn a finished session back into `active`.
+- `sessions_terminal_is_complete` (insert and update) requires a finished row to carry both `terminated_at` and `termination_reason`, and an active row to carry neither. SQLite cannot add a table-level `CHECK` with `ALTER TABLE`, so this is a trigger.
+- Rows are never deleted, including by cleanup: the audit trail must still resolve. `metadata_json` holds client type/version, protocol version, and remote address — never a token, header, or transport object.
+- `revoked_at` is kept from `0001` (additive rule) and was back-filled into `status = 'invalidated'` with `terminated_at = revoked_at` on upgrade.
 
 ### `activity_events` (operational)
 `id`, `type`, `request_id`, `agent_id` (FK `ON DELETE SET NULL`), `backend_id` (FK `ON DELETE SET NULL`), `tool_name`, `outcome` (`success` | `failure` | `denied`), `error_code`, `duration_ms`, `created_at`.
@@ -110,7 +125,8 @@ Table only; dashboard authentication is a later phase.
 - `agents`: unique `name` where active; `enabled`; `last_seen_at`.
 - `agent_credentials`: unique `credential_hash`; `(agent_id, revoked_at)`; `expires_at`. **Phase 6 added no index:** verification looks a credential up by digest, which the unique index already serves, and policy lookup by agent uses the `agent_policy_assignments` primary key.
 - `policies`: unique `name`. Assignments: `policy_id`.
-- `sessions`: `agent_id`, `expires_at`, `revoked_at`.
+- `sessions`: `agent_id`, `expires_at`, `revoked_at` from `0001`; `0005` adds a unique partial index on `mcp_session_id` (so pre-0005 rows with no protocol id stay valid) plus `credential_id`, `status`, and `last_activity_at`. The existing `agent_id`/`expires_at` indexes were not duplicated.
+- The effective-status filter (`status=active|expired`) uses the column plus `expires_at` and `last_activity_at`, so both indexes are load-bearing for the API's most common query.
 - `activity_events`: `created_at`, `(agent_id, created_at)`, `(backend_id, created_at)`, `(tool_name, created_at)`, `request_id`.
 - `audit_events`: `created_at`, `(actor_id, created_at)`, `(action, created_at)`, `(target_id, created_at)`.
 
@@ -128,6 +144,15 @@ Partial unique indexes (`WHERE deleted_at IS NULL`) allow a name to be reused af
 
 Migration `0004_agent_authentication.sql` is the Phase 6 example: four `ALTER TABLE ... ADD COLUMN` statements, all nullable, no backfill, no index, no `sessions` change. Nullable was a deliberate choice — a default would have been a claim about rows issued before the column existed. A pre-Phase-6 credential row therefore has `hash_key_id = NULL` and can never authenticate, which is the honest outcome.
 
+Migration `0005_session_isolation.sql` is the Phase 7 example, and it is the shape to copy when a phase genuinely needs new invariants:
+
+- five `ALTER TABLE sessions ADD COLUMN` statements, no table rebuild, existing rows copied by SQLite in place;
+- `status` defaults to `'active'` — the only defensible default, since a pre-0005 row that was not revoked was active;
+- one `UPDATE` back-fills revoked rows to `invalidated` with `terminated_at = revoked_at`, so an upgraded database means the same thing it did before;
+- four indexes and four triggers. Triggers are used because SQLite cannot add a table-level `CHECK`, and because the invariants they encode (immutability, no reactivation, a complete terminal row) must hold for *every* writer, not just this process.
+
+`/tmp/opencode/verify-0005.ts` is the upgrade check that was actually run: it seeds a real 0004 database with raw SQL (the current repositories write Phase-7 columns, so using them would prove nothing), upgrades, and asserts data preservation, the back-fill, every index and trigger, and that a second open is a no-op.
+
 `.sql` files are not TypeScript output, so `pnpm build` runs `build:migrations` to copy them next to the compiled runner.
 
 ## 7. Repository interfaces
@@ -141,7 +166,7 @@ Declared in `src/domain/repositories.ts` in domain terms — no SQL, no driver t
 | `AgentRepository` | create, findById, findByName, list, query, update, touchAuthentication, softDelete, countActive |
 | `CredentialRepository` | create, findById, findByHash, listByAgentId, revoke, touch, revokeAllForAgent |
 | `PolicyRepository` | create, findById, findByName, list, query, update, delete, assign, unassign, listPoliciesForAgent, unassignAll |
-| `SessionRepository` | create, findById, listByAgentId, revoke, count |
+| `SessionRepository` | create, findById, findByMcpSessionId, listByAgentId, query, touch, end, endWhere, expire, count, countByStatus |
 | `ActivityRepository` | append, list, count |
 | `AuditRepository` | append, list, count |
 

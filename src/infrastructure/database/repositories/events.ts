@@ -2,10 +2,15 @@ import type { ActivityEvent } from '../../../domain/activity-event.js';
 import { activityEventSchema } from '../../../domain/activity-event.js';
 import type { AuditEvent } from '../../../domain/audit-event.js';
 import { auditEventSchema } from '../../../domain/audit-event.js';
-import type { ActivityRepository, AuditRepository } from '../../../domain/repositories.js';
-import type { Session } from '../../../domain/session.js';
-import { sessionSchema } from '../../../domain/session.js';
-import type { SessionRepository } from '../../../domain/repositories.js';
+import type {
+  ActivityRepository,
+  AuditRepository,
+  SessionPage,
+  SessionQuery,
+  SessionRepository,
+} from '../../../domain/repositories.js';
+import type { Session, SessionStatus, SessionTerminationReason } from '../../../domain/session.js';
+import { sessionSchema, sessionStatusSchema, sessionTerminationReasonSchema } from '../../../domain/session.js';
 import { AppError } from '../../../shared/errors.js';
 import type { SqliteDatabase } from '../connection.js';
 import { parseStored, wrapDatabaseError } from './helpers.js';
@@ -176,12 +181,27 @@ export class SqliteAuditRepository implements AuditRepository {
 
 interface SessionRow {
   id: string;
+  mcp_session_id: string | null;
   agent_id: string;
+  credential_id: string | null;
+  status: string;
   created_at: string;
   last_activity_at: string;
   expires_at: string | null;
-  revoked_at: string | null;
+  terminated_at: string | null;
+  termination_reason: string | null;
   metadata_json: string | null;
+}
+
+/**
+ * Effective status for a stored row: a terminal status wins, otherwise a lapsed
+ * hard cap reads as expired. Same precedence as the domain's `sessionStatus()`,
+ * expressed on columns so it can also be used inside a query.
+ */
+function sessionStatus(stored: SessionStatus, expiresAt: string | null, nowMs: number): SessionStatus {
+  if (stored !== 'active') return stored;
+  if (expiresAt !== null && Date.parse(expiresAt) <= nowMs) return 'expired';
+  return 'active';
 }
 
 function toSession(row: SessionRow): Session {
@@ -191,24 +211,29 @@ function toSession(row: SessionRow): Session {
     () =>
       sessionSchema.parse({
         id: row.id,
+        ...(row.mcp_session_id === null ? {} : { mcpSessionId: row.mcp_session_id }),
         agentId: row.agent_id,
-        status: sessionStatusFromRow(row),
+        ...(row.credential_id === null ? {} : { credentialId: row.credential_id }),
+        // A finished status is authoritative (a revocation or an operator's
+        // decision cannot be undone by a clock), while a lapsed lifetime is
+        // reported as expired even before the sweep has written it back.
+        status: sessionStatus(sessionStatusSchema.parse(row.status), row.expires_at, Date.now()),
         createdAt: row.created_at,
         lastActivityAt: row.last_activity_at,
         ...(row.expires_at === null ? {} : { expiresAt: row.expires_at }),
-        ...(row.revoked_at === null ? {} : { revokedAt: row.revoked_at }),
+        ...(row.terminated_at === null ? {} : { terminatedAt: row.terminated_at }),
+        ...(row.termination_reason === null
+          ? {}
+          : { terminationReason: sessionTerminationReasonSchema.parse(row.termination_reason) }),
         ...(metadata === undefined ? {} : { metadata }),
       }),
     { sessionId: row.id },
   );
 }
 
-/** Mirrors `sessionStatus()` in the domain module; timestamps are the source of truth. */
-function sessionStatusFromRow(row: SessionRow): Session['status'] {
-  if (row.revoked_at !== null) return 'revoked';
-  if (row.expires_at !== null && Date.parse(row.expires_at) <= Date.now()) return 'expired';
-  return 'active';
-}
+/** Column list shared by every session read, in one place so it cannot drift. */
+const SESSION_COLUMNS =
+  'id, mcp_session_id, agent_id, credential_id, status, created_at, last_activity_at, expires_at, terminated_at, termination_reason, metadata_json';
 
 export class SqliteSessionRepository implements SessionRepository {
   constructor(private readonly database: SqliteDatabase) {}
@@ -219,16 +244,21 @@ export class SqliteSessionRepository implements SessionRepository {
     try {
       this.database
         .prepare(
-          `INSERT INTO sessions (id, agent_id, created_at, last_activity_at, expires_at, revoked_at, metadata_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO sessions (id, mcp_session_id, agent_id, credential_id, status, created_at, last_activity_at,
+             expires_at, terminated_at, termination_reason, metadata_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           parsed.id,
+          parsed.mcpSessionId ?? null,
           parsed.agentId,
+          parsed.credentialId ?? null,
+          parsed.status,
           parsed.createdAt,
           parsed.lastActivityAt,
           parsed.expiresAt ?? null,
-          parsed.revokedAt ?? null,
+          parsed.terminatedAt ?? null,
+          parsed.terminationReason ?? null,
           parsed.metadata === undefined ? null : JSON.stringify(parsed.metadata),
         );
     } catch (error) {
@@ -246,20 +276,106 @@ export class SqliteSessionRepository implements SessionRepository {
   }
 
   findById(id: string): Session | undefined {
-    const row = this.database.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined;
+    const row = this.database
+      .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`)
+      .get(id) as SessionRow | undefined;
+    return row === undefined ? undefined : toSession(row);
+  }
+
+  findByMcpSessionId(mcpSessionId: string): Session | undefined {
+    const row = this.database
+      .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE mcp_session_id = ?`)
+      .get(mcpSessionId) as SessionRow | undefined;
     return row === undefined ? undefined : toSession(row);
   }
 
   listByAgentId(agentId: string): Session[] {
     const rows = this.database
-      .prepare('SELECT * FROM sessions WHERE agent_id = ? ORDER BY created_at DESC')
+      .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE agent_id = ? ORDER BY created_at DESC`)
       .all(agentId) as SessionRow[];
 
     return rows.map(toSession);
   }
 
-  revoke(id: string, now: string): Session {
-    this.database.prepare('UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(now, id);
+  query(criteria: SessionQuery): SessionPage {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+
+    if (criteria.agentId !== undefined) {
+      clauses.push('agent_id = ?');
+      params.push(criteria.agentId);
+    }
+    if (criteria.status !== undefined) {
+      // Filter on the effective status, so an operator searching for expired
+      // sessions sees the ones whose lifetime lapsed but which the sweep has not
+      // written back yet. Two lifetimes, both derived: the stored hard cap and
+      // the idle deadline (which is why `idleCutoff` is supplied rather than
+      // stored).
+      const now = criteria.now ?? new Date().toISOString();
+      const lapsed = "(expires_at IS NOT NULL AND expires_at <= ?)";
+      const idle = criteria.idleCutoff === undefined ? '0' : '(last_activity_at <= ?)';
+
+      if (criteria.status === 'expired') {
+        clauses.push(`(status = 'expired' OR (status = 'active' AND (${lapsed} OR ${idle})))`);
+        params.push(now, ...(criteria.idleCutoff === undefined ? [] : [criteria.idleCutoff]));
+      } else if (criteria.status === 'active') {
+        clauses.push(`(status = 'active' AND NOT ${lapsed} AND NOT ${idle})`);
+        params.push(now, ...(criteria.idleCutoff === undefined ? [] : [criteria.idleCutoff]));
+      } else {
+        clauses.push('status = ?');
+        params.push(criteria.status);
+      }
+    }
+    if (criteria.createdAfter !== undefined) {
+      clauses.push('created_at >= ?');
+      params.push(criteria.createdAfter);
+    }
+    if (criteria.createdBefore !== undefined) {
+      clauses.push('created_at <= ?');
+      params.push(criteria.createdBefore);
+    }
+    if (criteria.lastActivityAfter !== undefined) {
+      clauses.push('last_activity_at >= ?');
+      params.push(criteria.lastActivityAfter);
+    }
+
+    const where = clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`;
+    const sortColumn = criteria.sort === 'createdAt' ? 'created_at' : 'last_activity_at';
+    const direction = criteria.order === 'asc' ? 'ASC' : 'DESC';
+
+    const totalRow = this.database
+      .prepare(`SELECT COUNT(*) AS count FROM sessions ${where}`)
+      .get(...params) as { count: number };
+
+    const rows = this.database
+      .prepare(
+        `SELECT ${SESSION_COLUMNS} FROM sessions ${where} ORDER BY ${sortColumn} ${direction}, id ${direction} LIMIT ? OFFSET ?`,
+      )
+      .all(...params, criteria.limit, criteria.offset) as SessionRow[];
+
+    return { items: rows.map(toSession), total: totalRow.count };
+  }
+
+  touch(id: string, now: string): void {
+    // Only an active session moves its clock. Touching a finished one would be a
+    // write that changes nothing usable, and the guard keeps the row honest.
+    this.database.prepare("UPDATE sessions SET last_activity_at = ? WHERE id = ? AND status = 'active'").run(now, id);
+  }
+
+  end(
+    id: string,
+    now: string,
+    status: 'expired' | 'terminated' | 'invalidated',
+    reason: SessionTerminationReason,
+  ): Session {
+    // Conditional on the current state, so a concurrent end cannot overwrite the
+    // first reason (and a repeated termination is a no-op, which is the
+    // idempotency the API promises).
+    this.database
+      .prepare(
+        "UPDATE sessions SET status = ?, terminated_at = ?, termination_reason = ? WHERE id = ? AND status = 'active'",
+      )
+      .run(status, now, reason, id);
 
     const session = this.findById(id);
     if (session === undefined) {
@@ -269,6 +385,75 @@ export class SqliteSessionRepository implements SessionRepository {
     }
 
     return session;
+  }
+
+  endWhere(
+    filter: { agentId?: string; credentialId?: string; ids?: string[] },
+    now: string,
+    status: 'expired' | 'terminated' | 'invalidated',
+    reason: SessionTerminationReason,
+  ): Session[] {
+    const clauses = ["status = 'active'"];
+    const params: unknown[] = [];
+
+    if (filter.agentId !== undefined) {
+      clauses.push('agent_id = ?');
+      params.push(filter.agentId);
+    }
+    if (filter.credentialId !== undefined) {
+      clauses.push('credential_id = ?');
+      params.push(filter.credentialId);
+    }
+    if (filter.ids !== undefined) {
+      if (filter.ids.length === 0) return [];
+      clauses.push(`id IN (${filter.ids.map(() => '?').join(', ')})`);
+      params.push(...filter.ids);
+    }
+
+    // An empty filter would end every session in the database; refuse instead of
+    // turning a caller's bug into a mass logout.
+    if (params.length === 0) return [];
+
+    // RETURNING so the caller knows exactly which sessions it ended — needed to
+    // release their transports and to audit each one.
+    const rows = this.database
+      .prepare(
+        `UPDATE sessions SET status = ?, terminated_at = ?, termination_reason = ? WHERE ${clauses.join(' AND ')}
+         RETURNING ${SESSION_COLUMNS}`,
+      )
+      .all(status, now, reason, ...params) as SessionRow[];
+
+    return rows.map(toSession);
+  }
+
+  expire(now: string, idleCutoff: string): Session[] {
+    // Two independent lifetime rules, one statement each, so a row is ended by
+    // whichever fired and never by both. `terminated_at` is written once because
+    // the second statement only sees rows that are still active.
+    const idle = this.database
+      .prepare(
+        `UPDATE sessions SET status = 'expired', terminated_at = ?, termination_reason = 'idle_timeout'
+          WHERE status = 'active' AND last_activity_at <= ?
+          RETURNING ${SESSION_COLUMNS}`,
+      )
+      .all(now, idleCutoff) as SessionRow[];
+
+    const lifetime = this.database
+      .prepare(
+        `UPDATE sessions SET status = 'expired', terminated_at = ?, termination_reason = 'max_lifetime'
+          WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= ?
+          RETURNING ${SESSION_COLUMNS}`,
+      )
+      .all(now, now) as SessionRow[];
+
+    return [...idle, ...lifetime].map(toSession);
+  }
+
+  countByStatus(status: SessionStatus): number {
+    const row = this.database.prepare('SELECT COUNT(*) AS count FROM sessions WHERE status = ?').get(status) as {
+      count: number;
+    };
+    return row.count;
   }
 
   count(): number {

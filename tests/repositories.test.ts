@@ -336,7 +336,7 @@ describe('event repositories', () => {
 });
 
 describe('session repository', () => {
-  it('creates, reads, lists and revokes a session', () => {
+  it('creates, reads, lists and ends a session', () => {
     const agent = store.agents.create({ name: 'session-agent' }, NOW);
     const sessionId = '77777777-7777-4777-8777-777777777777';
 
@@ -352,10 +352,47 @@ describe('session repository', () => {
     expect(created.status).toBe('active');
     expect(store.sessions.listByAgentId(agent.id)).toHaveLength(1);
 
-    const revoked = store.sessions.revoke(sessionId, LATER);
-    expect(revoked.status).toBe('revoked');
-    expect(revoked.revokedAt).toBe(LATER);
+    const ended = store.sessions.end(sessionId, LATER, 'terminated', 'operator_terminated');
+    expect(ended.status).toBe('terminated');
+    expect(ended.terminatedAt).toBe(LATER);
+    expect(ended.terminationReason).toBe('operator_terminated');
     expect(store.sessions.count()).toBe(1);
+  });
+
+  it('refuses to reactivate a finished session', () => {
+    const agent = store.agents.create({ name: 'reactivate-agent' }, NOW);
+    const sessionId = '99999999-9999-4999-8999-999999999999';
+
+    store.sessions.create({
+      id: sessionId,
+      agentId: agent.id,
+      status: 'active',
+      createdAt: NOW,
+      lastActivityAt: NOW,
+    });
+    store.sessions.end(sessionId, LATER, 'terminated', 'operator_terminated');
+
+    expect(() =>
+      store.handle.prepare("UPDATE sessions SET status = 'active' WHERE id = ?").run(sessionId),
+    ).toThrow(/cannot be reactivated/);
+  });
+
+  it('refuses to move a session to another agent', () => {
+    const agent = store.agents.create({ name: 'owner-agent' }, NOW);
+    const other = store.agents.create({ name: 'other-agent' }, NOW);
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+    store.sessions.create({
+      id: sessionId,
+      agentId: agent.id,
+      status: 'active',
+      createdAt: NOW,
+      lastActivityAt: NOW,
+    });
+
+    expect(() =>
+      store.handle.prepare('UPDATE sessions SET agent_id = ? WHERE id = ?').run(other.id, sessionId),
+    ).toThrow(/identity is immutable/);
   });
 
   it('derives expired status from expiresAt', () => {

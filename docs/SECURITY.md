@@ -141,14 +141,28 @@ An unauthorized `tools/call` answers `-32602` with the message `Unknown tool` �
 
 The real reason (`default_deny`, `explicit_deny`, `agent_disabled`, `backend_disabled`) is written to `access.denied` in `audit_events` with the agent id, the resolved backend/tool id where safely determinable, the credential id, the correlation id, and the decision timestamp.
 
-### 5.3 Session limitation (deliberate, Phase 6)
+### 5.3 Persistent session binding (Phase 7)
 
-There is no persistent session-to-agent binding. The `sessions` table exists but Phase 6 neither reads nor writes it for authorization, and no binding table was added. Consequences:
+A protocol session is now bound to exactly one agent and one credential, but the binding is **an additional check, never a substitute for authentication**. The order per request is:
 
-- Every request costs one indexed credential lookup — accepted, because it is a local SQLite primary-key read.
-- A client cannot inherit authority from a previous `initialize`.
-- Authorization is re-evaluated per request, so a revocation, a disable, or a policy edit takes effect on the very next call.
-- Phase 7 may introduce session tracking for observability; it must not become an authorization shortcut.
+1. Verify the bearer credential (Phase 6, unchanged).
+2. Resolve `mcp-session-id` to a stored session, if the request carries one.
+3. Require the session to exist, be `active`, and belong to *this* agent.
+4. Require the credential to be the one that opened it, and still unrevoked and unexpired.
+5. Require the owning agent to exist and be enabled.
+6. Record activity, then serve.
+
+Every step re-reads the database. A session id alone authenticates nothing: a request carrying a valid session id and no token is a 401 from step 1, and the socket tests assert exactly that.
+
+**Which era has a session at all.** Against the installed SDK (server/client `2.4.0`), the 2026 era is per-request by design and issues no `mcp-session-id`; identity is re-established on every exchange, so there is nothing to bind and nothing to hijack. The 2025 era does issue one, and is served through `WebStandardStreamableHTTPServerTransport` with `sessionIdGenerator`. Only an `initialize` or a request that already presents a session id takes that path; everything else keeps the stateless leg, which is why a one-shot `tools/list` still works exactly as it did in Phase 6.
+
+**Refusals do not disclose ownership.** A session belonging to another agent, a session id that was never issued, a terminated session, an expired session, and a session whose transport is gone all answer the same `404` with `{"code":-32001,"message":"Session not found"}`. `tests/mcp-sessions.test.ts` asserts the cross-agent body is byte-identical to the never-issued body. The real reason (`session_owner_mismatch`, `session_unknown`, `session_expired`, `credential_revoked`, `agent_disabled`, …) exists only in the `session.access.denied` audit row and the log.
+
+**Identity is immutable.** The owning agent, credential, protocol id, internal id, and creation time cannot change after insert: migration `0005` installs a `BEFORE UPDATE` trigger that aborts the statement, so even a bug — or another gateway process — cannot reassign a session. A finished session cannot be returned to `active` either (`sessions_no_reactivation`), so an operator's termination is one-way.
+
+**Lifecycle takes effect immediately.** Revoking a credential, rotating it, disabling an agent, deleting an agent, and an explicit terminate all end the affected sessions in the *same transaction* as the change, and each is re-checked per request anyway. Expiry is enforced per request from `lastActivityAt` + idle timeout and from `expiresAt`; the cleanup sweep only writes back what a request would already refuse, so a missed sweep cannot extend access.
+
+**Multi-process limit, stated plainly.** The transport registry is in-process. A session created by one gateway process cannot be served by another, and this is not claimed otherwise: there is no Redis, no shared lock, no cross-process registry. What *is* cross-process is the database: the unique index on `mcp_session_id` and the immutability trigger hold for every writer, so two processes cannot bind one protocol session to two agents or move an existing one.
 
 ### 5.4 Audit volume control
 
@@ -283,6 +297,8 @@ Three new audit actions, all with flat primitive metadata:
 | `auth.failed` | `system` | `reason` (fixed enum), `credentialId` and `agentId` only when the credential row was located |
 | `access.denied` | `agent` | `reason`, `backendId`/`toolId` where resolvable, `credentialId`, `matchedPolicyId`, `suppressed` |
 
+Phase 7 session actions (`docs/MONITORING.md` §6.4 has the full table): `session.created`, `session.authenticated`, `session.access.denied`, `session.expired`, `session.terminated`, `session.invalidated`, `session.cleanup.completed`. Metadata is ids, reasons from a closed enum, and counts — never a token, an `Authorization` header, an HMAC key, request content, or transport state. `session.authenticated` is windowed (once per session per 60 s) and `session.access.denied` once per reason per 60 s, with the suppressed count folded into the next row, so a busy or hostile client cannot grow the table linearly.
+
 - The failure *reason* is internal. On the wire every failure is the same 401; only the audit row and the `warn` log carry `malformed_token`, `revoked_credential`, `agent_disabled`, and so on.
 - `access.denied` names the resolved backend and tool id when the decision could be made about them, and the bare public name otherwise. A name that resolves to nothing is audited by name only, so probing for tools leaves a trail without confirming that anything exists.
 - Repeated failures are collapsed per reason within a 60-second window, with the suppressed count folded into the next row, so a loop cannot grow the table linearly.
@@ -348,6 +364,21 @@ Phase 6 additions (all covered by `tests/credentials.test.ts`, `tests/authentica
 - Rotating a credential (`previousCredentialId` audited, old token dead immediately) and deleting an agent (all credentials revoked, all assignments dropped).
 - Inspecting `/health`, `/api/v1/system`, and the agent/credential/policy endpoints for the hashing secret or a stored token (never present).
 
+Phase 7 additions (covered by `tests/mcp-sessions.test.ts`, `tests/sessions.test.ts`, `tests/sessions-api.test.ts`):
+
+- Agent A initializing a session, then agent B presenting A's `mcp-session-id`: `404`, byte-identical to a never-issued id, A's session still `active` and still owned by A.
+- The same test in reverse (B→A), so the result cannot depend on creation order.
+- A valid session id with **no** credential (401) and with a **different** agent's credential (404).
+- `X-Agent-Id` / `X-Agent-Name` spoofing on a session-bearing request: served as the bearer's identity, headers ignored, stored owner unchanged.
+- Guessing a session id (`never-issued`, `guess`): the same refusal as another agent's real id, with no timing or body difference an operator can branch on.
+- Revocation, rotation, agent disable, and agent delete while a session is live: the next request fails, and the row is `invalidated` with the matching reason.
+- Credential expiry with the session row still `active`: refused at authentication, before any session lookup succeeds.
+- Idle timeout and max lifetime reached with no sweep: refused at request time; the stored row is unchanged, proving enforcement does not depend on the sweep.
+- Terminate through the API, then a session-bearing `tools/call`: `404`. Repeating terminate returns the same timestamp and does not resurrect the session.
+- Raw `UPDATE sessions SET agent_id = ...` and `UPDATE ... SET status = 'active'` on a finished row: both abort (trigger), asserted at the repository level in `tests/repositories.test.ts` and against an upgraded database by `verify-0005.ts`.
+- Graceful shutdown: every active session becomes `terminated` / `gateway_shutdown`, and transports are released before the store closes.
+- `/api/v1/sessions`, its detail, terminate, and cleanup endpoints read for credential hashes, tokens, and transport state (never present).
+
 ## 11. Release gate
 
 No non-loopback exposure until:
@@ -357,4 +388,4 @@ No non-loopback exposure until:
 - Secrets are protected — `CREDENTIAL_HASH_SECRET` is required in production and never enters `Config`, but it is still a symmetric secret in the environment with the limits in 6.3.
 - Threat review and operational rollback plan are complete.
 
-**Explicitly not satisfied by Phase 6:** dashboard login, dashboard sessions/CSRF, TLS, per-operator identity on the management API (Phase 8), and any form of non-loopback exposure. Do not put this behind a tunnel yet.
+**Explicitly not satisfied by Phase 6 or Phase 7:** dashboard login, dashboard sessions/CSRF, TLS, per-operator identity on the management API (Phase 8), and any form of non-loopback exposure. Do not put this behind a tunnel yet. The session management API is an operator surface on the *unauthenticated* loopback boundary — it can terminate a client's session, so it inherits §3.1 in full: loopback only, no proxy, no tunnel.

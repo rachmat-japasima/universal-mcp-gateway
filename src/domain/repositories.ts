@@ -6,7 +6,7 @@ import type { Backend, CreateBackendInput, UpdateBackendInput } from '../domain/
 import type { TransportType } from '../domain/backend.js';
 import type { BackendRuntime } from '../domain/backend-runtime.js';
 import type { CreatePolicyInput, Policy, UpdatePolicyInput } from '../domain/policy.js';
-import type { Session } from '../domain/session.js';
+import type { Session, SessionStatus, SessionTerminationReason } from '../domain/session.js';
 
 /**
  * Persistence contracts.
@@ -148,12 +148,63 @@ export interface AuditRepository {
   count(): number;
 }
 
+export interface SessionQuery {
+  agentId?: string;
+  status?: SessionStatus;
+  /** Only sessions created at or after this instant. */
+  createdAfter?: string;
+  /** Only sessions created at or before this instant. */
+  createdBefore?: string;
+  /** Only sessions active at or after this instant (last activity). */
+  lastActivityAfter?: string;
+  limit: number;
+  offset: number;
+  sort: 'createdAt' | 'lastActivityAt';
+  order: 'asc' | 'desc';
+  /** Clock for effective-status filtering. Defaults to the current instant. */
+  now?: string;
+  /** `now` minus the configured idle timeout, for the same reason. */
+  idleCutoff?: string;
+}
+
+export interface SessionPage {
+  items: Session[];
+  total: number;
+}
+
+/**
+ * Persistent sessions.
+ *
+ * Every mutating method is a single conditional statement whose predicate
+ * carries the state check ("still active", "still unbound"), so the decision
+ * and the write cannot be interleaved by another writer. Callers never read a
+ * row and then write it back unguarded.
+ */
 export interface SessionRepository {
   create(session: Session): Session;
   findById(id: string): Session | undefined;
+  findByMcpSessionId(mcpSessionId: string): Session | undefined;
   listByAgentId(agentId: string): Session[];
-  revoke(id: string, now: string): Session;
+  query(criteria: SessionQuery): SessionPage;
+  /** Extends the idle clock. No-op for a session that is no longer active. */
+  touch(id: string, now: string): void;
+  /** Ends an active session. Idempotent: a finished session is returned unchanged. */
+  end(id: string, now: string, status: 'expired' | 'terminated' | 'invalidated', reason: SessionTerminationReason): Session;
+  /** Ends every active session matching the filter. Returns the rows that changed. */
+  endWhere(
+    filter: { agentId?: string; credentialId?: string; ids?: string[] },
+    now: string,
+    status: 'expired' | 'terminated' | 'invalidated',
+    reason: SessionTerminationReason,
+  ): Session[];
+  /**
+   * Marks idle-expired and over-lifetime sessions. Auditable history is kept:
+   * the row is retained with a status and a reason, never deleted.
+   * Returns the rows that changed.
+   */
+  expire(now: string, idleCutoff: string): Session[];
   count(): number;
+  countByStatus(status: SessionStatus): number;
 }
 
 /** Every repository a store provides, wired once at startup. */

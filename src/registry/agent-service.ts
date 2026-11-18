@@ -8,6 +8,7 @@ import type { Database } from '../infrastructure/database/index.js';
 import { AppError } from '../shared/errors.js';
 import type { Actor } from './backend-service.js';
 import { LOCAL_OPERATOR } from './backend-service.js';
+import type { SessionInvalidator } from './session-service.js';
 
 /**
  * Agent profiles.
@@ -31,11 +32,16 @@ export interface DeletedAgent {
 }
 
 export class AgentService {
+  private readonly sessions: SessionInvalidator | undefined;
+
   constructor(
     private readonly store: Database,
     private readonly actor: Actor = LOCAL_OPERATOR,
     private readonly now: () => string = () => new Date().toISOString(),
-  ) {}
+    sessions?: SessionInvalidator,
+  ) {
+    this.sessions = sessions;
+  }
 
   list(query: AgentQuery): AgentPage {
     return this.store.agents.query(query);
@@ -84,6 +90,9 @@ export class AgentService {
 
       // A PATCH may flip `enabled`; that is an access change, not a profile edit.
       if (existing.enabled !== updated.enabled) {
+        if (!updated.enabled) {
+          this.sessions?.invalidateFor({ agentId: updated.id }, 'agent_disabled', 'invalidated');
+        }
         this.audit(updated.enabled ? 'agent.enabled' : 'agent.disabled', 'success', updated, {
           via: 'update',
         });
@@ -101,6 +110,11 @@ export class AgentService {
       if (existing.enabled === enabled) return existing;
 
       const updated = this.store.agents.update(agentId, { enabled }, this.now());
+
+      // Disabling must end live sessions, not merely refuse new ones: a client
+      // holding a session id would otherwise keep the agent's access.
+      if (!enabled) this.sessions?.invalidateFor({ agentId: updated.id }, 'agent_disabled', 'invalidated');
+
       this.audit(enabled ? 'agent.enabled' : 'agent.disabled', 'success', updated, {});
       return updated;
     });
@@ -121,6 +135,7 @@ export class AgentService {
       this.store.agents.softDelete(agentId, now);
       const revokedCredentials = this.store.credentials.revokeAllForAgent(agentId, now);
       const removedAssignments = this.store.policies.unassignAll(agentId);
+      this.sessions?.invalidateFor({ agentId }, 'agent_deleted', 'invalidated');
 
       this.audit('agent.deleted', 'success', existing, {
         name: existing.name,

@@ -26,8 +26,8 @@ Next.js, React, TypeScript, and **Astryx directly** as the UI component library/
 
 ## Current status
 
-Phases 1–6 are complete.
-- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 372 tests).
+Phases 1–7 are complete.
+- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 437 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
 - `tools/list` serves the live catalog, filtered per agent; no backend is
@@ -54,7 +54,13 @@ Phases 1–6 are complete.
 - Phase 6: agent profiles, per-agent bearer credentials, a default-deny policy
   engine enforced on both `tools/list` and `tools/call`, per-request
   authentication on `/mcp`, and `auth.*` / `access.denied` audit events. 69 new
-  tests → 372 total.
+  tests.
+- Phase 7: persistent session isolation — one protocol session bound to one agent
+  and one credential, immutable at the database level; idle and hard-cap expiry
+  enforced per request; invalidation on revocation/rotation/disable/delete;
+  terminate, cleanup, and inspect endpoints; and `session.*` audit events. 65
+  new tests → 437 total. Session serving is single-process by construction
+  (`docs/ARCHITECTURE.md` §10).
 - `/health` reports `backendCount: 0`; production backend registry is empty.
 
 **Nothing connects by itself.** Registration, validation, and enable/disable are
@@ -76,11 +82,21 @@ loopback/private/CGNAT and never metadata or link-local. TLS verification is
 never disabled.
 
 **`/mcp` requires a per-agent credential.** Every request presents
-`Authorization: Bearer umg_live_…`, verified independently on that request — no
-session carries identity forward. Authorization is default deny: an agent sees
-only the tools its policies allow, and a denied call answers `-32602 "Unknown
-tool"`, identical to a name that does not exist. New agents have no credential
-and no access until an operator issues one and assigns a policy.
+`Authorization: Bearer umg_live_…`, verified independently on that request.
+Authorization is default deny: an agent sees only the tools its policies allow,
+and a denied call answers `-32602 "Unknown tool"`, identical to a name that does
+not exist. New agents have no credential and no access until an operator issues
+one and assigns a policy.
+
+**A protocol session is bound to the agent that opened it.** In the 2025 era the
+SDK issues an `mcp-session-id`; the gateway stores it against the authenticating
+agent and credential, and every later request must present both a valid bearer
+*and* a session that is active, unexpired, and owned by that agent. A session id
+is a routing handle, never proof: presenting one without a token is a 401.
+Unknown, terminated, expired, revoked, and other-agent sessions all answer the
+same `404 Session not found`. The 2026 era is per-request by protocol design and
+has no session to bind. A sessionless one-shot `tools/list` still works exactly as
+before.
 
 **The management API is still unauthenticated**, loopback-only, and — since
 Phase 6 — able to mint a credential. Any local process can therefore grant
@@ -105,8 +121,8 @@ Environment variables, with defaults:
 | `ENVIRONMENT` | `development` | `development`, `test`, `production` |
 | `REQUEST_BODY_LIMIT_BYTES` | `4194304` | Max MCP request body |
 | `REQUEST_TIMEOUT_MS` | `30000` | Per-exchange bound |
-| `SESSION_IDLE_TIMEOUT_MS` | `1800000` | Used from Phase 7 |
-| `SESSION_MAX_LIFETIME_MS` | `43200000` | Used from Phase 7 |
+| `SESSION_IDLE_TIMEOUT_MS` | `1800000` | 30 min. A session unused this long is refused per request and swept by cleanup |
+| `SESSION_MAX_LIFETIME_MS` | `43200000` | 12 h hard cap from creation, regardless of activity |
 | `RECONNECT_ENABLED` | `false` | Auto-reconnect after a transient loss |
 | `RECONNECT_INITIAL_DELAY_MS` | `1000` | First backoff step |
 | `RECONNECT_MAX_DELAY_MS` | `60000` | Backoff ceiling |
@@ -185,6 +201,14 @@ curl -s -X POST http://127.0.0.1:8787/api/v1/policies/<policyId>/assignments \
 # Read-only preview of what that agent may call, and why
 curl -s http://127.0.0.1:8787/api/v1/agents/<agentId>/access
 
+# Sessions (Phase 7). Internal ids only; a protocol session id is not accepted here.
+curl -s 'http://127.0.0.1:8787/api/v1/sessions?status=active&limit=20'
+curl -s http://127.0.0.1:8787/api/v1/sessions/<sessionId>
+# Body is optional; the default reason is operator_terminated.
+curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/<sessionId>/terminate
+# Expire idle/lapsed sessions now (row-retaining, safe to repeat)
+curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/cleanup
+
 # Then call /mcp as that agent
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'authorization: Bearer umg_live_…' \
@@ -228,6 +252,10 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 | `DELETE` | `/api/v1/policies/:policyId` |
 | `POST` | `/api/v1/policies/:policyId/assignments` |
 | `DELETE` | `/api/v1/policies/:policyId/assignments/:agentId` |
+| `GET` | `/api/v1/sessions` |
+| `GET` | `/api/v1/sessions/:sessionId` |
+| `POST` | `/api/v1/sessions/:sessionId/terminate` |
+| `POST` | `/api/v1/sessions/cleanup` |
 
 Every request body must be `application/json`. Errors use one envelope:
 `{ "error": { "code", "message", "requestId" } }`. Contracts and validation
@@ -248,10 +276,10 @@ rules are in `docs/BACKEND_SPEC.md`.
 
 ## Next task
 
-Phase 7 — session isolation and concurrency: transport/session model, session
-tracking and expiry, per-backend concurrency modes, scoped queues/locks, and
-cancellation. A session binding may be recorded for observability; it must not
-become an authorization shortcut (see `docs/ARCHITECTURE.md` §10).
+Phase 8 — management API completion: activity and settings surfaces, remaining
+agent/policy gaps, secure backup/restore, and per-backend `limited` queueing
+(`docs/ARCHITECTURE.md` §11.2). Dashboard and operator authentication stay out
+of it until Phase 9.
 
 Not started, and not to be added without approval: real backends, agent client
 config changes, dashboard work, OAuth, non-loopback exposure.

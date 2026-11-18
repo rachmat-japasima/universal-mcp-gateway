@@ -337,6 +337,116 @@ registry (or be `*`); a `tool` target must be a well-formed public name and is
 **not** required to exist in the catalog, because the catalog is transient
 (ADR-038).
 
+## 7.3 Session management endpoints (Phase 7)
+
+Read-and-terminate surface over the persistent session binding. Same loopback-only,
+unauthenticated operator boundary as everything else in §3 — and this one can end a
+client's session, so it inherits §9's exposure rule in full.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/sessions` | Paginated, filterable list. Never includes a token, verifier, or transport state. |
+| `GET` | `/api/v1/sessions/:sessionId` | Detail by **internal** id. `404` if absent. |
+| `POST` | `/api/v1/sessions/:sessionId/terminate` | Terminate. Idempotent. Body optional. |
+| `POST` | `/api/v1/sessions/cleanup` | Expire idle/lapsed sessions now and report what changed. |
+
+### Two identifiers
+
+| | Internal `id` | `mcpSessionId` |
+| --- | --- | --- |
+| Path parameter | yes | no — a protocol id is never accepted as an internal id |
+| Issued by | gateway | SDK transport, echoed by the client in `mcp-session-id` |
+| Authenticates | nothing | nothing |
+
+A path segment that is not a UUID is a `400`, not a `404`, so a client cannot use the
+error to probe which protocol ids the gateway has seen.
+
+### `GET /api/v1/sessions` query parameters
+
+| Name | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `page` | integer ≥ 1 | `1` | 1-based |
+| `limit` | integer 1–100 | `20` | `MAX_PAGE_SIZE` |
+| `agentId` | uuid | — | Exact owner |
+| `status` | `active` \| `expired` \| `terminated` \| `invalidated` | — | **Effective** status: a lapsed but unswept session filters as `expired` |
+| `createdAfter` | ISO datetime | — | Inclusive lower bound |
+| `createdBefore` | ISO datetime | — | Inclusive upper bound |
+| `lastActivityAfter` | ISO datetime | — | Inclusive lower bound |
+| `sort` | `createdAt` \| `lastActivityAt` | `createdAt` | |
+| `order` | `asc` \| `desc` | `desc` | |
+
+An unknown *value* (a status outside the enum, a malformed UUID, `limit` over the cap) is a
+`400 VALIDATION_ERROR`. Unknown *parameter names* are ignored, as everywhere else in the API —
+proxies and editors add them freely. Both date bounds are inclusive and compared as stored
+ISO strings.
+
+```json
+{
+  "data": [
+    {
+      "id": "9f1c…",
+      "mcpSessionId": "a4d1e0…",
+      "agentId": "3b7e…",
+      "credentialId": "c02f…",
+      "status": "active",
+      "createdAt": "2026-11-19T10:00:00.000Z",
+      "lastActivityAt": "2026-11-19T10:04:12.000Z",
+      "expiresAt": "2026-11-19T22:00:00.000Z",
+      "metadata": { "clientType": "claude-code", "protocolVersion": "2025-11-25" }
+    }
+  ],
+  "pagination": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 }
+}
+```
+
+`terminatedAt` and `terminationReason` appear only once a session has ended. Something
+that has never been exposed is absent rather than `null`.
+
+### `POST /api/v1/sessions/:sessionId/terminate`
+
+Empty body is the documented call and defaults the reason to `operator_terminated`. A
+supplied body must be `{"reason": "<closed enum>"}`; anything else is a `400`. The enum is
+`operator_terminated`, `client_deleted`, `idle_timeout`, `max_lifetime`, `agent_disabled`,
+`agent_deleted`, `credential_revoked`, `credential_rotated`, `gateway_shutdown`,
+`transport_lost`, `cleanup`.
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/<id>/terminate
+curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/<id>/terminate \
+  -H 'content-type: application/json' -d '{"reason":"transport_lost"}'
+```
+
+Idempotent: a repeat returns the same record with the same `terminatedAt`, and writes no
+second audit row. A finished session cannot be returned to `active` — the database
+refuses it. An unknown internal id is `404 RESOURCE_NOT_FOUND`.
+
+### `POST /api/v1/sessions/cleanup`
+
+Expires every session whose idle deadline or hard cap has passed. Row-retaining, and each
+statement is conditional on `status = 'active'`, so it is safe to repeat and safe to run
+concurrently with a request or a terminate.
+
+```json
+{ "data": { "expired": 1, "sessions": [ { "id": "9f1c…", "terminationReason": "idle_timeout" } ] } }
+```
+
+Cleanup is housekeeping, not the control: expiry is enforced on the request path, so an
+unswept session is already refused. Running it twice changes nothing.
+
+### What a client sees instead
+
+An MCP request carrying a session id that is unknown, terminated, expired, belongs to
+another agent, or whose credential was revoked answers **one** shape:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "error": { "code": -32001, "message": "Session not found" } }
+```
+
+That refusal is identical for every cause on purpose (`docs/SECURITY.md` §5.3). The real
+reason is in the `session.access.denied` audit row, not on the wire. Session ids are not
+credentials: a session-bearing request with no valid bearer is a `401` before any session
+lookup happens.
+
 ## 8. Error codes
 
 Implemented: see section 2, plus the Phase 5 additions:

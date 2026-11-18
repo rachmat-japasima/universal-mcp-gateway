@@ -10,6 +10,7 @@ import type { CredentialKeys } from '../auth/credential-key.js';
 import { issueToken } from '../auth/credential-key.js';
 import type { Actor } from './backend-service.js';
 import { LOCAL_OPERATOR } from './backend-service.js';
+import type { SessionInvalidator } from './session-service.js';
 
 /**
  * Agent credential lifecycle.
@@ -35,6 +36,12 @@ export interface CredentialServiceOptions {
   keys: CredentialKeys;
   actor?: Actor;
   now?: () => string;
+  /**
+   * Sessions opened with a credential must stop working the moment it is
+   * revoked. Wired here rather than observed later so revocation and
+   * invalidation commit in the same transaction.
+   */
+  sessions?: SessionInvalidator;
 }
 
 export class CredentialService {
@@ -42,12 +49,14 @@ export class CredentialService {
   private readonly keys: CredentialKeys;
   private readonly actor: Actor;
   private readonly now: () => string;
+  private readonly sessions: SessionInvalidator | undefined;
 
   constructor(options: CredentialServiceOptions) {
     this.store = options.store;
     this.keys = options.keys;
     this.actor = options.actor ?? LOCAL_OPERATOR;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.sessions = options.sessions;
   }
 
   list(agentId: string): AgentCredential[] {
@@ -154,6 +163,10 @@ export class CredentialService {
 
       this.store.credentials.revoke(previous.id, now);
 
+      // Rotation is replace-semantics: nothing that authenticated with the old
+      // token may keep a session alive.
+      this.sessions?.invalidateFor({ credentialId: previous.id }, 'credential_rotated', 'invalidated');
+
       this.audit('credential.rotated', 'success', created, {
         credentialId: created.id,
         previousCredentialId: previous.id,
@@ -172,6 +185,7 @@ export class CredentialService {
       const revoked = this.store.credentials.revoke(existing.id, this.now());
 
       if (existing.revokedAt === undefined) {
+        this.sessions?.invalidateFor({ credentialId: revoked.id }, 'credential_revoked', 'invalidated');
         this.audit('credential.revoked', 'success', revoked, { credentialId: revoked.id });
       }
 
