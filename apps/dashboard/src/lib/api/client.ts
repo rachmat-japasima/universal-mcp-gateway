@@ -1,4 +1,4 @@
-import { operatorCookieHeader } from '@/lib/auth/guard';
+import { operatorCookieHeader, operatorCredentials } from '@/lib/auth/guard';
 import { config } from '@/lib/config';
 import { ApiError, fromFetchError, parseErrorBody } from './errors';
 import type { Page, Pagination, Readiness } from './types';
@@ -31,6 +31,15 @@ export interface RequestOptions {
   acceptStatus?: readonly number[];
   /** Explicit cookie, for callers outside a request scope. Defaults to the browser's. */
   cookie?: string;
+  /** Explicit CSRF token, for callers outside a request scope. Defaults to the session's. */
+  csrfToken?: string;
+  /**
+   * Any method other than `GET`. A write without one of these is a read, which
+   * keeps every existing caller's semantics unchanged.
+   */
+  method?: 'POST' | 'PATCH' | 'DELETE';
+  /** JSON body for a write. Serialised here so no caller hand-builds one. */
+  body?: unknown;
 }
 
 interface Envelope<T> {
@@ -80,12 +89,41 @@ export async function request<T>(
    */
   const cookie = options.cookie ?? (await operatorCookieHeader());
 
+  /**
+   * Writes also need the CSRF token derived from that same session. It is read
+   * from the session probe rather than minted here, because the gateway is the
+   * only thing that can derive it — and only from a cookie it accepts. A route
+   * handler passes both explicitly, so its probe is not repeated.
+   */
+  const isWrite = options.method !== undefined;
+  let csrfToken = options.csrfToken;
+
+  if (isWrite && csrfToken === undefined) {
+    const credentials = await operatorCredentials();
+    csrfToken = credentials.csrfToken;
+  }
+
+  if (isWrite && (csrfToken === undefined || cookie === undefined)) {
+    // Refuse before the request: sending a write the gateway will reject makes
+    // an expired session look like a permission problem.
+    throw new ApiError('http', 'Your session has expired. Sign in again to make changes.', { status: 401 });
+  }
+
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...(cookie === undefined ? {} : { Cookie: cookie }),
+    ...(csrfToken === undefined ? {} : { 'X-CSRF-Token': csrfToken }),
+    ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+  };
+
   let response: Response;
   try {
     response = await fetch(url, {
       cache: options.cache ?? 'no-store',
       signal: AbortSignal.any(signals),
-      headers: { Accept: 'application/json', ...(cookie === undefined ? {} : { Cookie: cookie }) },
+      headers,
+      ...(isWrite ? { method: options.method } : {}),
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
       redirect: 'error',
     });
   } catch (error) {

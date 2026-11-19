@@ -443,7 +443,7 @@ for finished work:
 | --- | --- | --- |
 | Operator authentication / auth guard | Implemented in Phase 10.0 (Part III) | Gateway-enforced session, dashboard login/logout |
 | Browser E2E click-path | Not verified | No browser automation in this environment; installing one was declined |
-| Phase 10 module pages | Not implemented | Every module route except Overview is an intentional placeholder |
+| Phase 10 module pages | Backends implemented in Phase 10.1 (Part IV); the rest are intentional placeholders | Registry management is real; no other module page exists yet |
 
 The dashboard is a **local operator tool** with a real login. It must not be
 exposed beyond loopback: the session cookie crosses plain HTTP within the host.
@@ -570,3 +570,195 @@ cookie. This is recorded rather than claimed.
 - Icons via `npx @astryxdesign/cli docs icons available-names`
 - Tokens via `npx @astryxdesign/cli docs tokens-color`
 - Reference app: `meta/astryx` → `apps/example-nextjs-tailwind`
+
+# Part IV — Backend management (Phase 10.1)
+
+Part IV records the first module page. The requirements in §4.2–§4.4 are the
+product intent; this section is what was built, and where it deliberately
+differs.
+
+## 22. Phase 10.1 routes
+
+Where this differs from the product requirements in §4.2–§4.4, deliberately:
+
+- **No "Test connection" step.** Connecting is itself the test, and it is a
+  separate, explicit action that spawns a process or opens a socket. The form
+  offers *Validate* (`POST /validate`), which persists and dials nothing. A
+  wizard step that dialled on "next" would make the review step a lie.
+- **No tools section, no per-backend call history.** Those need the tool and
+  activity APIs, which are outside this phase.
+- **No tabbed detail.** Three sections on one page, so nothing important is
+  behind a hidden tab.
+- **A single-page form, not a wizard.** The transport switch is the only
+  branching, and it stays visible.
+
+```text
+/dashboard/backends                     → registry list, server-side filters, counts
+/dashboard/backends/new                 → create form (no reads)
+/dashboard/backends/[backendId]         → detail: overview, configuration, runtime
+/dashboard/backends/[backendId]/edit    → the same form, seeded from the item read
+
+/api/backends/[...path]                 → POST/PATCH/DELETE write proxy (allowlisted)
+```
+
+The four pages are server components; only the table, the form and the action bar
+are client components, because Astryx `Table` takes a `renderCell` function and
+the other two own draft/pending state.
+
+## 23. Gateway operations used
+
+Everything below is read from `src/api/routes/backends.routes.ts` and
+`src/domain/backend.ts` — nothing here is inferred from the product spec.
+
+| Operation | Route | Notes |
+| --- | --- | --- |
+| List | `GET /api/v1/backends` | `search`, `transport`, `enabled`, `sort`, `order`, `page`, `limit` (≤100) |
+| Create | `POST /api/v1/backends` | `201`; never connects |
+| Validate | `POST /api/v1/backends/validate` | `200 {valid, transport?, errors?, normalized?}`; persists and dials nothing |
+| Item | `GET /api/v1/backends/:id` | `toPublicBackend()` |
+| Item runtime | `GET /api/v1/backends/:id/runtime` | the full `RuntimeView` |
+| All runtime | `GET /api/v1/backends/runtime` | wrapped, not yet rendered |
+| Update | `PATCH /api/v1/backends/:id?expectedVersion=` | compare-and-set |
+| Enable / disable | `POST /api/v1/backends/:id/{enable,disable}?expectedVersion=` | compare-and-set |
+| Connect / disconnect / reconnect | `POST /api/v1/backends/:id/{connect,disconnect,reconnect}` | `409` on a disabled backend |
+| Delete | `DELETE /api/v1/backends/:id` | tombstone; returns the pre-deletion representation |
+
+**`expectedVersion` is a query parameter.** A body field with that name is not
+read, which would quietly turn a compare-and-set into a blind overwrite. The
+dashboard always sends the version it rendered.
+
+Filtering by **runtime status** is not possible: the list accepts `search`,
+`transport` and `enabled` only. The toolbar says so rather than shipping a
+control that filters nothing.
+
+## 24. Counts and runtime state
+
+Summary tiles come from `GET /api/v1/monitoring/backends`, whose `counts` covers
+the whole registry. Counting the rendered page would report "1 backend" on a
+filtered page of 1 out of 20.
+
+Runtime state has two sources and the difference is visible:
+
+- the **list** carries a reduced `runtime: {status, updatedAt}`;
+- the **detail page** reads `…/runtime` for `lastConnectedAt`,
+  `lastHealthCheckAt`, `reconnectAttempts` and `lastError*`.
+
+When the runtime read fails, the detail page says the live state could not be
+read and still shows the configuration. It does not substitute the reduced list
+status and present it as complete.
+
+The dashboard labels a backend with no runtime row as `disconnected` (enabled) or
+`disabled` (not enabled). That is a configuration fact, not an invented
+connection state.
+
+## 25. Secrets are references, not values
+
+`env` and `headers` values must match `^(?:secret|env):[A-Za-z0-9._:/-]+$`. The
+dashboard therefore:
+
+- explains the reference syntax beside every row;
+- refuses a literal value locally with the same message the gateway would give
+  (`in buildCreateInput`), because the likeliest cause is a pasted secret;
+- displays references on the detail page as they are — there is no value to mask,
+  and no placeholder that could become one.
+
+No secret input exists anywhere in this phase. `stdio.command` is a single
+executable token (`SHELL_SYNTAX = /[\s;&|<>`$()]/`); arguments are one per line,
+which preserves spaces inside a path instead of splitting on whitespace.
+
+## 26. Write path and auth
+
+```text
+browser → POST/PATCH/DELETE /api/backends/…   (dashboard origin, same-origin)
+        → route handler: allowlist → operator cookie + CSRF from one probe
+        → http://127.0.0.1:8787/api/v1/backends/…
+```
+
+- `lib/backends/proxy-policy.ts` holds the perimeter and is unit-tested. Item
+  patterns are UUID-only and anchored with `$`, so `/backends/../../agents`
+  cannot be expressed as a match. Methods outside `POST|PATCH|DELETE` are refused.
+- A write with no live session is answered `401` by the handler **before** the
+  gateway is called, so an expired session reads as "sign in again", not as a
+  permission problem.
+- Writes get a 30 s ceiling rather than the 5 s read budget: `connect` dials the
+  backend and discovers its tools before answering, bounded by the gateway's own
+  `TOOL_DISCOVERY_TIMEOUT_MS` (15 s default). The read budget would abort first
+  and report a timeout for a connection that succeeded.
+- `expectedVersion` is preserved by copying the request's query string.
+- The body is forwarded as bytes; re-serialising would make this a second schema.
+- The browser holds no cookie value and no CSRF token, and no
+  `localStorage`/`sessionStorage` is used.
+
+This proxy is not the security boundary: the gateway re-checks the session and
+the CSRF token on every request.
+
+## 27. Action availability
+
+Derived from the lifecycle manager's own rules, so no offered button answers
+`409`:
+
+| Action | Offered when |
+| --- | --- |
+| Connect | enabled, and status is not `connected`/`connecting` |
+| Reconnect | enabled, and no transition is in flight |
+| Disconnect | status is above rest (`connected`, `unhealthy`, `error`) |
+| Enable | not enabled |
+| Disable | enabled |
+| Delete | always |
+
+One action runs at a time; while it is in flight every button is disabled and the
+form refuses re-entry (Enter in a field is a second submit path). Delete opens an
+`AlertDialog` that names the backend and states the tombstone consequence, then
+navigates to the list — refreshing a page whose subject is gone would be a stale
+read.
+
+## 28. Files
+
+| File | Role |
+| --- | --- |
+| `src/lib/api/backends.ts` | The 11 endpoint wrappers; contract in code |
+| `src/lib/backends/form.ts` | Form model, reference-row rules, `parseArgs`, `buildCreateInput`, `toUpdateInput`, `issuesToErrors` |
+| `src/lib/backends/actions.ts` | Availability and status helpers |
+| `src/lib/backends/browser.ts` | The client's only write path: the dashboard proxy |
+| `src/lib/backends/proxy-policy.ts` | `isAllowedWrite` — the perimeter |
+| `src/app/api/backends/[...path]/route.ts` | Write proxy: cookie + CSRF, allowlist, timeout mapping |
+| `src/app/(dashboard)/dashboard/backends/page.tsx` | List + counts |
+| `src/app/(dashboard)/dashboard/backends/new/page.tsx` | Create |
+| `src/app/(dashboard)/dashboard/backends/[backendId]/page.tsx` | Detail |
+| `src/app/(dashboard)/dashboard/backends/[backendId]/edit/page.tsx` | Edit |
+| `src/features/backends/backends-table.tsx` | Table, GET filter form, empty vs no-match |
+| `src/features/backends/backend-form.tsx` | Create + edit, transport-adaptive |
+| `src/features/backends/backend-detail.tsx` | Overview / configuration / runtime |
+| `src/features/backends/backend-actions.tsx` | Lifecycle buttons + delete dialog |
+| `src/features/backends/backend-status.tsx` | Runtime status, enabled badge, transport label |
+| `tests/backends-client.test.ts` | Contract: list/empty/errors/auth/payloads/validate |
+| `tests/backend-form.test.ts` | Local rules and payload construction |
+| `tests/backend-actions.test.ts` | Availability and status helpers |
+| `tests/backend-proxy.test.ts` | Allowlist acceptances and refusals |
+| `tests/backends-list.test.tsx` | List states, counts, filters, pagination |
+| `tests/backend-form-component.test.tsx` | Form behaviour and create/edit payloads |
+| `tests/backend-detail.test.tsx` | Runtime display, references, degraded runtime, 404 |
+| `tests/backend-actions-component.test.tsx` | Confirmation, pending state, failures, delete |
+
+## 29. Phase 10.1 acceptance checklist
+
+- [x] List with server-side search/transport/enabled filters, pagination, and
+      empty vs no-match states.
+- [x] Counts from monitoring, not from the rendered page.
+- [x] Create and edit with transport-specific fields and local validation
+      mirroring the domain schema.
+- [x] Gateway validation as an explicit, non-persisting action.
+- [x] Detail page with configuration and full runtime, degrading honestly when
+      the runtime read fails.
+- [x] Enable/disable/connect/disconnect/reconnect/delete, with availability
+      matching the gateway and compare-and-set versions.
+- [x] Delete confirmation with the tombstone consequence.
+- [x] Secret-reference-only inputs; no stored secret rendered anywhere.
+- [x] Writes only through the same-origin proxy; no token in browser storage.
+- [x] Error, empty, and pending states on every surface.
+- [x] 148 dashboard tests, typecheck, and build green; gateway suite and build
+      unchanged at 528 tests.
+- [ ] Real-browser click-path — **not verified** (no browser automation here).
+- [ ] Runtime-status filter — **not implemented**, because the API has no such
+      parameter.
+

@@ -23,6 +23,25 @@ export async function operatorCookieHeader(): Promise<string | undefined> {
 }
 
 /**
+ * The operator cookie and CSRF token, for a write this dashboard makes itself.
+ *
+ * Both come from one session probe, so a write can never pair a cookie with a
+ * token derived from a different session. `undefined` means "no live session";
+ * the caller turns that into a sign-in message rather than letting the gateway
+ * answer `403`, which would look like a permissions bug.
+ *
+ * Cached per request by `getOperatorSession()`, so the layout's guard probe and
+ * a page's write share one round trip rather than making two.
+ */
+export async function operatorCredentials(): Promise<{ cookie?: string; csrfToken?: string }> {
+  const session = await getOperatorSession();
+  const cookie = await operatorCookieHeader();
+
+  if (session === null || cookie === undefined) return {};
+  return { cookie, csrfToken: session.csrfToken };
+}
+
+/**
  * Redirects to the login form unless the gateway confirms a live session.
  *
  * The *probe* decides, not the cookie's presence: a revoked or expired cookie is

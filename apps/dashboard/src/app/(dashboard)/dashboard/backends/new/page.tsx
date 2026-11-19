@@ -1,15 +1,28 @@
 import type { Metadata } from 'next';
 
-import { PlaceholderScreen, placeholderMetadata } from '@/features/placeholder/placeholder-screen';
+import { PageContainer, PageHeader } from '@/components/layout/page-container';
+import { BackendForm } from '@/features/backends/backend-form';
 
-const HREF = '/dashboard/backends';
-
-export const metadata: Metadata = { ...placeholderMetadata(HREF), title: 'New backend' };
+export const metadata: Metadata = { title: 'New backend' };
 
 /**
- * The create flow is a Phase 10 screen. It exists as a route so the planned URL
- * structure is real and testable, not so it can pretend to have a form.
+ * Create flow.
+ *
+ * The form is a client component because it owns draft state; the page itself
+ * does no reads. `POST /api/v1/backends` never connects a backend, so a
+ * successful create lands on a detail page showing `disconnected` — which is the
+ * truth, not a missing refresh.
  */
 export default function Page(): React.ReactElement {
-  return <PlaceholderScreen href={HREF} />;
+  return (
+    <PageContainer>
+      <div className="flex flex-col gap-6">
+        <PageHeader
+          title="Add backend"
+          description="Register an MCP server. Creating it stores configuration only; nothing is launched or dialled until you connect it."
+        />
+        <BackendForm />
+      </div>
+    </PageContainer>
+  );
 }

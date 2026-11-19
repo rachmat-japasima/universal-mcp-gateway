@@ -124,10 +124,88 @@ export interface Monitoring {
 export interface BackendRuntimeView {
   backendId: string;
   status: BackendRuntimeStatus;
-  attempts: number;
+  /**
+   * Number of automatic reconnect attempts in the current sequence.
+   *
+   * Named `reconnectAttempts` on the wire (`toView()` in
+   * `src/adapters/lifecycle.ts`). This type said `attempts` while nothing read
+   * it, which is why it went unnoticed; Phase 10.1 renders it, so it is
+   * corrected here to match the served contract.
+   */
+  reconnectAttempts: number;
+  lastConnectedAt?: string;
+  lastHealthCheckAt?: string;
   lastErrorCode?: string;
+  lastErrorAt?: string;
   lastErrorMessage?: string;
   updatedAt?: string;
+}
+
+export type BackendTransport = 'stdio' | 'streamable-http';
+
+/** A secret reference, never a value: `secret:<path>` or `env:<VAR>` (domain/primitives.ts). */
+export type SecretRef = string;
+
+export interface StdioConnection {
+  type: 'stdio';
+  /** A single executable token. Arguments, never shell syntax. */
+  command: string;
+  args: string[];
+  cwd?: string;
+  env: Record<string, SecretRef>;
+}
+
+export interface StreamableHttpConnection {
+  type: 'streamable-http';
+  url: string;
+  headers: Record<string, SecretRef>;
+}
+
+export type BackendConnection = StdioConnection | StreamableHttpConnection;
+
+export type ConcurrencyMode = 'parallel' | 'serialized' | 'limited';
+
+/**
+ * A registered backend, as `toPublicBackend()` shapes it.
+ *
+ * `transport` duplicates `connection.type` because the API sends both; the list
+ * filter uses it and the form does, so it is modelled rather than derived.
+ */
+export interface Backend {
+  id: string;
+  name: string;
+  description?: string;
+  transport: BackendTransport;
+  connection: BackendConnection;
+  enabled: boolean;
+  timeoutMs: number;
+  concurrencyMode: ConcurrencyMode;
+  concurrencyLimit?: number;
+  /** Optimistic-concurrency counter; echoed back as `expectedVersion`. */
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  /** Configuration-visible status only (`services/backend.withRuntime`). */
+  runtime?: { status: BackendRuntimeStatus; updatedAt: string };
+}
+
+/** `POST /api/v1/backends/validate` — a 200 answer, never a failure. */
+export interface BackendValidationResult {
+  valid: boolean;
+  transport?: string;
+  errors?: Array<{ path: string; message: string }>;
+  /** Redacted normalised config. Secret references appear; values never exist. */
+  normalized?: Record<string, unknown>;
+}
+
+export interface BackendQuery {
+  page?: number;
+  limit?: number;
+  search?: string;
+  transport?: BackendTransport;
+  enabled?: boolean;
+  sort?: 'name' | 'createdAt' | 'updatedAt';
+  order?: 'asc' | 'desc';
 }
 
 export interface DiscoveryReport {

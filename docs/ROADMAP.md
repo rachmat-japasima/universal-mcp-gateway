@@ -250,11 +250,62 @@ limitation, recorded in `docs/SECURITY.md` §8.2 rather than implied to exist.
 dashboard tests cover the form and cookie helpers, but **no real browser was
 driven** through sign-in — no browser automation is installed here.
 
-**Module workstreams (after 10.0):**
+**Workstream 10.1 — Backend management: implemented.**
+
+Scope: the registry only — list, create, detail, edit, enable/disable,
+connect/disconnect/reconnect, and delete. Deliberately excluded, and still
+placeholders: tools, agents, credentials, policies, sessions, activity, audit,
+monitoring, settings, OAuth, vault, semantic routing, managed integrations.
+
+What shipped, against the verified gateway contract (`src/api/routes/backends.routes.ts`):
+
+- `/dashboard/backends` — the registry table (`search`, `transport`, `enabled`,
+  pagination, all server-side). Summary tiles read
+  `GET /api/v1/monitoring/backends`, so a filtered page does not report its own
+  row count as the registry total. A failed list read is an error state; a failed
+  counts read degrades only the tiles.
+- `/dashboard/backends/new` — one structured form, transport-adaptive (STDIO vs
+  Streamable HTTP), with local rules mirroring the domain schema and an explicit
+  **Validate** call to `POST /api/v1/backends/validate` that persists and dials
+  nothing. Creating never connects.
+- `/dashboard/backends/[backendId]` and `…/edit` — configuration from the item
+  read, runtime from `…/runtime`, and a compare-and-set save that always sends
+  the rendered `version` as `expectedVersion` (a query parameter, not a body
+  field). A failed runtime read reports itself rather than passing off the
+  reduced list status as live state.
+- Writes go through the dashboard's own same-origin proxy
+  (`/api/backends/[...path]`), which forwards the operator cookie and the CSRF
+  token derived from the same session. The browser never reaches the gateway and
+  never holds either. The proxy forwards backend write paths only, with UUID- and
+  `$`-anchored patterns.
+- Secret handling is structural, not cosmetic: `env` and `headers` values are
+  `secret:<path>` / `env:<VAR>` references only. The form refuses a literal value,
+  and no response can carry a secret because none is stored.
+
+**Documented contract corrections and limitations:**
+
+- `BackendRuntimeView` in the dashboard said `attempts`; the wire field is
+  `reconnectAttempts` (`toView()` in `src/adapters/lifecycle.ts`). Fixed.
+- Filtering the registry by **runtime status** is not supported: the list route
+  accepts `search`, `transport` and `enabled` only. The UI says so instead of
+  offering a control that would filter nothing. Deferred until the API grows the
+  parameter.
+- Backend **tools** and per-backend **health/call history** do not appear on the
+  detail page; those need the tool and activity APIs, which are out of scope here.
+
+**Verification:** dashboard typecheck clean; 148 dashboard tests (was 38) across
+13 files, including the client contract against a stubbed `fetch`, the write
+proxy's allowlist and its refusals, the form's local rules, and the detail page's
+degraded-runtime path; production dashboard build lists the four backend routes
+and the proxy handler. Gateway suite unchanged at 528 tests; gateway build clean.
+**Not verified:** a real browser click-path and a real connect — no backend was
+registered or connected, and the running gateway was not restarted.
+
+**Module workstreams (after 10.1):**
 
 Implement:
 1. ~~Overview~~ — shipped in Phase 9; Phase 10 only extends it if new aggregates appear.
-2. Backend list/create/detail.
+2. ~~Backend list/create/detail~~ — shipped in 10.1 (above).
 3. Tool Explorer.
 4. Agents and credential lifecycle.
 5. Access Policies.
@@ -266,10 +317,8 @@ Implement:
 
 Every page must use real API data and complete loading/empty/error/success states.
 
-**Status: workstream 10.0 is complete; module pages are not started.** Every
-module route except `/dashboard` is a placeholder that says so. Phase 9 built the
-shell, theme, client, proxy, and compositions these pages will use; 10.0 added
-the identity and the boundary they will rely on. It did not build the pages.
+**Status: workstreams 10.0 and 10.1 are complete; the remaining module pages are
+not started.** Every other module route is a placeholder that says so.
 
 ## Phase 11 — Observability and operations
 - Structured request logs.

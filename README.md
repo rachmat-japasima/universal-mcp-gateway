@@ -94,15 +94,37 @@ dashboard has a real login.
   session-listing UIs, TLS, per-IP login rate limits, dashboard CSP. Loopback
   only; see `docs/SECURITY.md` §8.2.
 
+**Phase 10.1 — backend management.** The first module page is real: the dashboard
+now manages the backend registry end to end.
+
+- `/dashboard/backends` (list, server-side search/transport/enabled filters,
+  pagination, counts from `GET /api/v1/monitoring/backends`), `/backends/new`,
+  `/backends/[backendId]`, and `/backends/[backendId]/edit`.
+- Enable/disable, connect/disconnect/reconnect, and delete — with availability
+  derived from the gateway's own rules and `expectedVersion` sent for the
+  compare-and-set operations.
+- Writes go through the dashboard's own allowlisted same-origin proxy
+  (`/api/backends/[...path]`), which forwards the operator cookie and the CSRF
+  token from one session probe. The browser never reaches the gateway and holds
+  no token.
+- `env`/`headers` values are `secret:<path>`/`env:<VAR>` references only. The
+  form refuses a literal value; no response can carry a secret because none is
+  stored.
+- 110 new dashboard tests → 528 gateway / 148 dashboard. **Not built:** the other
+  module pages (tools, agents, policies, sessions, activity, monitoring, audit,
+  settings) remain honest placeholders; runtime-status filtering needs an API
+  parameter that does not exist. No backend was registered or connected, and the
+  running gateway was not restarted. See `docs/DASHBOARD.md` Part IV.
+
 **Phase 9 — Astryx dashboard foundation.** A Next.js 16 / React 19 dashboard
 lives in `apps/dashboard` (pnpm workspace) and uses Astryx directly as its design
 system. The gateway did **not** move: it is still the root package, so there is no
 `apps/gateway/package.json` and `dev:gateway` aliases the root `dev` script.
 
-- `/dashboard` reads real data from `GET /api/v1/overview`. Every other module
-  route (`/dashboard/backends`, `/tools`, `/agents`, `/policies`, `/sessions`,
-  `/activity`, `/monitoring`, `/audit`, `/settings`) exists as an honest
-  placeholder — no sample data, no fake counters. Those pages are Phase 10.
+- `/dashboard` reads real data from `GET /api/v1/overview`; `/dashboard/backends`
+  manages the registry (Phase 10.1). The remaining module routes (`/tools`,
+  `/agents`, `/policies`, `/sessions`, `/activity`, `/monitoring`, `/audit`,
+  `/settings`) exist as honest placeholders — no sample data, no fake counters.
 - The gateway binds `127.0.0.1` and grants no CORS, so the browser never calls it.
   Server components use `GATEWAY_ORIGIN`; client refreshes go through the
   same-origin allowlisted proxy `/api/proxy/[...path]`.

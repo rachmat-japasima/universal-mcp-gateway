@@ -44,7 +44,7 @@ export const NAV_SECTIONS: NavSection[] = [
         href: '/dashboard/backends',
         label: 'Backends',
         icon: 'externalLink',
-        implemented: false,
+        implemented: true,
         summary: 'Registered MCP backends, their transport, and runtime state.',
       },
       {

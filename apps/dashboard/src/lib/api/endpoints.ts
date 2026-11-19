@@ -16,9 +16,9 @@ import type {
  * Endpoint modules. One function per documented route, no invented routes, and
  * no business logic: a filter the API does not support is not implemented here.
  *
- * Only read endpoints are wrapped, because Phase 9 ships no mutation UI. The
- * write endpoints exist on the gateway; adding them here without a caller would
- * be untested surface area.
+ * This module holds the read endpoints used by server components. Backend
+ * writes live in `lib/api/backends.ts` beside the reads they belong with, and are
+ * performed from the browser's same-origin proxy rather than here.
  */
 
 export const getOverview = (): Promise<Overview> => request<Overview>('/api/v1/overview');
