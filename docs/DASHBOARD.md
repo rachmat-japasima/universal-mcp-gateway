@@ -538,6 +538,18 @@ refuses to run when an operator already exists. There is no default password.
 An unconfigured instance answers login with *"No operator is configured. Run
 `pnpm operator:create` on the gateway host."*
 
+**There is no password change and no password reset.** The only writes under
+`/api/v1/auth` are `login` and `logout`. Recovery requires shell access on the
+gateway host: stop the process, delete the operator row, re-run
+`pnpm operator:create`. That is intentional — any reset that does not verify the
+current password is account takeover for whoever holds the session. See
+`docs/SECURITY.md` §8.2 before adding one.
+
+**Lockout is the brute-force control** (5 failures → 15 minutes), and it gates
+login only: an existing session keeps working while the account is locked, so
+triggering the lock cannot evict a signed-in operator. It is bounded, never
+permanent, and clears on the next successful login. There is no per-IP limiter.
+
 Verified: gateway test suite (528 tests, including 42 operator identity/auth
 tests) covers the boundary, cookie attributes, CSRF, lockout, rotation, expiry,
 revocation, audit contents, and both negations (`/mcp` rejects an operator

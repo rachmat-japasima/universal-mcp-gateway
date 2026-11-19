@@ -175,12 +175,18 @@ not in `agents`/`sessions`. Sharing a table would make "this credential can call
 tools" and "this session can mint credentials" the same row. An operator row is
 never returned with its hash: every public shape strips it (`tests/operator-identity.test.ts`).
 
-**Audit.** `operator.login.succeeded`, `operator.login.failed`,
-`operator.logout`, `operator.session.revoked`, `operator.session.expired`,
-`operator.created`, `operator.disabled`, `operator.password_changed`. A failed
-login deliberately does **not** record the attempted username — the trail would
-otherwise become a list of guesses at identities that may not exist — and no row
-ever contains a password or a session token.
+**Audit.** Emitted on the wire today: `operator.login.succeeded`,
+`operator.login.failed`, `operator.logout`, `operator.session.expired` (written
+when a lapsed session is refused), and `operator.created` (written by
+`pnpm operator:create`). Three further actions are declared in
+`src/domain/audit-event.ts` with **no caller**: `operator.session.revoked`
+(`OperatorService.revokeSession` is only reachable from code, not from a route),
+`operator.disabled`, and `operator.password_changed` — there is no disable route
+and no password-change route (§8.2). Listing an action in the vocabulary is not
+the same as observing it. A failed login deliberately does **not** record the
+attempted username — the trail would otherwise become a list of guesses at
+identities that may not exist — and no row ever contains a password or a session
+token.
 
 **Limits, stated plainly.** This is a single local owner (`role: owner`, no RBAC
 engine — ADR-045). It is not TLS: the password and cookie cross loopback in
@@ -368,6 +374,30 @@ Requirements (Phase 4 implements them; see §7.1):
 - Authorization for sensitive management operations: one `owner` role, no RBAC.
 - TLS. Loopback only; the password crosses plaintext HTTP within the host.
 - Multi-operator support, password change UI, and session listing UI.
+- **Changing or resetting an operator password.** No route exists: `POST
+  /api/v1/auth/login` and `POST /api/v1/auth/logout` are the only writes under
+  `/api/v1/auth`. `OperatorService.revokeAllFor(id, 'operator_password_changed')`
+  is implemented and tested at service level, but nothing calls it from a
+  request. Recovery today means shell access on the gateway host: stop the
+  process, delete the operator row, run `pnpm operator:create` again. That is a
+  deliberate non-feature, not an oversight — a password reset that does not
+  re-verify the old password is account takeover for anyone who reaches the
+  session, and `operator:create` refuses to overwrite an existing operator
+  precisely so it cannot be used as a silent reset. **Do not add a reset route
+  that skips verification.** When password change ships it must (a) require the
+  current password, (b) hash with `hashPassword`, (c) call
+  `revokeAllFor(..., 'operator_password_changed')` and audit
+  `operator.password_changed`, and (d) re-issue only the acting session or force
+  re-login.
+- **Revoking operator sessions on shutdown.** `gateway.close()` terminates MCP
+  sessions (`gateway_shutdown`) but not operator sessions; operator rows survive
+  a restart and are re-validated per request, which is intended (a restart is not
+  a sign-out). `OperatorService.sweep()` is never scheduled either — expiry is
+  enforced on read and the refusing request writes `revocation_reason='cleanup'`,
+  so an unswept row cannot grant access. The consequence is only that
+  `revoked_at` lags for sessions nobody touched. `gateway_shutdown` and
+  `operator_deleted` exist in the reason `CHECK` and the domain enum but no code
+  writes them: both are vocabulary reserved for a future dispose/delete route.
 
 ### 8.3 The rule that governs the gap
 
