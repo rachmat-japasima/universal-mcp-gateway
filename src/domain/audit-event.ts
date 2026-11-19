@@ -42,6 +42,19 @@ export const AUDIT_ACTIONS = [
   'auth.succeeded',
   'auth.failed',
   'access.denied',
+  /**
+   * Operator (dashboard) events. Distinct from `auth.*`, which is the MCP
+   * agent surface: an audit consumer must be able to tell a human login from a
+   * program's authentication without reading metadata.
+   */
+  'operator.login.succeeded',
+  'operator.login.failed',
+  'operator.logout',
+  'operator.session.revoked',
+  'operator.session.expired',
+  'operator.created',
+  'operator.disabled',
+  'operator.password_changed',
 ] as const;
 
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -70,7 +83,7 @@ export const auditEventSchema = z
     actorType: auditActorTypeSchema,
     actorId: z.string().trim().max(200).optional(),
     action: auditActionSchema,
-    targetType: z.enum(['backend', 'agent', 'credential', 'policy', 'session', 'settings']).optional(),
+    targetType: z.enum(['backend', 'agent', 'credential', 'policy', 'session', 'settings', 'operator']).optional(),
     targetId: z.string().trim().max(200).optional(),
     result: auditResultSchema,
     requestId: z.string().trim().max(64).optional(),

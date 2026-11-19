@@ -11,6 +11,7 @@ import { openStore, type Database } from '../src/infrastructure/database/index.j
 import { createLogger } from '../src/monitoring/logger.js';
 import type { ErrorEnvelope } from '../src/shared/errors.js';
 import { createTestAgent, testKeys, type TestAgent } from './fixtures/auth.js';
+import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
 /**
  * Operational endpoints: overview, monitoring, readiness, diagnostics, settings,
@@ -30,11 +31,14 @@ const JSON_HEADERS = { ...HOST, 'content-type': 'application/json' };
 let directory: string;
 let store: Database;
 let gateway: Gateway;
+/** Operator session: every `/api/v1` route requires one (Phase 10.0). */
+let session: TestOperatorSession;
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'gw-ops-api-'));
   store = openStore({ path: join(directory, 'gateway.db') });
   gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
+  session = createTestOperator(store, testKeys());
 });
 
 afterEach(async () => {
@@ -44,7 +48,7 @@ afterEach(async () => {
 });
 
 async function call(method: string, path: string): Promise<Response> {
-  return gateway.app.request(`/api/v1${path}`, { method, headers: HOST });
+  return gateway.app.request(`/api/v1${path}`, { method, headers: { ...HOST, ...session.headers } });
 }
 
 const json = async <T>(response: Response): Promise<T> => (await response.json()) as T;
@@ -65,7 +69,7 @@ function gatewayLifecycle() {
 async function registerBackend(name: string): Promise<string> {
   const response = await gateway.app.request('/api/v1/backends', {
     method: 'POST',
-    headers: JSON_HEADERS,
+    headers: { ...JSON_HEADERS, ...session.headers },
     body: JSON.stringify({ name, connection: { type: 'stdio', command: 'node', args: ['server.js'] } }),
   });
   const body = await json<{ data: { id: string } }>(response);
@@ -107,9 +111,20 @@ describe('overview', () => {
   });
 
   it('reports `null` rather than zero when the database is unavailable', async () => {
+    /**
+     * Mounted directly, because a closed store also closes the operator session
+     * lookup: going through the API would answer 401 and never reach the payload
+     * this test is about. The assertion is about the shape of a degraded read,
+     * not about the authentication boundary (covered in operator-auth.test.ts).
+     */
+    const { opsRoutes } = await import('../src/api/routes/ops.routes.js');
+    const { Hono } = await import('hono');
+    const app = new Hono();
+    app.route('/', opsRoutes({ config, store, lifecycle: gatewayLifecycle(), catalog: gateway.catalog, authentication: 'required' }));
+
     store.close();
 
-    const { data } = await json<{ data: Record<string, unknown> }>(await call('GET', '/overview'));
+    const { data } = await json<{ data: Record<string, unknown> }>(await app.request('/overview'));
     expect(data).toMatchObject({ status: 'degraded', database: 'unavailable', backends: null, agents: null, sessions: null });
     // The catalog is in memory, so it is still a real answer, not a null claim.
     expect(data['tools']).toMatchObject({ total: 0 });
@@ -196,7 +211,7 @@ describe('readiness', () => {
 
     const body = await json<Record<string, unknown>>(response);
     expect(body).toMatchObject({ status: 'ready', checks: { database: 'ok', migrations: 'ok' } });
-    expect(body['migrationVersion']).toBe('0005');
+    expect(body['migrationVersion']).toBe('0006');
   });
 
   it('fails closed when the database is closed', async () => {
@@ -223,7 +238,7 @@ describe('diagnostics', () => {
 
     expect(data.service).toMatchObject({ name: 'universal-mcp-gateway', version: '1.0.0' });
     expect(data.runtime.node).toMatch(/^v\d+/);
-    expect(data.database).toMatchObject({ status: 'ok', migrationVersion: '0005' });
+    expect(data.database).toMatchObject({ status: 'ok', migrationVersion: '0006' });
     expect(data.configuration).toMatchObject({ status: 'ok', environment: 'test' });
     expect(data.backends).toEqual({ registered: 0 });
     expect(data.sessions).toEqual({ total: 0 });
@@ -419,12 +434,14 @@ describe('audit', () => {
 
   it('is append-only through the API: no write verb exists', async () => {
     const id = appendAction('agent.created');
+    const before = store.audit.count();
 
     for (const method of ['POST', 'PATCH', 'PUT', 'DELETE']) {
       expect((await call(method, '/audit')).status).toBe(404);
       expect((await call(method, `/audit/${id}`)).status).toBe(404);
     }
-    expect(store.audit.count()).toBe(1);
+    // Nothing the API answered wrote a row: the count is unchanged.
+    expect(store.audit.count()).toBe(before);
   });
 
   it('validates filter values and ids', async () => {
@@ -444,7 +461,7 @@ describe('audit', () => {
 describe('request correlation and error shape', () => {
   it('echoes a supplied request id on new endpoints', async () => {
     const response = await gateway.app.request('/api/v1/overview', {
-      headers: { ...HOST, 'X-Request-Id': 'ops-123' },
+      headers: { ...HOST, ...session.headers, 'X-Request-Id': 'ops-123' },
     });
     expect(response.headers.get('X-Request-Id')).toBe('ops-123');
   });

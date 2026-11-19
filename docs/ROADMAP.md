@@ -105,7 +105,7 @@ The full product scope is approved in this document. Implement sequentially; do 
 - [x] `pnpm typecheck`, `pnpm test`, `pnpm build` pass; migration 0004 verified against a real pre-0004 database.
 - [x] No real backend connected; backend registry empty; bind still `127.0.0.1`.
 
-**Not in this phase (by decision):** dashboard owner authentication, session-to-agent binding, and OAuth. The management API remains unauthenticated and loopback-only, and it can now mint a credential — that is why it must not be exposed. Session tracking is Phase 7, which must not turn a session binding into an authorization shortcut.
+**Not in this phase (by decision):** dashboard owner authentication, session-to-agent binding, and OAuth. *At the time of Phase 6* the management API remained unauthenticated and loopback-only, and it can now mint a credential — that is why it must not be exposed. Workstream 10.0 later added operator authentication (ADR-045). Session tracking is Phase 7, which must not turn a session binding into an authorization shortcut.
 
 ## Phase 7 — Session isolation and concurrency
 
@@ -144,21 +144,116 @@ The full product scope is approved in this document. Implement sequentially; do 
 - [x] `pnpm typecheck`, `pnpm test`, `pnpm build` pass; no real backend connected; bind still `127.0.0.1`.
 - [x] New `docs/API_REFERENCE.md`; `ARCHITECTURE`, `BACKEND_SPEC`, `SECURITY`, `DATABASE`, `MONITORING`, `ROADMAP`, and `README` updated.
 - [ ] **Still deferred:** per-backend tool-call queueing for `concurrency_mode = 'limited'`. The columns exist, so no migration will be needed.
-- [ ] **Still deferred:** backup/restore APIs and dashboard owner authentication. Phase 8 was scoped to the read/management surface the dashboard consumes; the server remains unauthenticated on loopback, and that is why it must not be exposed.
+- [ ] **Still deferred:** backup/restore APIs. Phase 8 was scoped to the read/management surface the dashboard consumes.
+- [x] **Dashboard owner authentication — delivered in workstream 10.0** (ADR-045), not in Phase 8.
 
-**Not in this phase (by decision):** any frontend code, any real backend integration, any new dependency, Redis or any cache, a metrics/time-series store, audit retention, and OAuth. The management API remains unauthenticated and loopback-only.
+**Not in this phase (by decision):** any frontend code, any real backend integration, any new dependency, Redis or any cache, a metrics/time-series store, audit retention, and OAuth. *At Phase 8 close* the management API remained unauthenticated and loopback-only; workstream 10.0 has since added operator authentication (ADR-045), without changing the loopback-only rule.
 
-## Phase 9 — Astryx dashboard foundation
-- Read current official Astryx docs.
-- Install and configure Astryx directly.
-- Do not install shadcn/ui or Radix UI as fallback.
-- Build app shell, navigation, theme, tokens, responsive behavior.
-- Establish typed API client and auth guard.
-- Implement reusable product compositions using Astryx.
+## Phase 9 — Astryx dashboard foundation (complete in adjusted scope — see ADR-044)
+
+- [x] Read current official Astryx docs (`astryx.atmeta.com`) and inspected the
+      reference app `meta/astryx` → `apps/example-nextjs-tailwind`.
+- [x] Installed Astryx directly as a package set: `@astryxdesign/core` 0.7.16,
+      `@astryxdesign/theme-neutral` 0.7.16, `@stylexjs/stylex` (core's peer).
+      `@astryxdesign/cli` is a dev dependency, used to generate theme wiring.
+- [x] No shadcn/ui, no Radix UI, no parallel design system.
+- [x] App shell: Astryx `AppShell` + `SideNav` + `TopNav` with a responsive
+      mobile drawer, skip link, and a single `<main>` owned by `AppShell`.
+- [x] Navigation, breadcrumbs, page titles, and placeholder copy derived from one
+      source (`apps/dashboard/src/lib/navigation.ts`).
+- [x] Theme infrastructure: light/dark/system via Astryx `<Theme mode>`; no local
+      `color-scheme` rule, so `reset.css` stays the only owner of that mapping.
+- [x] Tokens: Tailwind v4 bridged to Astryx with the official
+      `tailwind-theme.css` export; cascade layers declared once in `globals.css`.
+- [x] Typed API client (`apps/dashboard/src/lib/api/`): envelope unwrap, request
+      timeout, `ApiError` normalisation that never surfaces a stack trace, SQL
+      text, or a URL.
+- [x] **Auth guard — implemented in Phase 10.0.** Phase 9 correctly declined to
+      back-fill a placeholder guard (ADR-044); 10.0 then built the identity model
+      it needed. The gateway enforces the operator session on every `/api/v1`
+      route, and the `(dashboard)` layout probes it before rendering. See below.
+- [x] Same-origin read proxy `/api/proxy/[...path]` — allowlisted GET only, not a
+      passthrough. Necessary because the gateway grants no CORS and the browser
+      cannot reach `127.0.0.1:8787` directly.
+- [x] Reusable compositions: `components/feedback/*` (loading, empty, error,
+      unavailable), `components/layout/*`, `components/ui/*`.
+- [x] `GatewayStatus` header probe reads `/ready` and distinguishes
+      *unreachable* (proxy `503` + error envelope) from *not ready* (gateway
+      `503` + a valid readiness document) by **payload shape**, since both arrive
+      as `503`.
+- [x] One real page: `/dashboard` overview reads `GET /api/v1/overview`. Every
+      other module route is an honest placeholder with no sample data and no
+      fake counters.
+- [x] 25 dashboard component/validator tests at Phase 9 close; 38 after Phase
+      10.0 added login-form and auth-helper tests. Root `vitest.config.ts` is
+      pinned to `tests/**/*.test.ts` so one workspace's suite cannot run inside
+      the other's environment.
+- [x] `pnpm typecheck`, `pnpm test` (486 at Phase 9 close; 528 after Phase 10.0),
+      `pnpm build`, dashboard typecheck / test / build (17 routes) all pass; no
+      real backend connected; bind still `127.0.0.1`.
+- [x] Root scripts: `dev:gateway`, `dev:dashboard`, `build:gateway`,
+      `build:dashboard`, `typecheck:dashboard`, `test:dashboard`, `verify`.
+      Every pre-existing script is unchanged. The gateway remains the root
+      package, so there is no `apps/gateway/package.json`.
+- [x] **Operator authentication for the dashboard — implemented in Phase 10.0**
+      (ADR-045). The dashboard must still not be exposed beyond loopback: there is
+      no TLS, and the session cookie crosses plain HTTP within the host.
+- [ ] **Still deferred:** real-browser click-path verification. No browser
+      automation was installed; layout is verified by SSR HTML inspection, the
+      production build, and jsdom component tests.
+- [ ] **Known limitation:** JSDOM 27.4 cannot parse CSS anchor positioning
+      (`@position-try`, `position-area`), which Astryx injects at runtime for
+      overlay components. Test output only; the built CSS is unaffected.
+
+**Scope decision (ADR-044).** Dashboard Operator Authentication was a Phase 10
+deliverable, not a Phase 9 gap to be filled retroactively. Phase 9 is complete
+**within its adjusted scope**: foundation implemented and verified, operator
+authentication intentionally excluded rather than back-filled with a placeholder.
+It is not "complete" in the original roadmap sense, and the docs say so rather
+than papering over it. Workstream 10.0 subsequently built that identity model
+(ADR-045).
+
+**Not in this phase (by decision):** any Phase 10 page beyond the overview, any
+mutation UI, any new backend integration, any remote exposure, and any change to
+agent MCP configuration.
 
 ## Phase 10 — Dashboard feature pages
+
+**Workstream 10.0 — Dashboard operator identity and authentication: implemented.**
+ADR-045 records the decisions; `docs/SECURITY.md` §4.3 and §8.1 are the
+reference, and `docs/DASHBOARD.md` Part III is the UI record.
+
+What shipped:
+
+- One local operator (`admin_users`, extended by migration `0006`). scrypt
+  password hashes with parameters encoded in the stored string.
+- Opaque server-side sessions in `operator_sessions` (digest-only storage), with
+  idle and absolute lifetimes derived on read, rotation at login, immediate
+  revocation, and lockout after five failures.
+- `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/session`.
+- **Gateway-enforced boundary on every `/api/v1` route**, default-deny with a
+  closed exemption list, plus CSRF via `X-CSRF-Token` on non-safe methods. The
+  dashboard is not the guard, because a local `curl` does not load a page.
+- Dashboard login/logout, a session probe, and an account menu showing the
+  identity the gateway confirmed.
+- Audit actions for login success/failure, logout, revocation, expiry,
+  creation, disable, and password change.
+- `pnpm operator:create` bootstrap, refusing to run when an operator exists and
+  never accepting a password on the command line.
+
+**Deliberately not in 10.0:** multiple operators, RBAC beyond `owner`, password
+change UI, session listing UI, external identity provider, TLS, per-IP login
+rate limiting, dashboard CSP, and any non-loopback exposure. Each is a real
+limitation, recorded in `docs/SECURITY.md` §8.2 rather than implied to exist.
+
+**Verification honesty:** 42 gateway tests cover the boundary end to end, and 38
+dashboard tests cover the form and cookie helpers, but **no real browser was
+driven** through sign-in — no browser automation is installed here.
+
+**Module workstreams (after 10.0):**
+
 Implement:
-1. Overview.
+1. ~~Overview~~ — shipped in Phase 9; Phase 10 only extends it if new aggregates appear.
 2. Backend list/create/detail.
 3. Tool Explorer.
 4. Agents and credential lifecycle.
@@ -170,6 +265,11 @@ Implement:
 10. Settings and diagnostics.
 
 Every page must use real API data and complete loading/empty/error/success states.
+
+**Status: workstream 10.0 is complete; module pages are not started.** Every
+module route except `/dashboard` is a placeholder that says so. Phase 9 built the
+shell, theme, client, proxy, and compositions these pages will use; 10.0 added
+the identity and the boundary they will rely on. It did not build the pages.
 
 ## Phase 11 — Observability and operations
 - Structured request logs.

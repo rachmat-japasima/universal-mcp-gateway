@@ -11,6 +11,7 @@ import { openStore, type Database } from '../src/infrastructure/database/index.j
 import { createLogger } from '../src/monitoring/logger.js';
 import type { ErrorEnvelope } from '../src/shared/errors.js';
 import { bearer, createTestAgent, testKeys } from './fixtures/auth.js';
+import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
 /**
  * Management API contract tests.
@@ -29,11 +30,14 @@ const JSON_HEADERS = { ...HOST, 'content-type': 'application/json' };
 let directory: string;
 let store: Database;
 let gateway: Gateway;
+/** Operator session: every `/api/v1` route requires one (Phase 10.0). */
+let session: TestOperatorSession;
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'gw-api-'));
   store = openStore({ path: join(directory, 'gateway.db') });
   gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
+  session = createTestOperator(store, testKeys());
 });
 
 afterEach(async () => {
@@ -52,7 +56,9 @@ interface Call {
 async function call({ method, path, body, headers }: Call): Promise<Response> {
   return gateway.app.request(`/api/v1${path}`, {
     method,
-    headers: body === undefined ? { ...HOST, ...headers } : { ...JSON_HEADERS, ...headers },
+    headers: body === undefined
+      ? { ...HOST, ...session.headers, ...headers }
+      : { ...JSON_HEADERS, ...session.headers, ...headers },
     ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
   });
 }
@@ -517,7 +523,7 @@ describe('request hygiene', () => {
   it('requires a JSON content type on body-bearing methods', async () => {
     const response = await gateway.app.request('/api/v1/backends', {
       method: 'POST',
-      headers: { ...HOST, 'content-type': 'text/plain' },
+      headers: { ...HOST, ...session.headers, 'content-type': 'text/plain' },
       body: '{"name":"form-post","connection":{"type":"stdio","command":"node"}}',
     });
 
@@ -597,19 +603,23 @@ describe('over a real socket', () => {
     const address = server.address();
     const port = typeof address === 'object' && address ? address.port : 0;
     const base = `http://127.0.0.1:${port}/api/v1`;
+    // A real browser sends the session cookie on every same-site request and the
+    // CSRF header on writes; both are required now, so the socket test must send
+    // them or it would be asserting a 401 rather than the header behaviour.
+    const auth = { ...session.headers };
 
     try {
-      const disabled = await fetch(`${base}/backends/${created.id}/disable`, { method: 'POST' });
+      const disabled = await fetch(`${base}/backends/${created.id}/disable`, { method: 'POST', headers: auth });
       expect(disabled.status).toBe(200);
       expect(((await disabled.json()) as { data: { enabled: boolean } }).data.enabled).toBe(false);
 
-      const deleted = await fetch(`${base}/backends/${created.id}`, { method: 'DELETE' });
+      const deleted = await fetch(`${base}/backends/${created.id}`, { method: 'DELETE', headers: auth });
       expect(deleted.status).toBe(200);
 
       // The content-type guard still applies when a body is sent.
       const rejected = await fetch(`${base}/backends`, {
         method: 'POST',
-        headers: { 'content-type': 'text/plain' },
+        headers: { ...auth, 'content-type': 'text/plain' },
         body: '{"name":"form"}',
       });
       expect(rejected.status).toBe(400);

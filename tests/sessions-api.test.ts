@@ -10,6 +10,7 @@ import { openStore, type Database } from '../src/infrastructure/database/index.j
 import { createLogger } from '../src/monitoring/logger.js';
 import type { ErrorEnvelope } from '../src/shared/errors.js';
 import { createTestAgent, testKeys, type TestAgent } from './fixtures/auth.js';
+import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
 /**
  * Session management API contract (Phase 7).
@@ -27,11 +28,14 @@ const JSON_HEADERS = { ...HOST, 'content-type': 'application/json' };
 let directory: string;
 let store: Database;
 let gateway: Gateway;
+/** Operator session: every `/api/v1` route requires one (Phase 10.0). */
+let session: TestOperatorSession;
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'gw-sessions-api-'));
   store = openStore({ path: join(directory, 'gateway.db') });
   gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
+  session = createTestOperator(store, testKeys());
 });
 
 afterEach(async () => {
@@ -50,7 +54,9 @@ interface Call {
 async function call({ method, path, body, headers }: Call): Promise<Response> {
   return gateway.app.request(`/api/v1${path}`, {
     method,
-    headers: body === undefined ? { ...HOST, ...headers } : { ...JSON_HEADERS, ...headers },
+    headers: body === undefined
+      ? { ...HOST, ...session.headers, ...headers }
+      : { ...JSON_HEADERS, ...session.headers, ...headers },
     ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
   });
 }
@@ -299,7 +305,7 @@ describe('POST /sessions/cleanup', () => {
 
 describe('loopback boundary', () => {
   it('refuses session management from a non-loopback host', async () => {
-    const response = await gateway.app.request('/api/v1/sessions', { headers: { host: '10.0.0.5:8787' } });
+    const response = await gateway.app.request('/api/v1/sessions', { headers: { host: '10.0.0.5:8787', ...session.headers } });
     expect(response.status).toBe(403);
   });
 });

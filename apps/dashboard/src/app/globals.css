@@ -1,0 +1,40 @@
+/*
+ * Cascade-layer order for Astryx + Tailwind, asserted to be the first stylesheet
+ * the page loads. This exact sequence is the one the Astryx docs publish; the
+ * order only holds if this file is imported before anything that pulls in
+ * `astryx-themes` (which imports theme CSS as a side effect).
+ *
+ *   reset → theme → base → astryx-base → astryx-theme → components → utilities
+ *
+ * Tailwind utilities end up last so a `className` on an Astryx component can
+ * intentionally override the component's own StyleX output.
+ */
+@layer reset, theme, base, astryx-base, astryx-theme, components, utilities;
+
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/preflight.css' layer(base);
+@import '@astryxdesign/core/reset.css';
+@import '@astryxdesign/core/astryx.css';
+@import '@astryxdesign/theme-neutral/theme.css';
+@import '@astryxdesign/core/tailwind-theme.css';
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+/*
+ * One app-level addition: reduced motion is honoured globally. Astryx
+ * components respect the preference individually; this covers app-level
+ * transitions too.
+ *
+ * Deliberately absent: a `color-scheme` rule. `@astryxdesign/core/reset.css`
+ * already maps `data-theme` to `color-scheme`, and unlayered CSS here would win
+ * over that layered rule and pin the page to light.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -26,41 +26,74 @@ The full product includes gateway core, backend registry, adapters, tool routing
 - Hono + `@hono/node-server`
 - Official MCP SDK v2 (`@modelcontextprotocol/server` 2.4.0, `client` 2.4.0, `hono` 2.0.2)
 - Zod 4, Pino, YAML, `better-sqlite3`, Vitest
-- Phases 1–6 are complete: `pnpm typecheck`, `pnpm build`, and `pnpm test` pass (372 tests).
+- Phases 1–8 are complete, Phase 9 (dashboard foundation) is complete in its
+  adjusted scope, and **Phase 10.0 (dashboard operator identity and
+  authentication) is implemented** (ADR-045). `pnpm typecheck`, `pnpm build`,
+  and `pnpm test` pass (528 tests), and the dashboard passes its own typecheck,
+  build, and 38 tests.
 - `src/core/gateway.ts` builds the app via `createGateway({ config, logger, store?, credentialKeys? })`:
   SDK `createMcpHandler` + Host/Origin middleware for non-API paths + `/health`, mounts the
   management API at `/api/v1` when a store is present, and mounts bearer authentication on
   `/mcp` whenever auth services exist.
 - `src/auth/` holds MCP authentication (`auth-service.ts`), policy evaluation
-  (`authorization.ts`), and credential keying/digests (`credential-key.ts`). Only
-  `credential-key.ts` reads the environment, and `CREDENTIAL_HASH_SECRET` is deliberately
-  outside `Config` (ADR-039).
+  (`authorization.ts`), credential keying/digests (`credential-key.ts`), and
+  operator password hashing (`operator-password.ts`, scrypt). Only
+  `credential-key.ts` reads the environment, and `CREDENTIAL_HASH_SECRET` is
+  deliberately outside `Config` (ADR-039).
 - `src/api/` is the HTTP layer (routes, guards, envelopes); `src/registry/backend-service.ts`
   holds backend business rules, transactions, audit, and sanitization.
-  `src/registry/{agent,credential,policy}-service.ts` hold the Phase 6 rules.
-- `src/domain/` holds entities, Zod schemas, and repository interfaces; `src/shared/errors.ts`
+  `src/registry/{agent,credential,policy}-service.ts` hold the Phase 6 rules, and
+  `src/registry/operator-service.ts` holds Phase 10.0 operator login, lockout,
+  session lifecycle, rotation, and CSRF derivation.
+- **Two authentication boundaries, never interchangeable:** `src/api/middleware/mcp-auth.ts`
+  guards `/mcp` with a per-agent bearer credential; `src/api/middleware/operator-auth.ts`
+  guards every `/api/v1` route with an operator cookie (default-deny, closed
+  exemption list `POST /api/v1/auth/{login,logout}`, plus `X-CSRF-Token` on
+  non-safe methods). `/health` and `/ready` stay unauthenticated.
+- `src/domain/` holds entities, Zod schemas, and repository interfaces
+  (`operator.ts` for Phase 10.0 operator identity/session); `src/shared/errors.ts`
   the error taxonomy; `src/config/config.ts` the pure config parser;
   `src/infrastructure/database/` the SQLite foundation and repositories.
 - Persistence: one connection per process, WAL + `synchronous=FULL`, transactional
   checksummed migrations, tombstones for backends/agents, derived credential/session status.
 - Gateway endpoint target: `http://127.0.0.1:8787/mcp`.
 - Health endpoint: `http://127.0.0.1:8787/health`.
+- Dashboard: `apps/dashboard`, a pnpm workspace package (Next 16, React 19, Astryx
+  0.7.16), served at `localhost:3000` and reading the gateway through
+  `GATEWAY_ORIGIN` server-side (default `http://127.0.0.1:8787`). The gateway stays
+  the **root** package — there is no `apps/gateway/package.json`.
 - Production backend registry must remain empty initially.
 
 Inspect actual repository state before editing. This document may lag the code.
 
 ## 3. Immediate assignment
 
-Phases 1–6 are complete. Start **Phase 7 — session isolation and concurrency** in
-`ROADMAP.md` when authorized.
+Phases 1–9 are complete in their stated scopes, and **workstream 10.0 (dashboard
+operator identity and authentication) is implemented** (ADR-045). The remaining
+Phase 10 module pages are not started. Start them in `ROADMAP.md` only when
+authorized; do not start them automatically.
 
-Phase 6 added MCP authentication and authorization; the **management API is still
-unauthenticated** and loopback-only (ADR-030, updated). It can now mint an agent credential,
-so anything that widens its reachability is a security-posture change and needs the user's
-approval. Any session binding added in Phase 7 must not become an authorization shortcut
-(ADR-039).
+Phase 9 built the dashboard foundation: shell, navigation, theme, Astryx
+integration, typed API client, same-origin read proxy, and feedback compositions.
+10.0 added operator identity and the gateway-enforced boundary those pages will
+rely on. `/dashboard` (overview) reads real data; every other module route is an
+honest placeholder.
 
-Do not start dashboard implementation yet. The dashboard depends on stable APIs.
+**Two authentication boundaries exist and must stay separate.** `/mcp` requires a
+per-agent bearer credential (Phase 6); every `/api/v1` route requires an operator
+session (Phase 10.0). Neither is accepted by the other, they share no table, and
+`tests/operator-auth.test.ts` asserts both negations. Do not "unify" them, and do
+not treat an operator session as a way to call tools.
+
+The management API is no longer unauthenticated, but it is still **loopback-only
+and not remote-ready**: there is no TLS, no RBAC beyond a single `owner`, and no
+per-IP login rate limit. Anything that widens reachability is a security-posture
+change and needs the user's approval. The dashboard inherits the same rule: do
+not expose it beyond loopback.
+
+The gateway remains the root package. `apps/dashboard` is the only workspace
+package; use `pnpm --filter @universal-mcp-gateway/dashboard …` rather than
+inventing a package name.
 
 Evidence to build on:
 - `tests/mcp-auth.test.ts` — the authentication/authorization boundary over a real socket:
@@ -90,7 +123,18 @@ Contracts to use rather than invent:
 - Throw `AppError` with a stable `ErrorCode`; never return raw SQLite or OS text to a client.
 - Reach the database only through `src/domain/repositories.ts`; SQL belongs in `src/infrastructure/database/`.
 - Register a new schema change as a new `NNNN_*.sql` migration. Never edit an applied migration (the checksum gate refuses startup).
-- No monorepo split yet; see ADR-022 before moving directories.
+- Operator authentication rules live in `src/registry/operator-service.ts`; the
+  HTTP boundary lives in `src/api/middleware/operator-auth.ts`. A route never
+  verifies a password or mints a session itself. New `/api/v1` routes are
+  protected by default — the exemption list is closed, so do not add to it
+  casually.
+- Operator sessions store only an HMAC digest (`token_hash`); never store, log, or
+  return the raw cookie value. The CSRF token is derived, not stored.
+- `tests/operator-auth.test.ts` and `tests/operator-identity.test.ts` are the
+  boundary contracts. Extend them when adding a route or a session rule.
+- The repo is now a pnpm workspace with one package: `apps/dashboard`. The gateway
+  intentionally remains the root package — do not move it into `apps/gateway` (see
+  ADR-022 on directory moves).
 
 ## 4. Hard constraints
 
@@ -99,16 +143,24 @@ Contracts to use rather than invent:
 - Do not integrate FigCraft, Context7, Chrome DevTools, Supabase, GitHub, filesystem, or any other real backend.
 - Do not add a permanent dummy backend to production registry.
 - Do not modify Claude Code, Codex CLI, OpenCode, or DeepSeek MCP configuration.
-- Do not build dashboard before Phase 9.
+- Dashboard work starts at Phase 10 (Phase 9 foundation exists). Workstream 10.0
+  (operator identity) is implemented; module feature pages are next.
+- Do not add a placeholder auth guard, a dummy operator, or a session that means
+  nothing just to make a phase checkbox pass. No real backend behind the UI.
+- Do not merge or reuse the two identity boundaries. An operator session must
+  never authenticate `/mcp`; an agent credential must never authenticate
+  `/api/v1`.
+- Do not weaken operator authentication to make a test or a manual check easier
+  (no disabling CSRF, no trusting a forwarded header, no hardcoded credentials).
 - Do not switch from pnpm to npm.
 - Do not change agreed backend stack without documenting the reason and requesting approval.
 - Do not expose gateway beyond `127.0.0.1`.
 - Do not store plaintext secrets or log credentials.
 - Avoid unrelated refactors.
 
-## 5. Mandatory frontend rules for later phases
+## 5. Mandatory frontend rules
 
-When dashboard phase begins:
+Phase 9 established these; they apply to all dashboard work:
 - Use Next.js + React + TypeScript.
 - Use **Astryx directly**: https://astryx.atmeta.com/
 - Read current official Astryx documentation before installing or coding.
@@ -119,6 +171,12 @@ When dashboard phase begins:
 - Do not invent Astryx package names, import paths, props, or CLI arguments.
 - Custom components are allowed for product-specific compositions or genuine gaps.
 - If Astryx is incompatible or lacks a required component, report the exact gap and propose options before introducing another UI library.
+- The browser never calls the gateway directly: reads go server-side via
+  `lib/api/client.ts`, client refreshes go through `/api/proxy/*` (allowlisted
+  GET). Keep `GATEWAY_ORIGIN` server-only.
+- A `503` is not sufficient evidence of anything: `/ready` answers `503` when the
+  gateway is genuinely not ready, and the proxy answers `503` when the gateway is
+  absent. Decide on payload shape.
 
 ## 6. Engineering rules
 

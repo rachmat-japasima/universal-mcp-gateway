@@ -33,6 +33,7 @@ import { mcpAuthenticate, toAuthInfo } from '../api/middleware/mcp-auth.js';
 import { getRequestId } from '../api/http.js';
 import { isInitializeBody, McpSessionManager, sessionNotFound } from '../sessions/session-manager.js';
 import { SessionService } from '../registry/session-service.js';
+import { OperatorService } from '../registry/operator-service.js';
 
 export interface GatewayOptions {
   config: Config;
@@ -67,6 +68,8 @@ export interface Gateway {
   readonly auth?: AuthService;
   readonly sessions?: SessionService;
   readonly sessionManager?: McpSessionManager;
+  /** Dashboard operator authentication. Absent only when there is no store. */
+  readonly operators?: OperatorService;
 }
 
 export { SERVICE_INFO };
@@ -337,7 +340,29 @@ export function createGateway(options: GatewayOptions): Gateway {
    */
   if (store !== undefined) {
     app.get('/ready', readyHandler(store));
-  }  if (store !== undefined && lifecycle !== undefined) {
+  }
+  /**
+   * Operator authentication is built whenever there is a store, and the
+   * management API is mounted only when it exists. That is the whole boundary:
+   * there is no code path that serves `/api/v1` without it, so a future refactor
+   * cannot quietly restore an unauthenticated management plane.
+   *
+   * A gateway with no operator configured still *serves* the API — it just
+   * answers 401 to everything except login, which tells the operator to run
+   * `pnpm operator:create` instead of failing to boot.
+   */
+  const operators =
+    store === undefined
+      ? undefined
+      : new OperatorService({
+          store,
+          keys: options.credentialKeys ?? EMPTY_KEYS,
+          logger,
+          idleTimeoutMs: config.operatorSessionIdleTimeoutMs,
+          maxLifetimeMs: config.operatorSessionMaxLifetimeMs,
+        });
+
+  if (store !== undefined && lifecycle !== undefined && operators !== undefined) {
     app.route(
       API_PREFIX,
       createManagementApi({
@@ -350,6 +375,7 @@ export function createGateway(options: GatewayOptions): Gateway {
         discovery: discovery!,
         authorization: authorization!,
         credentialKeys: options.credentialKeys ?? EMPTY_KEYS,
+        operators,
         ...(sessions === undefined ? {} : { sessions }),
       }),
     );
@@ -444,6 +470,7 @@ export function createGateway(options: GatewayOptions): Gateway {
     ...(auth === undefined ? {} : { auth }),
     ...(sessions === undefined ? {} : { sessions }),
     ...(sessionManager === undefined ? {} : { sessionManager }),
+    ...(operators === undefined ? {} : { operators }),
     async close() {
       shuttingDown = true;
       // Order matters: stop serving, then release outbound connections, then let

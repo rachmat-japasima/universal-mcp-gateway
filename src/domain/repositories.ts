@@ -6,6 +6,7 @@ import type { Backend, CreateBackendInput, UpdateBackendInput } from '../domain/
 import type { TransportType } from '../domain/backend.js';
 import type { BackendRuntime } from '../domain/backend-runtime.js';
 import type { CreatePolicyInput, Policy, UpdatePolicyInput } from '../domain/policy.js';
+import type { Operator, OperatorSession, OperatorSessionRevocationReason } from '../domain/operator.js';
 import type { Session, SessionStatus, SessionTerminationReason } from '../domain/session.js';
 
 /**
@@ -277,8 +278,7 @@ export interface SessionRepository {
 }
 
 /** Every repository a store provides, wired once at startup. */
-export interface Repositories {
-  backends: BackendRepository;
+export interface Repositories {  backends: BackendRepository;
   backendRuntime: BackendRuntimeRepository;
   agents: AgentRepository;
   credentials: CredentialRepository;
@@ -286,4 +286,59 @@ export interface Repositories {
   sessions: SessionRepository;
   activity: ActivityRepository;
   audit: AuditRepository;
+  operators: OperatorRepository;
+}
+
+/** Everything needed to create an operator. The caller has already hashed. */
+export interface CreateOperatorInput {
+  username: string;
+  displayName?: string;
+  passwordHash: string;
+  role?: Operator['role'];
+}
+
+/**
+ * Operator identity and dashboard sessions.
+ *
+ * Separate from `AgentRepository` by design (ADR-044): an operator is a human at
+ * the dashboard and an agent is a program at `/mcp`, and no method here can be
+ * satisfied by an agent row. The two tables share no foreign key.
+ *
+ * Session reads are digest-only. There is deliberately no `findByToken`, because
+ * the raw token must never be a parameter that reaches a query log or a test
+ * snapshot: callers hash first and look up the digest.
+ */
+export interface OperatorRepository {
+  create(input: CreateOperatorInput, now: string): Operator;
+  findById(id: string): Operator | undefined;
+  /** Case-insensitive exact match; the UNIQUE index stores the canonical form. */
+  findByUsername(username: string): Operator | undefined;
+  count(): number;
+  list(): Operator[];
+
+  /** Replaces the hash and records when, so a login can be invalidated by time. */
+  setPassword(id: string, passwordHash: string, now: string): Operator;
+  /** Successful login: clears the attempt counter and the lockout. */
+  recordLoginSuccess(id: string, now: string): Operator;
+  /** Failed login: increments and locks when the threshold is reached. */
+  recordLoginFailure(id: string, now: string, lockUntil: string | undefined): Operator;
+  disable(id: string, now: string): Operator;
+
+  createSession(session: OperatorSession): OperatorSession;
+  findSessionById(id: string): OperatorSession | undefined;
+  /** Lookup by digest — the only way a presented cookie is resolved. */
+  findSessionByTokenHash(tokenHash: string): OperatorSession | undefined;
+  /** Extends the idle clock. No-op for a session that is already ended. */
+  touchSession(id: string, now: string): void;
+  /** Ends one session. Idempotent; a finished session is returned unchanged. */
+  revokeSession(id: string, now: string, reason: OperatorSessionRevocationReason): OperatorSession;
+  /** Ends every live session of an operator. Returns the rows that changed. */
+  revokeSessionsForOperator(
+    operatorId: string,
+    now: string,
+    reason: OperatorSessionRevocationReason,
+  ): OperatorSession[];
+  /** Revokes rows past their ceiling or idle deadline. Returns the rows changed. */
+  expireSessions(now: string, idleCutoff: string): OperatorSession[];
+  countActiveSessions(operatorId: string, now: string, idleCutoff: string): number;
 }

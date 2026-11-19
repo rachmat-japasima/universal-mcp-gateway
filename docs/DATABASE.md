@@ -117,10 +117,27 @@ Append-only: the repository interface exposes no update or delete. Administrativ
 
 `metadata_json` is read by `findById` and omitted by `query`. The list view (`AuditListItem`) has no metadata field at all, so a collection response cannot carry free-form context by accident; reading one record is the deliberate disclosure boundary.
 
-### `admin_users`
-`id`, `username` (unique), `password_hash`, `role` (`owner` | `admin` | `viewer`), `enabled`, `created_at`, `updated_at`.
+### `admin_users` (Phase 10.0)
+`id`, `username` (unique), `display_name`, `password_hash`, `role` (`owner` | `admin` | `viewer`), `enabled`, `created_at`, `updated_at`, `password_changed_at`, `last_login_at`, `failed_login_attempts`, `locked_until`, `disabled_at`.
 
-Table only; dashboard authentication is a later phase.
+Created in `0001` as a table only; `0006` extends it additively (no rebuild, no dropped row) and makes it live. Migration `0006` adds the security columns and a unique index on `username`.
+
+`password_hash` is `scrypt$N$r$p$salt$hash` — the cost parameters travel *inside* the stored string, so raising them later applies to new hashes without invalidating old ones. The plaintext password is never stored, and no repository method returns `passwordHash` to an API layer; `toPublicOperator()` strips it.
+
+`failed_login_attempts` + `locked_until` implement lockout (5 failures → 15 minutes). `locked_until` is a timestamp rather than a boolean so a restart cannot leave an account locked forever.
+
+There is one operator in practice. `role` stays `owner`; no RBAC engine exists (ADR-045).
+
+### `operator_sessions` (Phase 10.0)
+`id`, `operator_id` → `admin_users`, `token_hash`, `hash_key_id`, `created_at`, `last_seen_at`, `expires_at`, `revoked_at`, `revocation_reason`, `user_agent`, `ip_address`.
+
+**Not a reuse of `sessions`.** That table's `agent_id` is `NOT NULL REFERENCES agents (id)` because it binds an *MCP protocol* session to an agent; an operator session is a different boundary. Sharing it would need either a nullable `agent_id` (weakening the MCP invariant) or an operator row in `agents` (blurring two security domains, which ADR-044 forbids). No foreign key connects the two tables.
+
+`token_hash` is an HMAC-SHA-256 digest of the cookie value, keyed by `CREDENTIAL_HASH_SECRET` with its own `hash_key_id`; the raw token is never stored, never logged, and never a query parameter. `authenticate` rejects a session whose `hash_key_id` differs from the currently issuing key rather than silently accepting an unverifiable one.
+
+Both an idle window (`last_seen_at`) and an absolute ceiling (`expires_at`) are stored and **derived on read**, not trusted from a sweep, so a missed cleanup cannot extend access.
+
+Two triggers enforce the state machine: a revoked row must carry a `revocation_reason`, and a revoked session can never become live again (so a bug cannot resurrect a logged-out cookie).`user_agent`/`ip_address` are for the audit trail only — never proof of identity.
 
 ## 5. Indexes
 
@@ -133,6 +150,8 @@ Table only; dashboard authentication is a later phase.
 - The effective-status filter (`status=active|expired`) uses the column plus `expires_at` and `last_activity_at`, so both indexes are load-bearing for the API's most common query.
 - `activity_events`: `created_at`, `(agent_id, created_at)`, `(backend_id, created_at)`, `(tool_name, created_at)`, `request_id`.
 - `audit_events`: `created_at`, `(actor_id, created_at)`, `(action, created_at)`, `(target_id, created_at)`.
+- `admin_users`: unique `username` (`0001`; `0006` re-creates it with `IF NOT EXISTS` so a database that predates it is repaired rather than assumed).
+- `operator_sessions`: unique `token_hash` (the digest lookup is the only read path, so this index *is* verification); `(operator_id, last_seen_at)` for sweeping one operator; `expires_at` for cleanup.
 
 Partial unique indexes (`WHERE deleted_at IS NULL`) allow a name to be reused after a tombstone while keeping the old row.
 
@@ -159,6 +178,17 @@ Migration `0005_session_isolation.sql` is the Phase 7 example, and it is the sha
 
 `.sql` files are not TypeScript output, so `pnpm build` runs `build:migrations` to copy them next to the compiled runner.
 
+Migration `0006_operator_authentication.sql` is the Phase 10.0 example, and it is purely additive on top of an existing table:
+
+- seven `ALTER TABLE admin_users ADD COLUMN` statements — five nullable, one `NOT NULL DEFAULT 0` (`failed_login_attempts`, whose default is the honest reading of "no recorded failures"), one nullable time (`locked_until`);
+- one unique index on `admin_users (username)` created with `IF NOT EXISTS`, so a database that predates the index is repaired rather than assumed;
+- one new table, `operator_sessions`, with a unique `token_hash` index and two indexes for sweeping and cleanup;
+- two triggers: a revoked row must carry a reason, and a revoked session can never become live again.
+
+No `sessions` change, no table rebuild, and no row dropped. The `operator_sessions` table is separate from `sessions` because `sessions.agent_id` is `NOT NULL REFERENCES agents (id)` — see §4.
+
+`tests/database.test.ts` asserts the applied version reaches `0006` and that `operator_sessions` exists.
+
 ## 7. Repository interfaces
 
 Declared in `src/domain/repositories.ts` in domain terms — no SQL, no driver types, no transaction handles. Implementations live in `src/infrastructure/database/repositories/`.
@@ -173,6 +203,7 @@ Declared in `src/domain/repositories.ts` in domain terms — no SQL, no driver t
 | `SessionRepository` | create, findById, findByMcpSessionId, listByAgentId, query, touch, end, endWhere, expire, count, countByStatus, counts |
 | `ActivityRepository` | append, list, findById, query, count, countByType, countByOutcome |
 | `AuditRepository` | append, list, findById, query, count, countByResult, countByActorType |
+| `OperatorRepository` | create, findById, findByUsername, count, list, setPassword, recordLoginSuccess, recordLoginFailure, disable — and for sessions: createSession, findSessionById, findSessionByTokenHash, touchSession, revokeSession, revokeSessionsForOperator, expireSessions, countActiveSessions |
 
 `query(criteria)` is the only listing method that filters and paginates. Every value is a bound parameter; the sort column and direction are interpolated only from a fixed whitelist (`SORT_COLUMNS`) because SQLite cannot parameterize identifiers. Ordering always tie-breaks on `id` so equal names or timestamps cannot produce unstable pages, and `total` is a separate `COUNT(*)` over the same `WHERE` before `LIMIT`.
 

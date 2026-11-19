@@ -266,6 +266,42 @@ function schemas(): Record<string, unknown> {
       },
       additionalProperties: false,
     },
+    /** Dashboard operator session. Deliberately distinct from `Session` (MCP). */
+    OperatorSession: {
+      type: 'object',
+      required: ['operator', 'session', 'csrfToken'],
+      properties: {
+        operator: {
+          type: 'object',
+          required: ['id', 'username', 'role', 'enabled'],
+          properties: {
+            id: uuid('Operator id.'),
+            username: { type: 'string', maxLength: 64 },
+            displayName: { type: 'string', maxLength: 120 },
+            role: { type: 'string', enum: ['owner', 'admin', 'viewer'], description: 'Only `owner` is issued today.' },
+            enabled: { type: 'boolean' },
+            lastLoginAt: instant('Previous successful login.'),
+            createdAt: instant('Created at.'),
+            updatedAt: instant('Updated at.'),
+          },
+          additionalProperties: false,
+        },
+        session: {
+          type: 'object',
+          required: ['id', 'createdAt', 'lastSeenAt', 'expiresAt', 'idleTimeoutMs'],
+          properties: {
+            id: uuid('Internal session id. The cookie value is never in a body.'),
+            createdAt: instant('Created at.'),
+            lastSeenAt: instant('Last accepted request.'),
+            expiresAt: instant('Absolute lifetime ceiling.'),
+            idleTimeoutMs: { type: 'integer', description: 'Idle window applied on read.' },
+          },
+          additionalProperties: false,
+        },
+        csrfToken: { type: 'string', description: 'Echo on state-changing requests as `X-CSRF-Token`.' },
+      },
+      additionalProperties: false,
+    },
     Session: {
       type: 'object',
       required: ['id', 'agentId', 'status', 'createdAt', 'lastActivityAt'],
@@ -559,17 +595,67 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
           description:
             'Agent credential for the MCP surface. Issued once by `POST /api/v1/agents/{agentId}/credentials`; the raw token is never retrievable afterwards.',
         },
+        operatorSession: {
+          type: 'apiKey',
+          in: 'cookie',
+          name: 'umg_operator',
+          description:
+            'Operator session cookie, minted by `POST /api/v1/auth/login`. `HttpOnly` and `SameSite=Strict`; the browser never reads its value. Required for every `/api/v1` route except `login` and `logout`. State-changing requests also need `X-CSRF-Token`.',
+        },
       },
     },
-    security: [],
+    security: [{ operatorSession: [] }],
     paths: {
       '/health': {
         get: {
           tags: ['system'],
           summary: 'Liveness probe',
           description:
-            'Answers while the process can serve. Deliberately does not fail when a backend is disconnected or authentication is unconfigured. Not under `/api/v1`.',
+            'Answers while the process can serve. Deliberately does not fail when a backend is disconnected or authentication is unconfigured, and deliberately requires no session: a probe that needed one would stop probing. Not under `/api/v1`.',
+          security: [],
           responses: { 200: { description: 'Process is alive' } },
+        },
+      },
+      '/api/v1/auth/login': {
+        post: {
+          tags: ['auth'],
+          summary: 'Sign in as the local operator',
+          description:
+            'Verifies the operator password in the gateway and mints a session. Sets the `umg_operator` cookie and returns a CSRF token bound to it. Unknown user, wrong password, disabled account and lockout all answer `401` with the same body, so the response cannot be used to enumerate operators.',
+          security: [],
+          requestBody: jsonBody({
+            type: 'object',
+            required: ['username', 'password'],
+            properties: {
+              username: { type: 'string', minLength: 1, maxLength: 64 },
+              password: { type: 'string', minLength: 1, maxLength: 200 },
+            },
+            additionalProperties: false,
+          }),
+          responses: {
+            200: okBody(ref('OperatorSession')),
+            ...errorResponses(['400', 'Invalid body'], ['401', 'Invalid credentials']),
+          },
+        },
+      },
+      '/api/v1/auth/logout': {
+        post: {
+          tags: ['auth'],
+          summary: 'Sign out',
+          description:
+            'Revokes the presented session and clears the cookie. Idempotent and exempt from the session requirement, so a browser holding an already-dead cookie can still clear it.',
+          security: [],
+          responses: { 200: okBody({ type: 'object' }) },
+        },
+      },
+      '/api/v1/auth/session': {
+        get: {
+          tags: ['auth'],
+          summary: 'Describe the current session',
+          description:
+            'A real probe: it runs the same verification as every other request, so a `200` is proof the session is live. Returns the operator, the session window, and the caller\'s CSRF token.',
+          security: [{ operatorSession: [] }],
+          responses: { 200: okBody(ref('OperatorSession')), ...errorResponses(['401', 'No operator session']) },
         },
       },
 
@@ -577,7 +663,8 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
         get: {
           tags: ['system'],
           summary: 'Service identity and counts',
-          responses: { 200: okBody({ type: 'object' }), ...errorResponses(['400', 'Authorization rejected']) },
+          security: [{ operatorSession: [] }],
+          responses: { 200: okBody({ type: 'object' }), ...errorResponses(['401', 'No operator session']) },
         },
       },
       '/api/v1/system/health': {
@@ -600,7 +687,8 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
           tags: ['system'],
           summary: 'Readiness probe',
           description:
-            'Checks required local infrastructure: the database answers and the migration ledger is readable. Optional backends are excluded by design.',
+            'Checks required local infrastructure: the database answers and the migration ledger is readable. Optional backends are excluded by design. Unauthenticated for the same reason as `/health`, and it exposes no sensitive value.',
+          security: [],
           responses: {
             200: { description: 'Ready' },
             503: { description: 'Not ready' },

@@ -9,6 +9,7 @@ import { createGateway, type Gateway } from '../src/core/gateway.js';
 import { openStore, type Database } from '../src/infrastructure/database/index.js';
 import { createLogger } from '../src/monitoring/logger.js';
 import { testKeys } from './fixtures/auth.js';
+import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
 /**
  * OpenAPI conformance.
@@ -25,11 +26,14 @@ const HOST = { host: '127.0.0.1:8787' };
 let directory: string;
 let store: Database;
 let gateway: Gateway;
+/** Operator session: the management API rejects anonymous callers (Phase 10.0). */
+let session: TestOperatorSession;
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'gw-openapi-'));
   store = openStore({ path: join(directory, 'gateway.db') });
   gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
+  session = createTestOperator(store, testKeys());
 });
 
 afterEach(async () => {
@@ -60,7 +64,7 @@ function toOpenApiPath(path: string): string {
 }
 
 async function document(): Promise<Record<string, any>> {
-  const response = await gateway.app.request('/api/v1/openapi.json', { headers: HOST });
+  const response = await gateway.app.request('/api/v1/openapi.json', { headers: { ...HOST, ...session.headers } });
   expect(response.status).toBe(200);
 
   const body = (await response.json()) as { data: Record<string, any> };
@@ -176,8 +180,11 @@ describe('openapi document', () => {
     expect(spec['info']['description']).toMatch(/loopback-only/i);
     expect(spec['x-gateway']).toMatchObject({ loopbackOnly: true, apiPrefix: '/api/v1' });
 
-    // REST routes are unauthenticated by the operator model; `/mcp` is not.
-    expect(spec['security']).toEqual([]);
+    // Two independent boundaries: REST needs an operator session, `/mcp` needs
+    // an agent bearer. Neither is documented as satisfying the other.
+    expect(spec['security']).toEqual([{ operatorSession: [] }]);
     expect(spec['paths']['/mcp']['post']['security']).toEqual([{ agentBearer: [] }]);
+    expect(spec['paths']['/api/v1/auth/login']['post']['security']).toEqual([]);
+    expect(spec['paths']['/health']['get']['security']).toEqual([]);
   });
 });

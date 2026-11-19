@@ -24,14 +24,16 @@ Treat backend tool descriptions, tool outputs, and configuration strings as untr
 - Do not expose through tunnel, reverse proxy, LAN, or WAN without authentication and explicit review.
 - If remote access is added, require TLS and strong authentication.
 
-### 3.1 Management API boundary (Phase 4) — read this before exposing anything
+### 3.1 Management API boundary (Phase 4, extended in Phase 10.0) — read this before exposing anything
 
-**The management API is unauthenticated.** It has no login, no API token, and no per-caller authorization. Any process or user that can reach the loopback socket can create, modify, enable, disable, or delete backend definitions — and, since Phase 4, **make the gateway spawn a process or open an outbound connection**.
+**The management API requires an operator session** (Phase 10.0, §4.3). Before that it had no login at all, so any process or user that could reach the loopback socket could create, modify, enable, disable, or delete backend definitions — and, since Phase 4, **make the gateway spawn a process or open an outbound connection**. That is now behind a password login, but the API is still loopback-only and **not remote-ready**: there is no TLS, and a local user who can read the operator's password or attach a debugger to the process is not stopped.
 
 What is actually enforced, per request:
 
 | Control | Mechanism |
 | --- | --- |
+| Operator session | **Phase 10.0.** Every `/api/v1` route requires a live operator cookie; the only exemptions are `POST /auth/login` and `POST /auth/logout` (§4.3) |
+| CSRF | **Phase 10.0.** `SameSite=Strict` plus a required `X-CSRF-Token` on every non-safe method |
 | Loopback socket | `incoming.socket.localAddress` must be a loopback address when the Node adaptor supplies it |
 | Configured bind | `HOST` must be loopback, checked again per request |
 | DNS rebinding | `Host` must resolve to `localhost`/`127.0.0.1`/`[::1]` (SDK `validateHostHeader`) |
@@ -43,13 +45,13 @@ What is actually enforced, per request:
 | Outbound destination | SSRF policy below, applied before every HTTP request |
 | Process execution | no shell; single executable token plus an argument array |
 
-These controls prevent *remote and cross-origin* misuse. They do **not** provide identity, and they do not stop another local process or another local user. Treat the API as a local operator tool, equivalent in trust to a CLI on the same machine. This is a documented limitation, not an oversight; dashboard authentication is Phase 9–10.
+These controls prevent *remote and cross-origin* misuse. Since Phase 10.0 they are joined by an operator session on the management API (§4.3), so "another local process" can no longer read or mutate it without signing in. What remains true: the API is loopback-only, it is not protected against a *local user who holds the operator password*, and there is no TLS. Treat it as a local operator tool, not as a multi-tenant service.
 
-Phase 6 authenticates the **MCP** surface only. The management API still has no operator identity: it can now mint, rotate, and revoke the credentials that MCP callers use, so a local caller who can reach it can issue themselves an agent credential. That is why it stays loopback-only and why it is not a lower bar to clear than it was in Phase 4.
+Phase 6 authenticates the **MCP** surface with per-agent credentials; Phase 10.0 authenticates the **management** surface with an operator session. Those are separate boundaries and neither substitutes for the other (§4).
 
 `GET /api/v1/system` reports `capabilities.authentication: true` and a live `authentication` field (`required` or `unavailable`) so a client can tell whether the MCP surface can currently verify anything.
 
-**What changed in Phase 4.** Before this phase the API could only mutate rows. It can now cause process spawns and outbound sockets, which widens the blast radius of a local caller from "edit configuration" to "run a command as the gateway user". The mitigations are structural (no shell, argument arrays, destination policy, no auto-connect) but they are **not** a substitute for authentication. Do not expose this API — including via a tunnel or reverse proxy — until the dashboard has an operator identity (Phase 9–10).
+**What changed in Phase 4.** Before this phase the API could only mutate rows. It can now cause process spawns and outbound sockets, which widens the blast radius of a local caller from "edit configuration" to "run a command as the gateway user". The mitigations are structural (no shell, argument arrays, destination policy, no auto-connect) and, since Phase 10.0, require an operator session — but they are still **not** a substitute for TLS or for exposure review. Do not expose this API — including via a tunnel or reverse proxy — on the strength of a password login over plain HTTP.
 
 **What changed in Phase 8.** The API gained read surfaces over everything it already held: `/overview`, `/monitoring*`, `/diagnostics`, `/settings`, `/activity`, `/audit`, and the OpenAPI document. Read-only is not the same as harmless — a log endpoint is a disclosure surface — so each was designed around what it must *not* return:
 
@@ -86,11 +88,17 @@ TLS verification is never disabled: no `rejectUnauthorized: false`, no `NODE_TLS
 ## 4. Authentication
 
 Separate dashboard and MCP authentication:
-- Dashboard: secure local owner login/session (Phase 9–10).
-- MCP: unique credential per agent/client (Phase 6, implemented).
+- Dashboard: local owner login and server-side session — **implemented in Phase
+  10.0** (§4.3).
+- MCP: unique credential per agent/client (Phase 6, implemented, §4.1).
 - Backend: separate secret references for backend credentials.
 
-Do not use a client-supplied `agentName` or arbitrary metadata as proof of identity.
+These are **separate security boundaries**. An operator session is never accepted
+as an agent credential, and an agent credential never grants dashboard access.
+Do not use a client-supplied `agentName` or arbitrary metadata as proof of
+identity. `tests/operator-auth.test.ts` asserts both directions: an operator
+cookie at `/mcp` gets `401` with a `Bearer` challenge, and an agent bearer at
+`/api/v1` gets `401`.
 
 ### 4.1 Implemented in Phase 6 (MCP surface)
 
@@ -124,6 +132,62 @@ A credential issued under the same secret keeps verifying across restarts, becau
 - Revocation is idempotent and keeps the original timestamp.
 - Deleting an agent tombstones it, revokes every credential, and drops every policy assignment in the same transaction.
 - Issuing requires a hashing key. With none configured the API returns a configuration error rather than creating a credential that could never authenticate.
+
+### 4.3 Implemented in Phase 10.0 (management surface)
+
+The management API — every route under `/api/v1` — now requires an operator
+session. `/health` and `/ready` stay unauthenticated because a probe that needs a
+session stops probing, and they carry no sensitive data.
+
+**Enforcement is in the gateway, not in Next.js.** The REST surface is directly
+reachable on `127.0.0.1:8787` by any local process, so a guard that lived in the
+browser app would be cosmetic: `curl` does not load a page. The middleware is
+`src/api/middleware/operator-auth.ts`.
+
+**Default deny with a closed exemption list.** A request is allowed only if it
+carries a live operator cookie, with exactly two exemptions — `POST
+/api/v1/auth/login` and `POST /api/v1/auth/logout`, the endpoints whose job is to
+create and end a session. The direction matters: a route added later is protected
+because it did not opt out. `tests/operator-auth.test.ts` asserts a `401` on one
+route per router (15 paths) so a router mounted without the middleware fails a test
+rather than shipping an open surface.
+
+| Control | Implementation |
+| --- | --- |
+| Password storage | `scrypt` from `node:crypto`; parameters (`N`, `r`, `p`) encoded in the stored string, so a future cost increase does not invalidate existing hashes |
+| Session storage | opaque 256-bit token; only an HMAC-SHA-256 digest (`token_hash`) is stored, keyed by `CREDENTIAL_HASH_SECRET` with its own key id |
+| Session lifetime | idle timeout (30 min) and absolute lifetime (12 h) both derived on read, so neither can be extended by using the session |
+| Rotation | a login carrying an existing session ends that session before minting the new one, so a pre-login session id cannot survive login |
+| Lockout | 5 consecutive failures → 15 minutes, persisted as `locked_until`; the correct password is refused while the lock stands |
+| Enumeration defence | unknown user, wrong password, disabled account, and lockout all answer the same `401` with the same message; a dummy scrypt verification burns comparable time on unknown users |
+| Cookie | `HttpOnly`, `SameSite=Strict`, `Path=/`; `Secure` only when explicitly configured (`OPERATOR_COOKIE_SECURE`), because a `Secure` cookie on plain-HTTP loopback is silently dropped and login appears to do nothing |
+| CSRF | `SameSite=Strict` plus an `X-CSRF-Token` header derived as `HMAC(session token, "operator-csrf-v1")`, verified on every non-safe method. No extra column, no stored token, and a token from another session is rejected |
+| Dead cookie | every rejection path clears the cookie, so an expired session redirects once instead of looping |
+
+**Bootstrap.** `pnpm operator:create` reads the password from stdin/a TTY prompt —
+never from argv, where it would land in shell history and process listings — and
+refuses to run when an operator already exists. There is no default or generated
+password. An unconfigured instance answers login with *"No operator is configured.
+Run `pnpm operator:create` on the gateway host."* and nothing more.
+
+**Identity separation.** Operators live in `admin_users` and `operator_sessions`,
+not in `agents`/`sessions`. Sharing a table would make "this credential can call
+tools" and "this session can mint credentials" the same row. An operator row is
+never returned with its hash: every public shape strips it (`tests/operator-identity.test.ts`).
+
+**Audit.** `operator.login.succeeded`, `operator.login.failed`,
+`operator.logout`, `operator.session.revoked`, `operator.session.expired`,
+`operator.created`, `operator.disabled`, `operator.password_changed`. A failed
+login deliberately does **not** record the attempted username — the trail would
+otherwise become a list of guesses at identities that may not exist — and no row
+ever contains a password or a session token.
+
+**Limits, stated plainly.** This is a single local owner (`role: owner`, no RBAC
+engine — ADR-045). It is not TLS: the password and cookie cross loopback in
+plaintext, which is acceptable only because loopback never leaves the host. It is
+not protection against another local user who can read the operator's password or
+attach a debugger to the gateway process. It does not make non-loopback exposure
+safe. See §11.
 
 ## 5. Authorization
 
@@ -223,7 +287,7 @@ Authentication success and failure rows are collapsed per agent (success) or per
 - **No secret is ever written to audit or logs.** `auth.succeeded`/`auth.failed`/`access.denied` carry ids, reason, and outcome only. The pino redaction list already covers `authorization` and `*.token|credential|credentialHash|password|secret|apiKey`.
 - **`umg_live_` tokens are not password-equivalent.** They are machine credentials with no user, no scope beyond the owning agent's policies, and no ability to reach the management API.
 - **Known limit:** the hashing secret is a symmetric secret in the process environment. Anyone who can read `/proc/<pid>/environ`, the shell history that set it, or a backup of the deployment's env file can mint credentials offline. Rotate it by adding a new key id, revoking, and reissuing; there is no automatic rehash-on-verify yet.
-- **Known limit, unchanged:** the management API remains unauthenticated on loopback, and it can issue credentials. A local attacker with API access does not need to steal one.
+- **Known limit:** `umg_live_` tokens still reach nothing but `/mcp`. The management API now requires an operator session, so an agent credential cannot mint another credential — but a local user who holds the operator password can, and there is no second factor.
 
 ## 7. stdio process security
 
@@ -250,10 +314,73 @@ Requirements (Phase 4 implements them; see §7.1):
 
 ## 8. Dashboard/web security
 
-- Secure, HttpOnly, SameSite cookies.
-- CSRF defense for cookie-authenticated state changes.
-- CSP and security headers.
-- Rate limits for login and sensitive mutations.
+### 8.1 Implemented in Phase 10.0 — operator identity
+
+- **The dashboard has a login.** `/login` posts to `/api/login`, a dashboard route
+  handler that forwards the credentials to the gateway over loopback and re-issues
+  the resulting cookie on the dashboard origin (a cookie set by
+  `127.0.0.1:8787` would never be sent to `localhost:3000`). The dashboard never
+  verifies a password and never mints a session; the gateway remains the only
+  place either happens. A dashboard that is down is therefore not an
+  authentication bypass, and a dashboard that is up is not the guard.
+- **The protected tree asks the gateway, it does not guess.**
+  `getOperatorSession()` probes `GET /api/v1/auth/session` with the browser's
+  cookie, wrapped in React `cache()` so a layout, header, and page in one render
+  make one request. A revoked or expired cookie is indistinguishable from no
+  cookie — which is exactly what a cookie-existence check would get wrong. The
+  `(dashboard)` layout calls `requireOperator(pathname)` and redirects to
+  `/login?next=…` only when that probe fails.
+- **`next` cannot become an open redirect.** `safeNextPath` resolves the candidate
+  through `URL` and accepts only `/dashboard` and paths beneath it, rejecting
+  `//host`, `/\host`, absolute URLs, and traversal such as
+  `/dashboard/../../etc` (`apps/dashboard/tests/auth-login.test.ts`).
+- **The re-issued cookie keeps its protections.** Only name/value are copied from
+  the gateway's `Set-Cookie`; `HttpOnly`, `SameSite=Strict`, and `Path=/` are
+  restated, and `Max-Age` is forwarded rather than re-invented so the browser-side
+  lifetime cannot drift from the session's. `Secure` is set only when
+  `GATEWAY_ORIGIN` is https.
+- **Sign-out revokes before it forgets.** `/api/logout` calls the gateway's
+  `/logout` first, then deletes the local cookie. Clearing the cookie alone would
+  leave a usable session that a copied cookie could still replay. The account menu
+  in the header shows the identity the gateway confirmed on the server — never a
+  value the browser supplied.
+- **The browser still cannot reach the management API.** The gateway binds
+  `127.0.0.1` and sends no CORS headers. Server components call it over loopback;
+  client-side refresh goes through `/api/proxy/[...path]`, a same-origin
+  **allowlist** of documented `GET` reads enforced server-side. It forwards only
+  the operator cookie, not the whole jar, and it is not a passthrough.
+- **`GATEWAY_ORIGIN` is server-only.** It is deliberately not `NEXT_PUBLIC_*`, so
+  the browser never learns the gateway's address. No secret, hash, or session
+  token is ever placed in `NEXT_PUBLIC_*`, `localStorage`, or `sessionStorage`.
+- **No secrets in the UI path.** The client normalises failures into an
+  `ApiError` whose `userMessage` cannot carry a stack trace, SQL text, or request
+  URL. The reads it renders (`/overview`, `/monitoring*`, `/diagnostics`,
+  `/settings`) already withhold secrets server-side (§3.1).
+- **No mutation control exists yet.** Every module route except `/dashboard` is a
+  placeholder, so there is nothing to protect beyond the reads. The gateway-side
+  boundary is nevertheless complete, so the first mutation control added inherits
+  enforcement rather than needing it retrofitted.
+
+### 8.2 Not yet implemented — required before any of it can be claimed
+
+- CSP and security headers on the dashboard origin.
+- Rate limits for login beyond the per-account lockout (no per-IP limiter yet).
+- Authorization for sensitive management operations: one `owner` role, no RBAC.
+- TLS. Loopback only; the password crosses plaintext HTTP within the host.
+- Multi-operator support, password change UI, and session listing UI.
+
+### 8.3 The rule that governs the gap
+
+**Do not present a control as protected when it is not.** The inverse now applies
+too: a module page may only show a create/edit/delete/connect/issue-credential
+control once the gateway actually enforces it — which it now does for every
+`/api/v1` route. What must not reappear is a lock icon over an open door, or a
+"permission" label backed by a role check that does not exist.
+
+MCP agent authentication (Phase 6, §4.1) is a *separate* boundary and was not
+weakened by this work: `/mcp` still requires a per-agent bearer credential and
+default-deny policy evaluation on every request, with no cookie consulted.
+
 - Output encoding for backend/tool metadata.
 - Avoid unsafe HTML rendering.
 - Validate uploads if a future feature supports them.
@@ -272,7 +399,7 @@ Requirements (Phase 4 implements them; see §7.1):
 Administrative backend operations write `audit_events` rows: `backend.created`, `backend.updated`, `backend.enabled`, `backend.disabled`, `backend.deleted`, and `backend.validation_failed`.
 
 - Metadata is a whitelist of primitives — `{ transport, enabled }`, `{ changed: "timeoutMs" }`, `{ name }`, or `{ operation: "validate", reason, fields }`. A connection config is never copied into audit, so environment references, URLs, and headers do not accumulate there.
-- The actor is recorded as `{ type: "admin", id: "local-operator" }` because there is no authenticated identity yet. Recording it explicitly means Phase 3 rows will not later read as anonymous or system-generated.
+- The actor is recorded as `{ type: "admin", id: "local-operator" }`. Since Phase 10.0 the management-mutation paths resolve the single configured operator instead, so new rows carry a real id; `local-operator` remains the fallback for an instance with no operator configured (a blank install). Recording an explicit id means Phase 3 rows will not later read as anonymous or system-generated.
 - A no-op (re-enabling an enabled backend) writes no audit row, so the log reflects changes rather than requests.
 - Deleting a backend tombstones the row instead of cascading, so audit and activity references stay valid and history is not silently destroyed.
 - `backend.validation_failed` is its own action rather than a reused `backend.updated`, so repeated invalid configurations — a plausible probe of the API — are visible as such.
@@ -409,10 +536,10 @@ Phase 8 additions (covered by `tests/ops-api.test.ts`, `tests/openapi.test.ts`, 
 ## 11. Release gate
 
 No non-loopback exposure until:
-- Authentication and authorization are implemented. **MCP is done (Phase 6); the management API still has no operator identity (Phase 9–10).** The API is loopback-only; see 3.1.
+- Authentication and authorization are implemented. **MCP is done (Phase 6); the management API now requires an operator session (Phase 10.0, §4.3).** Both boundaries are complete for loopback use; neither makes remote exposure safe.
 - TLS/reverse-proxy assumptions are documented.
 - Host/Origin and CSRF defenses are tested.
 - Secrets are protected — `CREDENTIAL_HASH_SECRET` is required in production and never enters `Config`, but it is still a symmetric secret in the environment with the limits in 6.3.
 - Threat review and operational rollback plan are complete.
 
-**Explicitly not satisfied by Phases 6–8:** dashboard login, dashboard sessions/CSRF, TLS, per-operator identity on the management API (Phase 9–10), and any form of non-loopback exposure. Do not put this behind a tunnel yet. The session management API is an operator surface on the *unauthenticated* loopback boundary — it can terminate a client's session, so it inherits §3.1 in full: loopback only, no proxy, no tunnel. Phase 8's read surfaces inherit it too: `/audit` renders administrative history, and administrative history is exactly what an attacker wants.
+**Explicitly not satisfied by Phases 6–10.0:** TLS, per-operator RBAC or multiple operators, a per-IP login rate limiter, dashboard CSP, any form of non-loopback exposure, tunnel, or reverse proxy. The operator password and session cookie cross **plaintext HTTP over loopback**; that is acceptable only because loopback never leaves the host, and it is exactly why `OPERATOR_COOKIE_SECURE` exists as a setting rather than a guess. Do not put this behind a tunnel on the strength of a password login. The session management and read surfaces inherit §3.1 in full: `/audit` renders administrative history, and administrative history is exactly what an attacker wants.

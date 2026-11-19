@@ -9,6 +9,8 @@ import { loadConfig } from '../src/config/config.js';
 import { createGateway, type Gateway } from '../src/core/gateway.js';
 import { openStore, type Database } from '../src/infrastructure/database/index.js';
 import { createLogger } from '../src/monitoring/logger.js';
+import { testKeys } from './fixtures/auth.js';
+import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
 /**
  * Tool catalog API and lifecycle→catalog wiring.
@@ -31,6 +33,8 @@ const JSON_HEADERS = { ...HOST, 'content-type': 'application/json' };
 let directory: string;
 let store: Database;
 let gateway: Gateway;
+/** Operator session: every `/api/v1` route requires one (Phase 10.0). */
+let session: TestOperatorSession;
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'gw-tools-api-'));
@@ -39,7 +43,9 @@ beforeEach(() => {
     config: loadConfig({ ENVIRONMENT: 'test', LOG_LEVEL: 'silent', ALLOW_PRIVATE_NETWORK: 'true' }),
     logger,
     store,
+    credentialKeys: testKeys(),
   });
+  session = createTestOperator(store, testKeys());
 });
 
 afterEach(async () => {
@@ -51,7 +57,7 @@ afterEach(async () => {
 async function call(method: string, path: string): Promise<Response> {
   return gateway.app.request(`/api/v1${path}`, {
     method,
-    headers: method === 'GET' ? HOST : JSON_HEADERS,
+    headers: method === 'GET' ? { ...HOST, ...session.headers } : { ...JSON_HEADERS, ...session.headers },
   });
 }
 
@@ -60,7 +66,7 @@ const json = async <T>(response: Response): Promise<T> => (await response.json()
 async function createBackend(name: string, mode: string): Promise<string> {
   const response = await gateway.app.request('/api/v1/backends', {
     method: 'POST',
-    headers: JSON_HEADERS,
+    headers: { ...JSON_HEADERS, ...session.headers },
     body: JSON.stringify({
       name,
       connection: { type: 'stdio', command: process.execPath, args: ['--import', 'tsx', FIXTURE, mode] },
@@ -281,7 +287,7 @@ describe('refreshing tracks catalog changes', () => {
     // Same backend record, different catalog.
     const patched = await gateway.app.request(`/api/v1/backends/${id}`, {
       method: 'PATCH',
-      headers: JSON_HEADERS,
+      headers: { ...JSON_HEADERS, ...session.headers },
       body: JSON.stringify({
         connection: { type: 'stdio', command: process.execPath, args: ['--import', 'tsx', FIXTURE, 'a2'] },
       }),

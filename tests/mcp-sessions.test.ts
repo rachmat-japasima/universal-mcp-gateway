@@ -13,6 +13,7 @@ import { createLogger } from '../src/monitoring/logger.js';
 import { AgentService } from '../src/registry/agent-service.js';
 import { CredentialService } from '../src/registry/credential-service.js';
 import { bearer, createTestAgent, testKeys, type TestAgent } from './fixtures/auth.js';
+import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
 /**
  * Phase 7 over a real socket: the MCP session lifecycle as a client observes it.
@@ -36,6 +37,8 @@ const JSON_HEADERS = { 'content-type': 'application/json', accept: 'application/
 let directory: string;
 let store: Database;
 let gateway: Gateway;
+/** Operator session: the management API rejects anonymous callers (Phase 10.0). */
+let session: TestOperatorSession;
 let server: ServerType;
 let url: string;
 const clients: Client[] = [];
@@ -44,6 +47,7 @@ beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), 'gw-session-'));
   store = openStore({ path: join(directory, 'gateway.db') });
   gateway = createGateway({ config, logger, store, credentialKeys: keys });
+  session = createTestOperator(store, keys);
 
   server = serve({ fetch: gateway.app.fetch, hostname: '127.0.0.1', port: 0 });
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -98,21 +102,25 @@ describe('initialization and binding', () => {
     expect(initialized.status).toBe(200);
     expect(initialized.sessionId).toBeTruthy();
 
-    const session = store.sessions.findByMcpSessionId(initialized.sessionId!)!;
-    expect(session).toMatchObject({
+    const bound = store.sessions.findByMcpSessionId(initialized.sessionId!)!;
+    expect(bound).toMatchObject({
       agentId: agent.id,
       credentialId: agent.credentialId,
       status: 'active',
     });
     // The internal id is separate from the protocol id and never equals it.
-    expect(session.id).not.toBe(initialized.sessionId);
-    expect(session.expiresAt).toBeTruthy();
+    expect(bound.id).not.toBe(initialized.sessionId);
+    expect(bound.expiresAt).toBeTruthy();
 
     // The protocol id never appears in the management payload as the record id.
-    const listed = await gateway.app.request('/api/v1/sessions', { headers: { host: '127.0.0.1' } });
+    // The operator cookie is the fixture's; the MCP session id is irrelevant to
+    // the management API, which is exactly the boundary this asserts.
+    const listed = await gateway.app.request('/api/v1/sessions', {
+      headers: { host: '127.0.0.1', ...session.headers },
+    });
     const body = (await listed.json()) as { data: Array<{ id: string; mcpSessionId?: string }> };
     expect(body.data).toHaveLength(1);
-    expect(body.data[0]!.id).toBe(session.id);
+    expect(body.data[0]!.id).toBe(bound.id);
     expect(body.data[0]!.mcpSessionId).toBe(initialized.sessionId);
   });
 
@@ -284,7 +292,7 @@ describe('termination', () => {
 
     const first = await gateway.app.request(`/api/v1/sessions/${internalId}/terminate`, {
       method: 'POST',
-      headers: { host: '127.0.0.1' },
+      headers: { host: '127.0.0.1', ...session.headers },
     });
     expect(first.status).toBe(200);
     const firstBody = (await first.json()) as { data: { status: string; terminatedAt: string } };
@@ -292,7 +300,7 @@ describe('termination', () => {
 
     const second = await gateway.app.request(`/api/v1/sessions/${internalId}/terminate`, {
       method: 'POST',
-      headers: { host: '127.0.0.1' },
+      headers: { host: '127.0.0.1', ...session.headers },
     });
     const secondBody = (await second.json()) as { data: { status: string; terminatedAt: string } };
     expect(secondBody.data).toEqual(firstBody.data);

@@ -83,6 +83,23 @@ export const configSchema = z
      * inbound request open.
      */
     toolCallTimeoutMs: z.coerce.number().int().min(100).max(600_000).default(60_000),
+    /**
+     * Operator (dashboard) sessions are separate from MCP sessions: a human
+     * sitting at a dashboard and a tool call have different natural lifetimes,
+     * and coupling them would mean tightening one tightens the other.
+     */
+    operatorSessionIdleTimeoutMs: z.coerce.number().int().min(60_000).max(86_400_000).default(1_800_000),
+    operatorSessionMaxLifetimeMs: z.coerce.number().int().min(60_000).max(604_800_000).default(43_200_000),
+    /**
+     * `Secure` would make the cookie unreachable over the plain-HTTP loopback
+     * dashboard this product ships, producing a login that silently never works.
+     * It is therefore explicit and off by default, never inferred from a
+     * forwarded header: turn it on only when the dashboard is served over TLS.
+     */
+    operatorCookieSecure: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
   })
   .strict();
 
@@ -107,6 +124,9 @@ export interface ConfigEnv {
   ALLOW_PRIVATE_NETWORK?: string;
   TOOL_DISCOVERY_TIMEOUT_MS?: string;
   TOOL_CALL_TIMEOUT_MS?: string;
+  OPERATOR_SESSION_IDLE_TIMEOUT_MS?: string;
+  OPERATOR_SESSION_MAX_LIFETIME_MS?: string;
+  OPERATOR_COOKIE_SECURE?: string;
 }
 
 function envValue(env: ConfigEnv, key: keyof ConfigEnv): string | undefined {
@@ -137,6 +157,9 @@ export function parseConfig(
     allowPrivateNetwork: envValue(env, 'ALLOW_PRIVATE_NETWORK'),
     toolDiscoveryTimeoutMs: envValue(env, 'TOOL_DISCOVERY_TIMEOUT_MS'),
     toolCallTimeoutMs: envValue(env, 'TOOL_CALL_TIMEOUT_MS'),
+    operatorSessionIdleTimeoutMs: envValue(env, 'OPERATOR_SESSION_IDLE_TIMEOUT_MS'),
+    operatorSessionMaxLifetimeMs: envValue(env, 'OPERATOR_SESSION_MAX_LIFETIME_MS'),
+    operatorCookieSecure: envValue(env, 'OPERATOR_COOKIE_SECURE'),
     ...overrides,
   };
 

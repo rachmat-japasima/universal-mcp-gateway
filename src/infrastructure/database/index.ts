@@ -5,6 +5,7 @@ import { SqliteAgentRepository } from './repositories/agents.js';
 import { SqliteBackendRepository, SqliteBackendRuntimeRepository } from './repositories/backends.js';
 import { SqliteCredentialRepository } from './repositories/credentials.js';
 import { SqliteActivityRepository, SqliteAuditRepository, SqliteSessionRepository } from './repositories/events.js';
+import { SqliteOperatorRepository } from './repositories/operators.js';
 import { SqlitePolicyRepository } from './repositories/policies.js';
 
 export interface Database extends Repositories {
@@ -46,6 +47,7 @@ export function openStore(options: OpenStoreOptions): Database {
     sessions: new SqliteSessionRepository(handle),
     activity: new SqliteActivityRepository(handle),
     audit: new SqliteAuditRepository(handle),
+    operators: new SqliteOperatorRepository(handle),
     transaction: (work) => handle.transaction(work)(),
     close: () => closeDatabase(handle),
   };

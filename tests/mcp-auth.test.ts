@@ -15,6 +15,7 @@ import { AgentService } from '../src/registry/agent-service.js';
 import { CredentialService } from '../src/registry/credential-service.js';
 import { buildTools } from '../src/routing/catalog.js';
 import { bearer, createTestAgent, testKeys, type TestAgent } from './fixtures/auth.js';
+import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
 /**
  * The authentication and authorization boundary over a real socket.
@@ -39,6 +40,8 @@ const JSON_HEADERS = { 'content-type': 'application/json', accept: 'application/
 let directory: string;
 let store: Database;
 let gateway: Gateway;
+/** Operator session: the management API rejects anonymous callers (Phase 10.0). */
+let session: TestOperatorSession;
 let server: ServerType;
 let url: string;
 const clients: Client[] = [];
@@ -47,6 +50,7 @@ beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), 'gw-mcp-auth-'));
   store = openStore({ path: join(directory, 'gateway.db') });
   gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
+  session = createTestOperator(store, testKeys());
 
   server = serve({ fetch: gateway.app.fetch, hostname: '127.0.0.1', port: 0 });
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -304,7 +308,7 @@ describe('a live backend', () => {
   it('lists only the granted tool and refuses the rest without invoking anything', async () => {
     const created = await gateway.app.request('/api/v1/backends', {
       method: 'POST',
-      headers: { ...JSON_HEADERS, host: '127.0.0.1' },
+      headers: { ...JSON_HEADERS, host: '127.0.0.1', ...session.headers },
       body: JSON.stringify({
         name: 'backend-a',
         connection: { type: 'stdio', command: process.execPath, args: ['--import', 'tsx', FIXTURE, 'a'] },
@@ -314,7 +318,7 @@ describe('a live backend', () => {
 
     const connected = await gateway.app.request(`/api/v1/backends/${data.id}/connect`, {
       method: 'POST',
-      headers: { ...JSON_HEADERS, host: '127.0.0.1' },
+      headers: { ...JSON_HEADERS, host: '127.0.0.1', ...session.headers },
     });
     expect(connected.status).toBe(200);
 

@@ -12,6 +12,7 @@ import { createGateway, type Gateway } from '../src/core/gateway.js';
 import { openStore, type Database } from '../src/infrastructure/database/index.js';
 import { createLogger } from '../src/monitoring/logger.js';
 import { bearer, createTestAgent, testKeys, type TestAgent } from './fixtures/auth.js';
+import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
 /**
  * The gateway's MCP surface over a real loopback listener.
@@ -36,6 +37,8 @@ const JSON_HEADERS = { ...HOST, 'content-type': 'application/json' };
 let directory: string;
 let store: Database;
 let gateway: Gateway;
+/** Operator session: the management API rejects anonymous callers (Phase 10.0). */
+let session: TestOperatorSession;
 let server: ServerType;
 let url: string;
 const clients: Client[] = [];
@@ -48,6 +51,7 @@ beforeEach(async () => {
   store = openStore({ path: join(directory, 'gateway.db') });
   const keys = testKeys();
   gateway = createGateway({ config, logger, store, credentialKeys: keys });
+  session = createTestOperator(store, keys);
   agent = createTestAgent(store, keys, { allowTools: ['*'] });
 
   server = serve({ fetch: gateway.app.fetch, hostname: '127.0.0.1', port: 0 });
@@ -68,7 +72,7 @@ afterEach(async () => {
 async function startBackend(name: string, mode: string): Promise<string> {
   const created = await gateway.app.request('/api/v1/backends', {
     method: 'POST',
-    headers: JSON_HEADERS,
+    headers: { ...JSON_HEADERS, ...session.headers },
     body: JSON.stringify({
       name,
       connection: { type: 'stdio', command: process.execPath, args: ['--import', 'tsx', FIXTURE, mode] },
@@ -79,7 +83,7 @@ async function startBackend(name: string, mode: string): Promise<string> {
 
   const connected = await gateway.app.request(`/api/v1/backends/${data.id}/connect`, {
     method: 'POST',
-    headers: JSON_HEADERS,
+    headers: { ...JSON_HEADERS, ...session.headers },
   });
   expect(connected.status).toBe(200);
 
@@ -196,7 +200,7 @@ describe('tools/call over MCP', () => {
 
     const disconnected = await gateway.app.request(`/api/v1/backends/${id}/disconnect`, {
       method: 'POST',
-      headers: JSON_HEADERS,
+      headers: { ...JSON_HEADERS, ...session.headers },
     });
     expect(disconnected.status).toBe(200);
     await until(() => gateway.catalog.listByBackend(id).length === 0);

@@ -163,7 +163,7 @@ Audit entries include actor, action, target, timestamp, result, and request ID.
 - Audit is append-only with no application delete path; deletion of a backend tombstones the
   definition instead of cascading, so history stays resolvable.
 
-Login/logout and settings events arrive with later phases (dashboard auth is Phase 9–10).
+Login/logout and settings events arrive with later phases (dashboard operator auth is Phase 10.0, ADR-044).
 Credential and policy events landed in Phase 6, and session events in Phase 7. Phase 8 added the
 read API over this trail, not new actions: `GET /api/v1/audit` (filterable, paginated, `metadata`
 omitted) and `GET /api/v1/audit/:eventId` (metadata included). `/api/v1/activity` is the separate
@@ -284,7 +284,7 @@ Implemented in Phase 4 (`src/adapters/lifecycle.ts`):
 - Graceful shutdown: the manager stops every connection, cancels every timer, and refuses new connects before the store closes.
 - No retry storms: one promise chain per backend, so concurrent attempts collapse into one; jitter prevents lockstep retries.
 - Last sanitized error is exposed on `GET /api/v1/backends/:id/runtime` (`lastErrorCode`, `lastErrorMessage`, capped at 500 chars).
-- Manual `POST /backends/:id/reconnect` resets the attempt counter. No confirmation dialog yet — the API is loopback-only and unauthenticated, so a confirmation would be theatre until the dashboard exists (Phase 9).
+- Manual `POST /backends/:id/reconnect` resets the attempt counter. No confirmation dialog yet — the API is loopback-only and requires an operator session plus a CSRF token on the write (Phase 10.0), so a second in-API confirmation would add a click, not a control; the dashboard can add one when it grows a mutation UI.
 - Startup recovery never reconnects: a persisted live state is a dead process's claim and is rewritten to `disconnected`/`disabled`.
 
 ## 9. Operational runbook

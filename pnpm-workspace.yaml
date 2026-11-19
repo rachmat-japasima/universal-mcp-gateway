@@ -1,2 +1,9 @@
 allowBuilds:
   esbuild: false
+  # Astryx postinstall scripts only print a "run astryx init" nudge; nothing
+  # needs to execute at install time, so they stay denied on purpose.
+  '@astryxdesign/core': false
+  '@astryxdesign/cli': false
+
+packages:
+  - 'apps/*'

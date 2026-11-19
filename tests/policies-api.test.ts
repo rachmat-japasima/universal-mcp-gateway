@@ -9,6 +9,7 @@ import { createGateway, type Gateway } from '../src/core/gateway.js';
 import { openStore, type Database } from '../src/infrastructure/database/index.js';
 import { createLogger } from '../src/monitoring/logger.js';
 import { createTestAgent, testKeys } from './fixtures/auth.js';
+import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
 /**
  * Policy and effective-access API contract (Phase 8 completion).
@@ -27,11 +28,14 @@ const JSON_HEADERS = { ...HOST, 'content-type': 'application/json' };
 let directory: string;
 let store: Database;
 let gateway: Gateway;
+/** Operator session: every `/api/v1` route requires one (Phase 10.0). */
+let session: TestOperatorSession;
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'gw-policy-api-'));
   store = openStore({ path: join(directory, 'gateway.db') });
   gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
+  session = createTestOperator(store, testKeys());
 });
 
 afterEach(async () => {
@@ -45,7 +49,7 @@ const json = async <T>(response: Response): Promise<T> => (await response.json()
 async function call(method: string, path: string, body?: unknown): Promise<Response> {
   return gateway.app.request(`/api/v1${path}`, {
     method,
-    headers: body === undefined ? HOST : JSON_HEADERS,
+    headers: body === undefined ? { ...HOST, ...session.headers } : { ...JSON_HEADERS, ...session.headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }

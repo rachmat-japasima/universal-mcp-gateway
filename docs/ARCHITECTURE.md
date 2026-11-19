@@ -74,7 +74,7 @@ flowchart TB
 
 Initial local deployment:
 - Gateway/API process in WSL2.
-- Dashboard served locally by Next.js, either same origin through a reverse proxy or a documented separate local port.
+- Dashboard served locally by Next.js on a documented separate local port (`3000`), talking to the gateway over loopback at `GATEWAY_ORIGIN` (`http://127.0.0.1:8787`). No reverse proxy, no shared origin, no public listener in Phase 9 — the dashboard reaches the API server-side and the browser only ever talks to the dashboard's own origin.
 - SQLite database in project/runtime data directory, excluded from source control.
 - Backend child processes launched by the gateway process when stdio adapters are enabled.
 - Bind to loopback only.
@@ -148,6 +148,7 @@ src/
     session.ts           binding, statuses, termination reasons, deadline helpers
     activity-event.ts    operational history
     audit-event.ts       administrative/security history
+    operator.ts          dashboard operator identity + session (Phase 10.0)
     repositories.ts      persistence interfaces (SQL/persistence-free)
   shared/
     errors.ts        AppError, ErrorCode, toAppError, log view
@@ -160,6 +161,7 @@ src/
     credential-key.ts    token minting, HMAC digest, timing-safe compare, key registry
     auth-service.ts      per-request bearer verification, bounded audit windows
     authorization.ts     policy evaluation, visibleTool filtering, denial audit
+    operator-password.ts scrypt hash/verify + dummy verification (Phase 10.0)
   adapters/
     adapter.ts           BackendAdapter interface + createAdapter()
     stdio-adapter.ts     child-process transport
@@ -181,6 +183,7 @@ src/
     middleware/
       guards.ts          loopbackOnly, requireJsonBody
       mcp-auth.ts        bearer authentication boundary for /mcp
+      operator-auth.ts   operator session + CSRF boundary for /api/v1 (Phase 10.0)
     schemas/
       queries.ts         pagination/filter/param contracts
     routes/
@@ -192,6 +195,7 @@ src/
       tools.routes.ts    catalog, discovery reports, conflicts, refresh
       events.routes.ts   activity + audit, list + detail (Phase 8)
       ops.routes.ts      overview, monitoring, diagnostics, settings, openapi + readyHandler
+      auth.routes.ts     operator login, logout, session probe (Phase 10.0)
     ops.ts             one snapshot reader: every ops count flows from here
     openapi.ts         OpenAPI 3.1 document, checked against the live route table
   registry/
@@ -200,6 +204,7 @@ src/
     credential-service.ts issue/rotate/revoke, once-only token return
     policy-service.ts    policy CRUD, target validation, assignments
     session-service.ts   binding, validation, expiry, invalidation, cleanup, audit
+    operator-service.ts  password login, lockout, sessions, rotation, CSRF (Phase 10.0)
   core/
     gateway.ts       Hono app + MCP handler + health + API mount + lifecycle + auth
   infrastructure/
@@ -211,9 +216,13 @@ src/
       migrations/0003_runtime_disconnecting.sql
       migrations/0004_agent_authentication.sql
       migrations/0005_session_isolation.sql
+      migrations/0006_operator_authentication.sql
       repositories/        SQLite implementations
   monitoring/
     logger.ts        Pino + redaction paths
+  cli/
+    operator-create.ts    `pnpm operator:create` bootstrap entry
+    operator-bootstrap.ts prompt, validation, refusal when already configured
   index.ts           process lifecycle, including the credential-key startup policy
 ```
 
@@ -230,20 +239,23 @@ Boundaries that matter:
 - **Contracts vs secrets.** Agent tokens are not part of the `Agent` entity; only a verifier hash is stored. Backend `env`/`headers` accept secret *references* only.
 - **Service vs middleware vs in-request check.** `AuthService` verifies a header and returns either an identity or a reason — it knows nothing about Hono. `mcpAuthenticate` is the only place the header is read. `AuthorizationService` decides about a *known* agent and knows nothing about HTTP. `ToolRouter` re-checks before resolving, so a caller that bypasses the SDK still cannot call a tool it was not granted.
 
-### 4.2 Management API middleware order (Phase 3)
+### 4.2 Management API middleware order (Phase 3, extended in Phase 10.0)
 
 Declared once in `createManagementApi()`, applied to every `/api/v1` route:
 
 1. `requestId` — assigns or accepts a well-formed `X-Request-Id` so later log lines and error envelopes correlate.
 2. `loopbackOnly` — rejects a non-loopback socket, a non-loopback configured `HOST`, a foreign `Host`, and a foreign `Origin`.
-3. `jsonBodyLimit` — bounds the body before any parse allocates it.
-4. `requireJsonBody` — rejects a declared non-JSON content type, which blocks cross-site form posts.
+3. `operatorAuth` — requires a live operator session, default-deny, with a closed exemption list (`POST /auth/login`, `POST /auth/logout`). Also verifies `X-CSRF-Token` on every non-safe method.
+4. `jsonBodyLimit` — bounds the body before any parse allocates it.
+5. `requireJsonBody` — rejects a declared non-JSON content type, which blocks cross-site form posts.
 
-Order is load-bearing: the local-only check runs before a body is read, so a non-local caller cannot make the gateway buffer a payload. Host/Origin checks reuse the SDK's own `validateHostHeader`/`validateOriginHeader`; only the response envelope differs from `/mcp` (ADR-029).
+Order is load-bearing. The local-only check runs before a body is read, so a non-local caller cannot make the gateway buffer a payload. `operatorAuth` sits *before* the body limit and the content-type check for the same reason: an anonymous caller cannot spend parse budget, and `tests/operator-auth.test.ts` asserts a write with a malformed body answers `401`, not `400`. Session first, CSRF second — a valid-looking CSRF token with no session still gets `401`, so a token alone never authorizes.
 
-The MCP surface keeps the SDK's `hostHeaderValidation`/`originValidation` middleware because a JSON-RPC client expects a JSON-RPC error. Both middlewares are scoped away from `/api/v1` so neither surface answers in the other's shape.
+Host/Origin checks reuse the SDK's own `validateHostHeader`/`validateOriginHeader`; only the response envelope differs from `/mcp` (ADR-029).
 
-The API is not mounted at all when no store is configured, rather than mounted against a missing database.
+The MCP surface keeps the SDK's `hostHeaderValidation`/`originValidation` middleware because a JSON-RPC client expects a JSON-RPC error. Both middlewares are scoped away from `/api/v1` so neither surface answers in the other's shape, and `operatorAuth` is scoped away from `/mcp` so an operator cookie is never read as an agent identity.
+
+The API is not mounted at all when no store is configured, *and not mounted when no `OperatorService` exists either* — there is no unauthenticated management mode to fall back to.
 
 ## 4.3 Outbound connection lifecycle (Phase 4)
 
@@ -400,11 +412,11 @@ staleness the spec forbids.
 ## 9. Authentication and authorization
 
 Separate:
-- Dashboard user identity (Phase 9–10).
-- MCP client/agent identity (Phase 6, implemented).
+- Dashboard operator identity (Phase 10.0, implemented — §9.2).
+- MCP client/agent identity (Phase 6, implemented — §9.1).
 - Backend credentials.
 
-Use separate credential scopes. Dashboard login must not implicitly grant MCP tool access. MCP client metadata must not be trusted as identity.
+Use separate credential scopes. Dashboard login must not implicitly grant MCP tool access. MCP client metadata must not be trusted as identity. The two boundaries share no table, no middleware, and no token format on purpose: an operator cookie at `/mcp` gets `401`, and an agent bearer at `/api/v1` gets `401`.
 
 Policy evaluation:
 1. Authenticate caller.
@@ -445,6 +457,36 @@ Three invariants hold this together:
 3. **Deny before route.** A denied caller learns nothing: no backend is read, no reachability check runs, no schema is compiled, nothing is invoked, and the error is byte-identical to an unknown tool. `AuthorizationService.resolveTarget` is the single catalog read behind the decision (a `backend`-scoped rule needs to know the tool's backend) and is also what enriches the audit row; it never gates a call on its own.
 
 `AuthService` and `AuthorizationService` are composed in `src/core/gateway.ts` and injected; neither reads the environment. The hashing key is loaded by `src/index.ts` through `resolveCredentialKeys`, which throws in production when absent and returns keys that issue nothing otherwise, so a development process without a secret fails closed per request instead of inventing an ephemeral one.
+
+### 9.2 Implemented in Phase 10.0 (management surface)
+
+```
+POST /api/v1/auth/login  (exempt)          every other /api/v1 route
+        │                                          │
+        ▼  src/registry/operator-service.ts        ▼  operatorAuth
+   findByUsername (case-insensitive)          read `umg_operator` cookie → shape check
+     → dummy scrypt if unknown  ─────────┐      → HMAC(token) → indexed lookup by digest
+     → verify scrypt hash                │      → key id current? → not revoked?
+     → locked_until in the future?       │      → not past idle or absolute ceiling?
+     → operator enabled?                 │      → operator still enabled?
+        │                                │              │
+   mint 256-bit token, store digest      │         identity
+   rotate: end any session on this       │              │
+   cookie first (fixation defence)       │              ▼  non-safe method?
+        │                                │         X-CSRF-Token == HMAC(token, "operator-csrf-v1")?
+        ▼                                │              │
+   Set-Cookie + csrfToken          uniform 401 on failure  proceed
+```
+
+**The boundary is in the gateway, not in Next.js.** The REST surface is reachable on `127.0.0.1:8787` by any local process, and `curl` does not load a page, so a guard in the dashboard would be cosmetic. `createGateway` refuses to mount `/api/v1` without an `OperatorService`, which removes the "unauthenticated mode" that a missing dependency would otherwise create.
+
+**Two lifetimes, both derived on read.** A session has an idle window (30 min) and an absolute ceiling (12 h). Neither is trusted from a background sweep — a missed cleanup must not extend access — and a rejected session has its row marked ended and its cookie cleared so a dead cookie cannot loop.
+
+**Rotation at login.** A login that arrives carrying a session ends that session before minting the new one, so an id chosen before login cannot survive it.
+
+**Storage is digest-only.** Only an HMAC-SHA-256 digest of the cookie value is stored, keyed by `CREDENTIAL_HASH_SECRET` with its own key id; a session whose `hash_key_id` is no longer the issuing key is refused rather than accepted unverifiable.
+
+**The dashboard asks, it does not decide.** `getOperatorSession()` probes `GET /api/v1/auth/session`, cached per render pass. A revoked cookie and an absent cookie are indistinguishable there — which is what a cookie-existence guard would get wrong — and the dashboard's login route forwards credentials to the gateway rather than verifying them. Full detail in `docs/SECURITY.md` §4.3 and §8.1.
 
 ## 10. Session isolation (Phase 7)
 
@@ -582,21 +624,114 @@ Retention and backup policy are still to be defined. Do not store sensitive tool
 
 ## 13. Dashboard architecture
 
-- Next.js application.
-- Astryx as the direct UI component library and design system.
-- Typed API client generated or maintained from backend API contracts. As of Phase 8 the contract is served at `GET /api/v1/openapi.json` and checked against the live route table by `tests/openapi.test.ts`, so a client can be generated from it without the document drifting.
-- Feature-oriented page modules.
-- Every figure on screen comes from a real endpoint; `null` renders as "unavailable", never as `0`.
-- Server-side authorization for protected dashboard routes and APIs.
-- Loading, empty, error, and confirmation states.
-- No business rules implemented only in the browser.
+### 13.1 Shape
+
+The dashboard is a Next.js App Router application in `apps/dashboard`, a pnpm
+workspace package (`@universal-mcp-gateway/dashboard`). The gateway stays the
+**root** package — it was not moved into `apps/gateway`, so there is no
+`apps/gateway/package.json`, and `dev:gateway` / `build:gateway` simply alias the
+root scripts.
+
+```text
+apps/dashboard/
+  src/app/(dashboard)/       route group — shell, nav, pages
+  src/app/api/proxy/         same-origin allowlisted GET proxy
+  src/components/            layout / feedback / ui compositions
+  src/lib/api/               typed client, envelope unwrap, ApiError
+  src/lib/navigation.ts      single source for nav + titles + placeholder copy
+  tests/                     jsdom component tests + validator tests
+```
+
+### 13.2 Trust boundary
+
+The gateway binds `127.0.0.1` and grants **no CORS**, so a browser cannot call it.
+Two paths exist, and only two:
+
+| Path | Where it runs | Used for |
+| --- | --- | --- |
+| `lib/api/client.ts` → `GATEWAY_ORIGIN` | server only (RSC, route handlers) | all initial reads |
+| `/api/proxy/[...path]` → same allowlist | browser → same origin → server | client-triggered refresh |
+
+`GATEWAY_ORIGIN` is deliberately **not** `NEXT_PUBLIC_*`: the browser never learns
+the gateway address, and the proxy is an allowlist of documented GET reads
+(including `/ready`), not a general passthrough. Every `/api/v1` read carries the
+operator cookie (server components) or the proxy forwards the single operator
+cookie (client refresh) — it forwards only `umg_operator`, never the whole jar.
+`/ready` stays unauthenticated, so the header indicator works even after the
+session expires.
+
+The management API is operator-authenticated (Phase 10.0, §9.2), so **local
+access plus an operator session** is the trust boundary. The dashboard must not
+be exposed beyond loopback: the session cookie crosses plain HTTP there, which is
+only acceptable because loopback never leaves the host.
+
+The proxy forwards `upstream.status` verbatim, which is why two different
+conditions both surface as `503`:
+
+- gateway unreachable → `503` + the standard error envelope
+- gateway reachable but not ready → `503` + a valid readiness document
+
+Consumers must therefore decide on **payload shape**, not on `response.ok`. See
+§13.4.
+
+### 13.3 API client
+
+- Every response is unwrapped from the `{ data }` envelope; anything else is an
+  `invalid-response` error.
+- Failures become `ApiError` with a closed `kind` (`unavailable`, `timeout`,
+  `http`, `invalid-response`, …), an operator-readable `userMessage`, and an
+  optional `requestId`. A raw thrown value never reaches the UI, so a SQL string
+  or request URL cannot leak into a page.
+- `null` vs `0` is preserved end to end: `null` means the read failed and renders
+  as "Unavailable"; `0` means none and renders as `0`.
+- Types in `lib/api/types.ts` are hand-written from `docs/API_REFERENCE.md`, not
+  generated, because `z.toJSONSchema()` describes shapes but not the
+  `null`-vs-`0` semantics that matter most here.
+
+### 13.4 Readiness presentation
+
+`components/feedback/gateway-status.tsx` is a client component that takes the
+server-rendered readiness value as `initial` and refreshes on demand — there is
+no polling, so an idle dashboard is not a request generator.
+
+`lib/validation/readiness.ts` validates the body against the real contract in
+`src/api/routes/ops.routes.ts` (`readyHandler`): `status`, both `checks` members,
+`timestamp` required; `migrationVersion` optional, because the handler
+spread-omits it exactly when migrations are unreadable. A correct
+`!response.ok` guard would be wrong here: it would turn a legitimate
+`not_ready` answer into "unreachable" and make that state dead code.
+
+### 13.5 Design system
+
+- Astryx is the direct component library and design system; it is consumed as
+  packages, never copied source.
+- Theme wiring is CLI-generated (`src/astryx-themes.js`) and must not be
+  hand-edited; `src/astryx-themes.d.ts` types it because `allowJs` is off.
+- Cascade-layer order is declared once in `src/app/globals.css` and must stay the
+  first import in `layout.tsx`:
+  `@layer reset, theme, base, astryx-base, astryx-theme, components, utilities;`
+- No local `color-scheme` rule: `@astryxdesign/core/reset.css` maps `data-theme`
+  to `color-scheme`, and unlayered CSS here would win and pin the page to light.
 
 **Explicit exclusion:** no shadcn/ui, no Radix UI fallback component library, and no parallel design system. Follow the current Astryx official installation/API documentation. Do not guess package names or CLI commands.
+
+### 13.6 Remaining rules
+
+- Feature-oriented page modules.
+- Server-side authorization for protected dashboard routes and APIs — **the
+  gateway enforces it** for every `/api/v1` route (Phase 10.0, §9.2). The
+  dashboard's `(dashboard)` layout asks the gateway whether the session is live
+  and redirects to `/login?next=…` when it is not; it is not itself the guard, so
+  a dashboard bug cannot open the API.
+- Loading, empty, error, and confirmation states.
+- No business rules implemented only in the browser.
+- `/dashboard` is the only functional page today; every other module route is a
+  placeholder that says so. See `docs/DASHBOARD.md` Part II.
 
 ## 14. Security boundaries
 
 - Loopback binding by default; a non-loopback `HOST` is refused at config load.
-- The MCP surface requires a per-agent bearer credential (Phase 6). The management API is **still unauthenticated**: its boundary is local-only access (socket address, `HOST`, `Host`, `Origin`) plus a JSON content-type requirement — not identity. Since Phase 4 a local caller can also cause a process spawn and an outbound connection, and since Phase 6 can mint a credential, so the blast radius is larger than in Phase 3. Phase 8 added `/settings` and `/diagnostics`; both report effective configuration and deliberately never a secret, an environment value, a token, or a private path. Do not expose the API via tunnel, proxy, or non-loopback bind before the dashboard has an operator identity (Phase 9–10).
+- The MCP surface requires a per-agent bearer credential (Phase 6). The management API requires an operator session (Phase 10.0), on top of the local-only boundary (socket address, `HOST`, `Host`, `Origin`) and a JSON content-type requirement. Before Phase 10.0 the management API had no identity: a local caller could spawn a process (Phase 4) and mint a credential (Phase 6). That blast radius is now behind a password login, which narrows *who* can reach it but does not make remote exposure safe — there is no TLS, no RBAC beyond a single owner, and no per-IP rate limit. Phase 8 added `/settings` and `/diagnostics`; both report effective configuration and deliberately never a secret, an environment value, a token, or a private path. Phase 9 added a local dashboard; it must not be exposed via tunnel, proxy, or non-loopback bind.
 - MCP authorization is default-deny, evaluated per request, with `tools/list` filtered and `tools/call` re-checked before resolution. A denial is byte-identical to an unknown tool.
 - Outbound Streamable HTTP destinations pass a documented policy: `http`/`https` only, no embedded credentials, DNS-resolved address classification, per-request re-check, same-origin redirects. `ALLOW_PRIVATE_NETWORK` opens loopback/private/CGNAT for local fixtures and never metadata or link-local.
 - Registration, enable, and process start never connect; a connection requires an explicit `connect`, and a restart rewrites persisted live state to `disconnected` without reconnecting.

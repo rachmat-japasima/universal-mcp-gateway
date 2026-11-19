@@ -9,6 +9,8 @@ import { loadConfig } from '../src/config/config.js';
 import { createGateway, type Gateway } from '../src/core/gateway.js';
 import { openStore, type Database } from '../src/infrastructure/database/index.js';
 import { createLogger } from '../src/monitoring/logger.js';
+import { testKeys } from './fixtures/auth.js';
+import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
 /**
  * Lifecycle endpoint contracts.
@@ -29,11 +31,16 @@ const JSON_HEADERS = { ...HOST, 'content-type': 'application/json' };
 let directory: string;
 let store: Database;
 let gateway: Gateway;
+/** Operator session: every `/api/v1` route requires one (Phase 10.0). */
+let session: TestOperatorSession;
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'gw-runtime-'));
   store = openStore({ path: join(directory, 'gateway.db') });
-  gateway = createGateway({ config, logger, store });
+  // Credential keys are required so the operator session minted below can be
+  // verified: an empty key set makes every operator cookie fail closed.
+  gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
+  session = createTestOperator(store, testKeys());
 });
 
 afterEach(async () => {
@@ -51,7 +58,7 @@ interface Call {
 async function call({ method, path, body }: Call): Promise<Response> {
   return gateway.app.request(`/api/v1${path}`, {
     method,
-    headers: body === undefined ? HOST : JSON_HEADERS,
+    headers: body === undefined ? { ...HOST, ...session.headers } : { ...JSON_HEADERS, ...session.headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
@@ -218,7 +225,7 @@ describe('registry integration', () => {
     });
 
     await gateway.close();
-    gateway = createGateway({ config, logger, store });
+    gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
 
     expect(store.backendRuntime.findByBackendId(id)).toMatchObject({
       status: 'disconnected',

@@ -298,7 +298,7 @@ place where authorization is enforced.
 
 ## 7.2 Agent, credential, and policy endpoints (Phase 6)
 
-All of these are on the unauthenticated, loopback-only management API.
+All of these are on the loopback-only management API, which requires an operator session (Phase 10.0) and an `X-CSRF-Token` header on every non-safe method.
 
 ### Agents
 | Method | Path | Behavior |
@@ -341,9 +341,10 @@ registry (or be `*`); a `tool` target must be a well-formed public name and is
 
 ## 7.3 Session management endpoints (Phase 7)
 
-Read-and-terminate surface over the persistent session binding. Same loopback-only,
-unauthenticated operator boundary as everything else in §3 — and this one can end a
-client's session, so it inherits §9's exposure rule in full.
+Read-and-terminate surface over the persistent session binding. Same loopback-only
+operator boundary as everything else in §3 — an operator session plus CSRF on the
+write — and this one can end a client's session, so it inherits §9's exposure rule
+in full.
 
 | Method | Path | Behavior |
 | --- | --- | --- |
@@ -571,6 +572,6 @@ Phases 5–6 add:
 - Credential tokens are returned exactly once and stored only as an HMAC-SHA-256 digest with a key id.
 - `CREDENTIAL_HASH_SECRET` is read outside `Config`, so no API response or log line has a field that could carry it. Production refuses to start without it.
 
-**Not implemented, and the API must not be described as production-secure:** management-API authentication (there is still no operator identity), per-caller rate limiting, and CSRF tokens. Any caller that can reach loopback — any local process or user — can call this API, including minting an agent credential. See `docs/SECURITY.md`.
+**Implemented in Phase 10.0:** management-API operator authentication (session cookie + CSRF token). **Still not implemented, and the API must not be described as production-secure:** TLS, per-IP rate limiting, per-operator RBAC (one `owner` role), and any form of non-loopback exposure. Any local user who can reach loopback *and* holds the operator password can call this API, including minting an agent credential. See `docs/SECURITY.md`.
 
-Deferred: dashboard authentication and operator sessions (Phase 9–10), owner confirmation flows for destructive or exposure-changing operations.
+Deferred: multiple operators and role management, owner confirmation flows for destructive or exposure-changing operations, password-change and session-listing UIs.

@@ -7,3 +7,7 @@ graphify-out/
 .claude/
 .codex/
 .opencode/
+# Next.js build output and incremental TS state (dashboard).
+.next/
+*.tsbuildinfo
+next-env.d.ts

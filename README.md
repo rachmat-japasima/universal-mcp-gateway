@@ -26,8 +26,13 @@ Next.js, React, TypeScript, and **Astryx directly** as the UI component library/
 
 ## Current status
 
-Phases 1–8 are complete.
-- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`, 486 tests).
+Phases 1–8 are complete. Phase 9 (dashboard foundation) is **complete in its
+adjusted scope**: the foundation is implemented and verified. Phase 10.0
+(dashboard operator identity and authentication) is **implemented** — the gateway
+now requires an operator session on every `/api/v1` route and the dashboard has a
+real login. The remaining Phase 10 modules are not built.
+- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`,
+  528 gateway tests; `pnpm test:dashboard`, 38 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
 - `tools/list` serves the live catalog, filtered per agent; no backend is
@@ -69,6 +74,51 @@ Phases 1–8 are complete.
   → 486 total.
 - `/health` reports `backendCount: 0`; production backend registry is empty.
 
+**Phase 10.0 — dashboard operator identity and authentication.** ADR-045; the
+gateway now requires an operator session on every `/api/v1` route, and the
+dashboard has a real login.
+
+- One local operator in `admin_users` (migration `0006`, additive). scrypt hashes
+  from `node:crypto` with the parameters encoded in the stored string.
+- Opaque server-side sessions in `operator_sessions` — only an HMAC digest is
+  stored — with idle (30 min) and absolute (12 h) lifetimes derived on read,
+  rotation at login, immediate revocation, and lockout after five failures.
+- Default-deny boundary in the gateway (`operatorAuth`) with a closed exemption
+  list, plus `X-CSRF-Token` on every non-safe method. `/health` and `/ready` stay
+  unauthenticated; `/mcp` is untouched and still uses per-agent bearer tokens.
+- Dashboard `/login`, `/api/login`, `/api/logout`, a session probe, and an account
+  menu. The dashboard never verifies a password and never mints a session.
+- 42 new gateway tests (28 auth boundary + 14 identity), 13 new dashboard tests
+  → 528 gateway / 38 dashboard.
+- **Not built:** multiple operators, RBAC beyond `owner`, password-change and
+  session-listing UIs, TLS, per-IP login rate limits, dashboard CSP. Loopback
+  only; see `docs/SECURITY.md` §8.2.
+
+**Phase 9 — Astryx dashboard foundation.** A Next.js 16 / React 19 dashboard
+lives in `apps/dashboard` (pnpm workspace) and uses Astryx directly as its design
+system. The gateway did **not** move: it is still the root package, so there is no
+`apps/gateway/package.json` and `dev:gateway` aliases the root `dev` script.
+
+- `/dashboard` reads real data from `GET /api/v1/overview`. Every other module
+  route (`/dashboard/backends`, `/tools`, `/agents`, `/policies`, `/sessions`,
+  `/activity`, `/monitoring`, `/audit`, `/settings`) exists as an honest
+  placeholder — no sample data, no fake counters. Those pages are Phase 10.
+- The gateway binds `127.0.0.1` and grants no CORS, so the browser never calls it.
+  Server components use `GATEWAY_ORIGIN`; client refreshes go through the
+  same-origin allowlisted proxy `/api/proxy/[...path]`.
+- The header probe distinguishes *unreachable* (proxy `503` + error envelope)
+  from *not ready* (gateway `503` + a valid readiness document) by payload shape,
+  because both arrive as `503`.
+- Astryx only: no shadcn/ui, no Radix UI.
+- **Operator login is Phase 10.0 (implemented).** `pnpm operator:create` creates
+  the single local operator; `/login` signs in; the gateway — not the dashboard —
+  verifies the password and enforces the session on every `/api/v1` request. See
+  "Operator sign-in" below and `docs/SECURITY.md` §4.3.
+- **Not verified:** real-browser click-path behaviour (no browser automation was
+  installed). Component behaviour is covered by jsdom tests; layout by SSR
+  inspection and the production build. This applies to the login form too.
+  See `docs/DASHBOARD.md` Part III.
+
 **Nothing connects by itself.** Registration, validation, and enable/disable are
 configuration operations: no process is spawned and no socket is dialled. A
 connection happens only on an explicit `POST /backends/:id/connect`, and a
@@ -104,10 +154,12 @@ same `404 Session not found`. The 2026 era is per-request by protocol design and
 has no session to bind. A sessionless one-shot `tools/list` still works exactly as
 before.
 
-**The management API is still unauthenticated**, loopback-only, and — since
-Phase 6 — able to mint a credential. Any local process can therefore grant
-itself MCP access. Treat it as a local operator CLI, not a service. Do not expose
-this beyond loopback. See `docs/SECURITY.md` §3.1, §4.1, §5.
+**The management API requires an operator session** (Phase 10.0), is
+loopback-only, and — since Phase 6 — can mint a credential. It is no longer
+reachable by an anonymous local process, but a local user who holds the operator
+password can still grant themselves MCP access. Treat it as a local operator CLI,
+not a service. Do not expose this beyond loopback. See `docs/SECURITY.md` §3.1,
+§4.1, §4.3, §5.
 
 **Set `CREDENTIAL_HASH_SECRET` before connecting any agent.** In production a
 missing or too-short secret refuses startup; in development the gateway starts
@@ -150,13 +202,77 @@ is the only one with no default, and it is deliberately not part of `Config`.
 
 ## Development commands
 
+Gateway (the root package):
 ```bash
 pnpm install
-pnpm dev
+pnpm dev            # tsx watch src/index.ts on 127.0.0.1:8787
 pnpm typecheck
 pnpm build
 pnpm test
 ```
+
+Dashboard (`apps/dashboard`, port 3000):
+```bash
+pnpm dev:dashboard       # next dev --port 3000
+pnpm typecheck:dashboard
+pnpm test:dashboard      # 38 jsdom component/validator tests
+pnpm build:dashboard
+```
+
+Explicit aliases and the combined gate (identical behaviour to the commands
+above, kept so a script name states its target):
+```bash
+pnpm dev:gateway         # same as pnpm dev
+pnpm build:gateway       # same as pnpm build
+pnpm verify              # both typechecks + both test suites
+```
+
+Run the gateway and the dashboard in two terminals. The dashboard shows
+"Gateway unreachable" until the gateway is up; that is a real state, not an
+error to work around. The dashboard talks to `GATEWAY_ORIGIN` (default
+`http://127.0.0.1:8787`), which is server-only — never a `NEXT_PUBLIC_*`
+variable, because the browser must not learn the gateway address.
+
+## Operator sign-in (Phase 10.0)
+
+The management API requires an operator session. Create the operator **once, on
+the gateway host**:
+
+```bash
+pnpm operator:create
+```
+
+- The password is read from a TTY/stdin prompt, **never from argv** — an
+  argument would land in shell history and process listings.
+- The command refuses to run when an operator already exists. There is no default
+  or generated password.
+- An unconfigured instance answers login with *"No operator is configured. Run
+  `pnpm operator:create` on the gateway host."* and nothing more.
+
+Then open `http://localhost:3000`, which redirects to `/login`. Sign-in posts to
+the dashboard's own `/api/login` route, which forwards the credentials to the
+gateway over loopback; the gateway verifies the password, mints the session, and
+the dashboard re-issues the cookie on its own origin. **The dashboard never
+verifies a password** — it cannot, and that is the point.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `OPERATOR_SESSION_IDLE_TIMEOUT_MS` | `1800000` (30 min) | Session ends after this much inactivity |
+| `OPERATOR_SESSION_MAX_LIFETIME_MS` | `43200000` (12 h) | Absolute ceiling, regardless of use |
+| `OPERATOR_COOKIE_SECURE` | `false` | Set `true` only when serving over HTTPS. A `Secure` cookie on plain-HTTP loopback is silently dropped, so login would appear to do nothing |
+
+Lifetime rules, locking, and CSRF are described in `docs/SECURITY.md` §4.3.
+Calling the API directly (e.g. `curl`) needs the cookie and, for any write, the
+`X-CSRF-Token` from login — see `docs/API_REFERENCE.md` §3.1.1.
+
+**Loopback only.** The operator password and session cookie cross plaintext HTTP
+inside the host. There is no TLS, no RBAC beyond a single `owner`, and no per-IP
+login rate limit (per-account lockout: 5 failures → 15 minutes). Do not put this
+behind a tunnel, reverse proxy, or non-loopback bind.
+
+MCP agent authentication is unchanged and separate: `/mcp` still requires its own
+per-agent bearer credential, an operator cookie is refused there, and an agent
+bearer is refused on `/api/v1`.
 
 Health:
 ```bash
@@ -168,61 +284,78 @@ MCP endpoint:
 http://127.0.0.1:8787/mcp
 ```
 
-Management API (unauthenticated, loopback only):
+Management API (operator session required, loopback only):
 ```bash
+# Sign in first; keep the cookie and the CSRF token (Phase 10.0).
+COOKIE=$(curl -s -D - -o /dev/null http://127.0.0.1:8787/api/v1/auth/login \
+  -H 'content-type: application/json' -d '{"username":"owner","password":"…"}' \
+  | grep -i '^set-cookie:' | sed 's/.*umg_operator=\([^;]*\).*/umg_operator=\1/')
+CSRF=$(curl -s http://127.0.0.1:8787/api/v1/auth/session -H "cookie: $COOKIE" | jq -r .data.csrfToken)
+
 # Empty registry
-curl -s http://127.0.0.1:8787/api/v1/backends
+curl -s http://127.0.0.1:8787/api/v1/backends -H "cookie: $COOKIE"
 # {"data":[],"pagination":{"page":1,"limit":20,"total":0,"totalPages":0}}
 
 # Validate a proposed configuration (persists nothing, connects nothing)
 curl -s -X POST http://127.0.0.1:8787/api/v1/backends/validate \
+  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
   -H 'content-type: application/json' \
   -d '{"name":"fs","connection":{"type":"stdio","command":"node","args":["server.js"]}}'
 
 # Register a backend (configuration only — nothing is spawned or dialled)
 curl -s -X POST http://127.0.0.1:8787/api/v1/backends \
+  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
   -H 'content-type: application/json' \
   -d '{"name":"fs","connection":{"type":"stdio","command":"node","args":["server.js"],"env":{"KEY":"env:FS_KEY"}}}'
 
-# Inspect, filter, and page
-curl -s 'http://127.0.0.1:8787/api/v1/backends?transport=stdio&enabled=true&page=1&limit=20&sort=name'
+# Inspect, filter, and page (reads need the cookie, not the CSRF header)
+curl -s 'http://127.0.0.1:8787/api/v1/backends?transport=stdio&enabled=true&page=1&limit=20&sort=name' \
+  -H "cookie: $COOKIE"
 
 # Connect explicitly, then inspect runtime state (Phase 4)
-curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/connect
-curl -s http://127.0.0.1:8787/api/v1/backends/<id>/runtime
-curl -s http://127.0.0.1:8787/api/v1/backends/runtime
-curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/disconnect
+curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/connect -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF"
+curl -s http://127.0.0.1:8787/api/v1/backends/<id>/runtime -H "cookie: $COOKIE"
+curl -s http://127.0.0.1:8787/api/v1/backends/runtime -H "cookie: $COOKIE"
+curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/disconnect -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF"
 
-# Agents, credentials, policies (Phase 6)
+# Agents, credentials, policies (Phase 6). Writes carry the CSRF header.
 curl -s -X POST http://127.0.0.1:8787/api/v1/agents \
+  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
   -H 'content-type: application/json' -d '{"name":"coding-agent"}'
 # Token is returned ONCE here; it is never readable again.
 curl -s -X POST http://127.0.0.1:8787/api/v1/agents/<agentId>/credentials \
+  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
   -H 'content-type: application/json' -d '{"name":"laptop"}'
 curl -s -X POST http://127.0.0.1:8787/api/v1/policies \
+  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
   -H 'content-type: application/json' \
   -d '{"name":"read-only","rules":[{"resource":"tool","target":"<backendId>__get_status","effect":"allow"}]}'
 curl -s -X POST http://127.0.0.1:8787/api/v1/policies/<policyId>/assignments \
+  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
   -H 'content-type: application/json' -d '{"agentId":"<agentId>"}'
 # Read-only preview of what that agent may call, and why
-curl -s http://127.0.0.1:8787/api/v1/agents/<agentId>/access
+curl -s http://127.0.0.1:8787/api/v1/agents/<agentId>/access -H "cookie: $COOKIE"
 
 # Sessions (Phase 7). Internal ids only; a protocol session id is not accepted here.
-curl -s 'http://127.0.0.1:8787/api/v1/sessions?status=active&limit=20'
-curl -s http://127.0.0.1:8787/api/v1/sessions/<sessionId>
+curl -s 'http://127.0.0.1:8787/api/v1/sessions?status=active&limit=20' -H "cookie: $COOKIE"
+curl -s http://127.0.0.1:8787/api/v1/sessions/<sessionId> -H "cookie: $COOKIE"
 # Body is optional; the default reason is operator_terminated.
-curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/<sessionId>/terminate
+curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/<sessionId>/terminate -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF"
 # Expire idle/lapsed sessions now (row-retaining, safe to repeat)
-curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/cleanup
+curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/cleanup -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF"
 
 # Operations (Phase 8). Read-only.
-curl -s http://127.0.0.1:8787/api/v1/overview
-curl -s http://127.0.0.1:8787/api/v1/monitoring/backends
-curl -s http://127.0.0.1:8787/api/v1/settings
-curl -s http://127.0.0.1:8787/api/v1/diagnostics
+curl -s http://127.0.0.1:8787/api/v1/overview -H "cookie: $COOKIE"
+curl -s http://127.0.0.1:8787/api/v1/monitoring/backends -H "cookie: $COOKIE"
+curl -s http://127.0.0.1:8787/api/v1/settings -H "cookie: $COOKIE"
+curl -s http://127.0.0.1:8787/api/v1/diagnostics -H "cookie: $COOKIE"
 # History: filters are closed enums; unknown values are 400, not empty pages.
-curl -s 'http://127.0.0.1:8787/api/v1/activity?type=tools.call&order=desc&limit=50'
-curl -s 'http://127.0.0.1:8787/api/v1/audit?result=failure&actorType=agent&limit=50'
+curl -s 'http://127.0.0.1:8787/api/v1/activity?type=tools.call&order=desc&limit=50' -H "cookie: $COOKIE"
+curl -s 'http://127.0.0.1:8787/api/v1/audit?result=failure&actorType=agent&limit=50' -H "cookie: $COOKIE"
+
+# End the session (revokes the row, not just the cookie)
+curl -s -X POST http://127.0.0.1:8787/api/v1/auth/logout -H "cookie: $COOKIE"
+
 # Readiness (distinct from /health): 503 when storage or the ledger is unreadable.
 curl -i http://127.0.0.1:8787/ready
 
@@ -309,8 +442,8 @@ Phase 8 behaviour changes — is `docs/API_REFERENCE.md`.
 ## Documentation
 
 - `PRD.md` — full product requirements.
-- `ARCHITECTURE.md` — system architecture.
-- `DASHBOARD.md` — complete dashboard and Astryx requirements.
+- `ARCHITECTURE.md` — system architecture (dashboard in §13).
+- `DASHBOARD.md` — Part I: dashboard/Astryx product specification. Part II: what Phase 9 actually implemented.
 - `BACKEND_SPEC.md` — management API and backend domain.
 - `API_REFERENCE.md` — endpoint inventory, envelopes, filters, OpenAPI.
 - `SECURITY.md` — security requirements.
@@ -322,9 +455,13 @@ Phase 8 behaviour changes — is `docs/API_REFERENCE.md`.
 
 ## Next task
 
-Phase 9 — Astryx dashboard foundation, against the contract in
-`docs/API_REFERENCE.md` and the live OpenAPI document. Not started, and not to
-be added without approval: real backends, agent client config changes, OAuth,
-non-loopback exposure. Still deferred from Phase 7–8: per-backend `limited`
-queueing (`docs/ARCHITECTURE.md` §11.2), backup/restore APIs, and audit
-retention.
+Phase 10 — dashboard operator identity (10.0) then the feature pages, against the
+contract in `docs/API_REFERENCE.md` and the live OpenAPI document.
+
+**Start with 10.0:** investigate and document the operator identity model before
+choosing any mechanism, then implement authentication, sessions, and
+authorization for sensitive operations (ADR-044). Only then build the module
+pages. Not to be added without approval: real backends, agent client config
+changes, OAuth, non-loopback exposure. Still deferred from Phase 7–9:
+real-browser click-path verification, per-backend `limited` queueing
+(`docs/ARCHITECTURE.md` §11.2), backup/restore APIs, and audit retention.

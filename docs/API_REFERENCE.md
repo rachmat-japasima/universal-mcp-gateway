@@ -14,19 +14,28 @@ path that does not exist — or a live path that is undocumented — fails the b
 
 | Surface | Prefix | Authentication |
 | --- | --- | --- |
-| Management API | `/api/v1` | none — loopback only |
+| Management API | `/api/v1` | operator session cookie (Phase 10.0) |
+| Auth endpoints | `/api/v1/auth/login`, `/auth/logout` | exempt — they create and end the session |
 | Infrastructure probes | `/health`, `/ready` | none — loopback only |
 | MCP protocol | `/mcp` | per-request agent bearer token |
 
-The management API is **unauthenticated**. Its boundary is the loopback socket:
-`loopbackOnly` checks the socket's local address, the configured `HOST`, the
-`Host` header, and the `Origin` header on every request. Any local process can
-call it, including minting a credential. Do not expose it beyond `127.0.0.1`
-(`docs/SECURITY.md` §3.1).
+The management API requires an **operator session** on every route (Phase 10.0,
+`docs/SECURITY.md` §4.3). The session is an opaque cookie (`umg_operator`) set
+by `POST /api/v1/auth/login`; the raw token is never stored — only an HMAC digest —
+and it is checked on every request, so revocation is immediate. State-changing
+methods additionally require an `X-CSRF-Token` header carrying the token returned
+by login or by `GET /api/v1/auth/session`.
 
-`/mcp` is the only authenticated surface and is documented separately in
-`docs/BACKEND_SPEC.md` §7. No REST route invokes a tool; there is exactly one
-path from an agent to a backend.
+This is still **not a remote-access story**: the socket must be loopback
+(`loopbackOnly` checks the socket address, configured `HOST`, `Host`, and
+`Origin`), the cookie crosses plain HTTP, and there is TLS nowhere in the path.
+`/health` and `/ready` stay unauthenticated because a probe that needs a session
+stops probing, and they carry no sensitive data.
+
+`/mcp` remains a **separate boundary** with its own bearer credential. An operator
+cookie is not accepted there and an agent bearer is not accepted on `/api/v1`;
+`tests/operator-auth.test.ts` asserts both. No REST route invokes a tool; there is
+exactly one path from an agent to a backend.
 
 ## 2. Contract
 
@@ -64,8 +73,8 @@ driver message, or the received value.
 | Code | HTTP | Meaning |
 | --- | --- | --- |
 | `VALIDATION_ERROR` | 400 | Malformed path, query, or body |
-| `AUTHENTICATION_ERROR` | 401 | `/mcp` bearer missing or invalid |
-| `AUTHORIZATION_ERROR` | 403 | Policy refusal outside the MCP surface |
+| `AUTHENTICATION_ERROR` | 401 | `/mcp` bearer missing/invalid, or no live operator session on `/api/v1` |
+| `AUTHORIZATION_ERROR` | 403 | Operator CSRF token missing/wrong, or a policy refusal outside the MCP surface |
 | `RESOURCE_NOT_FOUND` | 404 | Unknown id, or a route that does not exist |
 | `RESOURCE_CONFLICT` | 409 | Name collision, stale `expectedVersion`, disabled backend |
 | `MCP_PROTOCOL_ERROR` | 400 | Malformed JSON-RPC |
@@ -129,9 +138,34 @@ Every route below is implemented and covered by `tests/openapi.test.ts`.
 | `GET` | `/ready` | Readiness. Checks that the database answers and the migration ledger is readable. `503` with `status: "not_ready"` when either fails. Optional backends are **not** consulted. Mounted outside `/api/v1`, and only when a store exists. |
 
 ```json
-{ "status": "ready", "checks": { "database": "ok", "migrations": "ok" }, "migrationVersion": "0005", "timestamp": "2026-11-19T10:00:00.000Z" }
+{ "status": "ready", "checks": { "database": "ok", "migrations": "ok" }, "migrationVersion": "0006", "timestamp": "2026-11-19T10:00:00.000Z" }
 ```
 
+### 3.1.1 Authentication (Phase 10.0)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/api/v1/auth/login` | Exempt from the session requirement. Body is exactly `{ username, password }` — extra fields are a `400`, so a client cannot pass a role. `200` sets the `umg_operator` cookie and returns `{ operator, session, csrfToken }`. Every refusal — unknown user, wrong password, disabled account, lockout — is the same `401 AUTHENTICATION_ERROR` with the same message. |
+| `POST` | `/api/v1/auth/logout` | Exempt, and idempotent: it works with an already-dead cookie and always answers `200`. Succeeds with the cookie alone (no CSRF header) because ending a session is not an escalation and a browser must be able to recover from a dead cookie. Clears the cookie with `Max-Age=0`. |
+| `GET` | `/api/v1/auth/session` | Session probe. Requires the cookie and returns `{ operator, session, csrfToken }`; `csrfToken` is derived from the session, so a second call returns the same value for the same session and a different value for another. This is what the dashboard calls to decide whether to render or redirect. |
+
+```json
+{
+  "data": {
+    "operator": { "id": "op_…", "username": "owner", "role": "owner", "enabled": true },
+    "session": { "id": "os_…", "expiresAt": "2026-11-19T22:00:00.000Z", "idleTimeoutMs": 1800000 },
+    "csrfToken": "…"
+  }
+}
+```
+
+Cookie attributes: `HttpOnly`, `SameSite=Strict`, `Path=/`; `Secure` only when
+`OPERATOR_COOKIE_SECURE` is enabled (default off, because a `Secure` cookie on
+plain-HTTP loopback is silently dropped and login then appears to do nothing).
+Session lifetime is 30 minutes idle and 12 hours absolute, both derived on read.
+
+No response ever contains a password hash, the session token, or an internal
+secret. `tests/operator-auth.test.ts` asserts the payload is free of all three.
 ### 3.2 System and operations
 
 | Method | Path | Notes |
@@ -354,11 +388,24 @@ answer.
 
 ## 6. Consuming the API from a dashboard
 
+- **Sign in first.** `POST /api/v1/auth/login` sets the cookie; keep it and send
+  it on every subsequent call. From a browser on a different origin, the request
+  must go through a same-origin server route, because the gateway is loopback-only
+  and grants no CORS (this is exactly what `apps/dashboard` does).
+- **Send `X-CSRF-Token` on every non-safe method.** It is returned by login and by
+  `GET /api/v1/auth/session` and is derived from the session, so it is safe to
+  keep in memory — but it must never be put in `localStorage`, and neither must
+  the session cookie (which is `HttpOnly` and cannot be read from script anyway).
+- **Treat `401` as "go to the login form" and `403` as "your CSRF token is
+  stale".** A `403` on a write with a live session means exactly that; refetch the
+  session probe and retry once.
 - Call `/overview` once per home-screen render; it is one snapshot, so widgets
   cannot show counts from different instants.
 - Branch on `null`, never on `0`, to distinguish "unavailable" from "none".
 - Read `/api/v1/openapi.json` at build time if you want generated types; the
-  document is checked against the routes, so it will not drift silently.
+  document is checked against the routes, so it will not drift silently. It
+  declares `operatorSession` as a global security scheme, with `/health` and
+  `/ready` marked `security: []`.
 - Every list is bounded (`limit ≤ 100`) and tie-broken, so paging is safe while
   rows are being written.
 - No endpoint returns a credential token except credential issue/rotate, and
