@@ -17,6 +17,7 @@ path that does not exist — or a live path that is undocumented — fails the b
 | Management API | `/api/v1` | operator session cookie (Phase 10.0) |
 | Auth endpoints | `/api/v1/auth/login`, `/auth/logout` | exempt — they create and end the session |
 | Infrastructure probes | `/health`, `/ready` | none — loopback only |
+| Metrics export | `/metrics` | operator session cookie — loopback only |
 | MCP protocol | `/mcp` | per-request agent bearer token |
 
 The management API requires an **operator session** on every route (Phase 10.0,
@@ -30,7 +31,12 @@ This is still **not a remote-access story**: the socket must be loopback
 (`loopbackOnly` checks the socket address, configured `HOST`, `Host`, and
 `Origin`), the cookie crosses plain HTTP, and there is TLS nowhere in the path.
 `/health` and `/ready` stay unauthenticated because a probe that needs a session
-stops probing, and they carry no sensitive data.
+stops probing, and they carry no sensitive data. `/metrics` is the opposite call:
+it is aggregate operational data, so it sits behind the same operator cookie and
+loopback check as `/api/v1` rather than on an unauthenticated port — and it is
+mounted only when an operator exists, so a fresh install answers `404` until
+`pnpm operator:create` and a restart. Its JSON twin, for the dashboard, is
+`GET /api/v1/monitoring/metrics` inside the versioned API (§4.4).
 
 `/mcp` remains a **separate boundary** with its own bearer credential. An operator
 cookie is not accepted there and an agent bearer is not accepted on `/api/v1`;
@@ -178,6 +184,7 @@ secret. `tests/operator-auth.test.ts` asserts the payload is free of all three.
 | `GET` | `/api/v1/monitoring/backends` | Backend counts, all runtime states, discovery reports, conflicts. |
 | `GET` | `/api/v1/monitoring/sessions` | Session distribution by effective status. |
 | `GET` | `/api/v1/monitoring/runtime` | Service version, Node version, platform, uptime. |
+| `GET` | `/api/v1/monitoring/metrics` | Metrics snapshot as JSON (§4.4). In-memory; resets on restart. |
 | `GET` | `/api/v1/diagnostics` | Safe facts for a bug report. Read-only. |
 | `GET` | `/api/v1/settings` | Effective, non-secret configuration. Read-only; write verbs answer `404`. |
 | `GET` | `/api/v1/openapi.json` | This contract, as OpenAPI 3.1. |
@@ -370,7 +377,7 @@ list. When session tracking is not wired it answers `available: false` and
     "limits": { "requestBodyLimitBytes": 1048576, "requestTimeoutMs": 30000, "toolDiscoveryTimeoutMs": 15000, "toolCallTimeoutMs": 60000 },
     "sessions": { "idleTimeoutMs": 1800000, "maxLifetimeMs": 43200000 },
     "backendConnections": { "reconnect": { "enabled": false, "initialDelayMs": 1000, "maxDelayMs": 30000, "maxAttempts": 5, "jitterRatio": 0.2 }, "allowPrivateNetwork": false },
-    "features": { "authentication": true, "sessions": true, "toolRouting": true, "backendLifecycle": true, "auditTrail": true, "settingsMutation": false, "metrics": false },
+    "features": { "authentication": true, "sessions": true, "toolRouting": true, "backendLifecycle": true, "auditTrail": true, "settingsMutation": false, "metrics": true },
     "readOnly": true
   }
 }
@@ -380,6 +387,54 @@ Read-only, and structurally so: the credential HMAC secret is not part of
 `Config` at all, so there is no field that could carry it. No token, header
 value, environment dump, or private path appears here. Write verbs answer `404`
 because no mutation path exists.
+
+### 4.4 `/api/v1/monitoring/metrics` and `/metrics`
+
+```json
+{
+  "data": {
+    "generatedAt": "2026-11-21T14:20:00.000Z",
+    "series": 14,
+    "dropped": 0,
+    "metrics": [
+      {
+        "name": "umg_tool_calls_total",
+        "type": "counter",
+        "help": "Tool calls by outcome. Tool names are never a label; per-tool history is the activity table.",
+        "samples": [{ "labels": { "outcome": "success" }, "value": 42 }]
+      },
+      {
+        "name": "umg_tool_call_duration_ms",
+        "type": "histogram",
+        "help": "End-to-end tool call duration in milliseconds.",
+        "samples": [
+          { "labels": {}, "count": 42, "sum": 1024, "buckets": [{ "le": 100, "count": 39 }] }
+        ]
+      }
+    ],
+    "recentErrors": [{ "code": "INTERNAL_ERROR", "component": "api", "at": "2026-11-21T14:19:55.000Z", "requestId": "7c1f…" }]
+  }
+}
+```
+
+Every metric is `umg_`-prefixed. Labels are closed enums — outcome, method,
+transport, error code — never tool names, agent ids, or anything a caller chose,
+so the export cannot become a leak by construction. Counters and gauges carry
+`value`; histograms carry `count`, `sum`, and cumulative `buckets`. `dropped`
+counts samples rejected for an invalid name or label value, not errors in your
+traffic.
+
+The registry is **in memory** — it resets on restart, so these are rates and
+ratios, not history; the durable trail is `/api/v1/activity` and `/api/v1/audit`.
+`recentErrors` is a bounded ring (20 entries) of codes, components, timestamps,
+and request ids — never messages — and it records only internal-category and
+unhandled errors; client errors (a bad `limit`, a missing tool) are business as
+usual, not incidents.
+
+Two exports, one registry: this JSON route for the dashboard, and root `GET
+/metrics` (Prometheus text 0.0.4) for a scraper, behind the same operator cookie
+and loopback check. A scrape renders before counting itself, so one scrape's
+own request appears in the next one.
 
 ## 5. The `backends/:id/tools` change
 

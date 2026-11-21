@@ -154,7 +154,7 @@ const CAPABILITIES: Array<{ key: keyof Settings['features']; label: string; note
   {
     key: 'metrics',
     label: 'Metrics',
-    note: 'No time-series metrics are collected, which is why Monitoring shows snapshots only.',
+    note: 'In-memory counters and histograms, exported at /metrics. They reset on restart, so they are current facts, not history.',
   },
 ];
 

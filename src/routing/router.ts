@@ -8,6 +8,8 @@ import type { Backend } from '../domain/backend.js';
 import type { CatalogTool } from '../domain/tool.js';
 import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
+import { metrics } from '../monitoring/metrics.js';
+import { correlationContext, enrichCorrelation } from '../monitoring/context.js';
 import { AppError, describeErrorForLog } from '../shared/errors.js';
 import type { BackendLifecycleManager } from '../adapters/lifecycle.js';
 import { normalizeMcpError } from '../adapters/mcp-client.js';
@@ -112,6 +114,10 @@ export class ToolRouter {
           ...(context.credentialId === undefined ? {} : { credentialId: context.credentialId }),
         });
 
+        // The aggregate twin of the denial the audit row above records.
+        metrics.increment('umg_tool_calls_total', { outcome: 'denied' });
+        metrics.increment('umg_authz_denials_total', { surface: 'tool' });
+
         // Same code and message as an unknown name. The reason stays internal.
         throw new AppError('TOOL_NOT_FOUND', `Unknown tool "${publicName}".`, {
           details: { publicName },
@@ -120,6 +126,10 @@ export class ToolRouter {
     }
 
     const tool = this.resolve(publicName);
+
+    // Enriches the request's correlation context: the resolved tool and its
+    // backend are now known, so later log lines can name them.
+    enrichCorrelation({ backendId: tool.backendId, toolId: tool.publicName });
 
     const backend = this.assertReachable(tool, context);
     const arguments_ = this.validateArguments(tool, args, context);
@@ -139,7 +149,7 @@ export class ToolRouter {
     if (context.signal?.aborted === true) throw cancelled(publicName, context);
 
     this.logger.info(
-      { backendId: tool.backendId, tool: publicName, requestId: context.requestId },
+      { backendId: tool.backendId, tool: publicName, requestId: context.requestId, ...this.correlationFields() },
       'Tool invocation started',
     );
 
@@ -170,6 +180,7 @@ export class ToolRouter {
         backendId: tool.backendId,
         tool: publicName,
         requestId: context.requestId,
+        ...this.correlationFields(),
         outcome: result.isError === true ? 'tool-error' : 'success',
         durationMs,
       },
@@ -289,7 +300,13 @@ export class ToolRouter {
 
   private rejectStale(tool: CatalogTool, context: RoutingContext, reason: string): void {
     this.logger.warn(
-      { backendId: tool.backendId, tool: tool.publicName, requestId: context.requestId, reason },
+      {
+        backendId: tool.backendId,
+        tool: tool.publicName,
+        requestId: context.requestId,
+        ...this.correlationFields(),
+        reason,
+      },
       'Stale tool mapping rejected',
     );
     this.record('tools.call', 'failure', {
@@ -323,6 +340,7 @@ export class ToolRouter {
         backendId: tool.backendId,
         tool: tool.publicName,
         requestId: context.requestId,
+        ...this.correlationFields(),
         code: normalized.code,
         durationMs: Date.now() - startedAt,
       },
@@ -337,7 +355,18 @@ export class ToolRouter {
     outcome: 'success' | 'failure',
     fields: { tool: CatalogTool; requestId?: string; errorCode?: string; durationMs?: number },
   ): void {
+    // The aggregate twin of the row written below: the same call, counted
+    // without the tool name. Names and identities stay in the activity trail,
+    // where the request id can correlate them.
+    metrics.increment('umg_tool_calls_total', { outcome });
+    if (fields.errorCode !== undefined) metrics.increment('umg_tool_failures_total', { code: fields.errorCode });
+    if (fields.durationMs !== undefined) metrics.observe('umg_tool_call_duration_ms', {}, fields.durationMs);
+
     try {
+      // The HTTP-level correlation id of the exchange this call arrived on.
+      // Absent when `record()` runs outside a request (nothing fabricates one).
+      const correlationId = correlationContext()?.correlationId;
+
       this.store.activity.append({
         id: randomUUID(),
         type,
@@ -346,12 +375,19 @@ export class ToolRouter {
         toolName: fields.tool.publicName,
         createdAt: this.now(),
         ...(fields.requestId === undefined ? {} : { requestId: fields.requestId }),
+        ...(correlationId === undefined ? {} : { correlationId }),
         ...(fields.errorCode === undefined ? {} : { errorCode: fields.errorCode }),
         ...(fields.durationMs === undefined ? {} : { durationMs: fields.durationMs }),
       });
     } catch (error) {
       this.logger.warn({ error: describeErrorForLog(error) }, 'Activity event could not be recorded');
     }
+  }
+
+  /** Correlation fields for this exchange's log lines; empty outside a request. */
+  private correlationFields(): { correlationId?: string } {
+    const context = correlationContext();
+    return context === undefined ? {} : { correlationId: context.correlationId };
   }
 }
 

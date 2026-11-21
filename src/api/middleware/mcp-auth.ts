@@ -4,6 +4,7 @@ import type { Context, MiddlewareHandler } from 'hono';
 import type { AuthenticatedIdentity, AuthService } from '../../auth/auth-service.js';
 import { isAuthenticated } from '../../auth/auth-service.js';
 import type { Logger } from '../../monitoring/logger.js';
+import { enrichCorrelation } from '../../monitoring/context.js';
 import { getRequestId } from '../http.js';
 
 /**
@@ -64,6 +65,11 @@ export function mcpAuthenticate(options: McpAuthOptions): MiddlewareHandler {
     }
 
     c.set('mcpIdentity', result);
+
+    // Enriches the request's correlation context: downstream log lines and
+    // audit writes can name the acting agent without another parameter.
+    enrichCorrelation({ agentId: result.agent.id, credentialId: result.credential.id });
+
     await next();
   };
 }

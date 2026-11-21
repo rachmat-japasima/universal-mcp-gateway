@@ -1633,3 +1633,73 @@ longer overview-specific.
 - [x] 427 dashboard tests (up from 421) across 41 files; both typechecks; the
       production build; gateway build clean.
 - [ ] A real browser pass over all 23 routes — **not verified** here.
+
+## 51. Phase 11 monitoring telemetry
+
+The monitoring page gains its fifth card, and the settings page stops claiming
+metrics do not exist. Both read what the gateway actually keeps.
+
+```text
+/dashboard/monitoring   → five cards; the new one is Telemetry
+(unchanged routes — no new route, no proxy entry)
+```
+
+### Telemetry is a read of the registry, not a dashboard of it
+
+`getMonitoringMetrics()` reads `GET /api/v1/monitoring/metrics` — the eighth
+concurrent `allSettled` read on the page. The card renders headline counters by
+**exact metric name and label set** (`umg_tool_calls_total{outcome="success"}`
+and friends): no summing over labels, no rates, no percentages, no chart,
+because the registry keeps counts since process start and nothing more. A
+family with no samples reads 0 — true for a counter nobody has incremented —
+while a failed read renders "Telemetry could not be read". Recent internal
+errors render as `code · component` pairs; request ids stay out of the card
+because a correlation handle is not content.
+
+The card says what it is: counts since process start, reset on restart, full
+snapshot available at the API path. That sentence is the whole honesty
+mechanism — the operator cannot mistake a counter for a rate or a reset
+registry for history.
+
+### Why the read proxy still forwards only `/ready`
+
+The telemetry card is a server-component read like every other card on the
+page, performed from the Node process, so the browser never fetches
+`/api/v1/monitoring/metrics` and the allowlist gains no entry. The proxy's
+rule — an entry only with a client that actually fetches it — is unchanged and
+still holds.
+
+### Settings stops denying the registry
+
+`features.metrics` is now `true`, and the capability note says what that buys:
+in-memory counters and histograms, exported at `/metrics`, reset on restart —
+current facts, not history. The old note ("no time-series metrics are
+collected") stopped being true the moment the registry landed.
+
+## 52. Phase 11 files
+
+| File | Purpose |
+| --- | --- |
+| `src/features/monitoring/telemetry-card.tsx` | The fifth card: counters by exact metric and label; recent errors; explicit reset caveat |
+| `src/app/(dashboard)/dashboard/monitoring/page.tsx` | Eighth read added; stale `features.metrics: false` comments corrected |
+| `src/features/monitoring/monitoring-content.tsx` | `telemetry` prop; five questions, not four |
+| `src/lib/api/types.ts` | `MonitoringMetrics` — snapshot, family, recent-error shapes |
+| `src/lib/api/endpoints.ts` | `getMonitoringMetrics` |
+| `src/features/settings/settings-content.tsx` | Metrics capability note corrected |
+| `tests/monitoring-page.test.tsx` | Exact-label reads, absent-series zero, per-card degradation, recent-error rendering (13 tests, was 9) |
+| `tests/settings-page.test.tsx` | `features.metrics: true` fixture; the reset caveat (7 tests, was 6) |
+
+## 53. Phase 11 acceptance checklist
+
+- [x] The dashboard consumes only real telemetry — every rendered number is a
+      registry sample read by exact name and label.
+- [x] A failed metrics read degrades its own card and renders no zero;
+      absent series read 0 with the reason stated.
+- [x] No rate, percentage, percentile, CPU, or memory figure anywhere; the
+      forbidden-token test still passes.
+- [x] No new route, no proxy entry: the card is a server-component read.
+- [x] Settings reports `features.metrics: true` with an honest caveat.
+- [x] 432 dashboard tests (up from 427) across 41 files; typecheck; the
+      production build clean.
+- [ ] A real browser view of the telemetry card against a live gateway —
+      **not verified** here.

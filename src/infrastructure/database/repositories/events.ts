@@ -29,6 +29,7 @@ interface ActivityRow {
   id: string;
   type: string;
   request_id: string | null;
+  correlation_id: string | null;
   agent_id: string | null;
   backend_id: string | null;
   tool_name: string | null;
@@ -45,6 +46,7 @@ function toActivity(row: ActivityRow): ActivityEvent {
         id: row.id,
         type: row.type,
         ...(row.request_id === null ? {} : { requestId: row.request_id }),
+        ...(row.correlation_id === null ? {} : { correlationId: row.correlation_id }),
         ...(row.agent_id === null ? {} : { agentId: row.agent_id }),
         ...(row.backend_id === null ? {} : { backendId: row.backend_id }),
         ...(row.tool_name === null ? {} : { toolName: row.tool_name }),
@@ -66,14 +68,15 @@ export class SqliteActivityRepository implements ActivityRepository {
     try {
       this.database
         .prepare(
-          `INSERT INTO activity_events (id, type, request_id, agent_id, backend_id, tool_name, outcome,
+          `INSERT INTO activity_events (id, type, request_id, correlation_id, agent_id, backend_id, tool_name, outcome,
              error_code, duration_ms, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           parsed.id,
           parsed.type,
           parsed.requestId ?? null,
+          parsed.correlationId ?? null,
           parsed.agentId ?? null,
           parsed.backendId ?? null,
           parsed.toolName ?? null,

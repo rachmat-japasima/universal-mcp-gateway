@@ -189,6 +189,20 @@ No `sessions` change, no table rebuild, and no row dropped. The `operator_sessio
 
 `tests/database.test.ts` asserts the applied version reaches `0006` and that `operator_sessions` exists.
 
+Migration `0007_activity_correlation.sql` is the Phase 11 example — one
+statement, the smallest kind:
+
+- one `ALTER TABLE activity_events ADD COLUMN correlation_id TEXT` — nullable,
+  no default, no index. It is a log-correlation join key, not a filter
+  column: reads locate rows by `after`/`before` ranges or by request id, and
+  a correlation-id index would be write-amplification for a lookup nobody
+  performs.
+
+No other table changes; audit deliberately does not gain the column — the
+security trail records who did what under the gateway's own request id, not
+the caller's trace id. `tests/database.test.ts` asserts the applied version
+reaches `0007`.
+
 ## 7. Repository interfaces
 
 Declared in `src/domain/repositories.ts` in domain terms — no SQL, no driver types, no transaction handles. Implementations live in `src/infrastructure/database/repositories/`.

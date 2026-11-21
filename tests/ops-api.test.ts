@@ -9,6 +9,7 @@ import { createGateway, type Gateway } from '../src/core/gateway.js';
 import { BackendLifecycleManager } from '../src/adapters/lifecycle.js';
 import { openStore, type Database } from '../src/infrastructure/database/index.js';
 import { createLogger } from '../src/monitoring/logger.js';
+import { Metrics, createGatewayMetrics } from '../src/monitoring/metrics.js';
 import type { ErrorEnvelope } from '../src/shared/errors.js';
 import { createTestAgent, testKeys, type TestAgent } from './fixtures/auth.js';
 import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
@@ -120,7 +121,7 @@ describe('overview', () => {
     const { opsRoutes } = await import('../src/api/routes/ops.routes.js');
     const { Hono } = await import('hono');
     const app = new Hono();
-    app.route('/', opsRoutes({ config, store, lifecycle: gatewayLifecycle(), catalog: gateway.catalog, authentication: 'required' }));
+    app.route('/', opsRoutes({ config, store, lifecycle: gatewayLifecycle(), catalog: gateway.catalog, metrics: new Metrics(), authentication: 'required' }));
 
     store.close();
 
@@ -180,6 +181,7 @@ describe('monitoring', () => {
         store,
         lifecycle: gatewayLifecycle(),
         catalog: gateway.catalog,
+        metrics: new Metrics(),
         authentication: 'required',
       }),
     );
@@ -211,7 +213,7 @@ describe('readiness', () => {
 
     const body = await json<Record<string, unknown>>(response);
     expect(body).toMatchObject({ status: 'ready', checks: { database: 'ok', migrations: 'ok' } });
-    expect(body['migrationVersion']).toBe('0006');
+    expect(body['migrationVersion']).toBe('0007');
   });
 
   it('fails closed when the database is closed', async () => {
@@ -238,7 +240,7 @@ describe('diagnostics', () => {
 
     expect(data.service).toMatchObject({ name: 'universal-mcp-gateway', version: '1.0.0' });
     expect(data.runtime.node).toMatch(/^v\d+/);
-    expect(data.database).toMatchObject({ status: 'ok', migrationVersion: '0006' });
+    expect(data.database).toMatchObject({ status: 'ok', migrationVersion: '0007' });
     expect(data.configuration).toMatchObject({ status: 'ok', environment: 'test' });
     expect(data.backends).toEqual({ registered: 0 });
     expect(data.sessions).toEqual({ total: 0 });
@@ -256,6 +258,42 @@ describe('diagnostics', () => {
     expect(raw).not.toContain('test-only-credential-secret');
     expect(raw).not.toMatch(/CREDENTIAL_HASH_SECRET|DATABASE_PATH|process\.env/);
   });
+
+  it('stays honest with a closed store: storage unavailable, metrics still real', async () => {
+    // Mounted directly, because a closed store also closes the operator session
+    // lookup: through the full API this request would never reach the payload
+    // whose degraded shape is the point.
+    const { opsRoutes } = await import('../src/api/routes/ops.routes.js');
+    const { Hono } = await import('hono');
+    const app = new Hono();
+    const registry = createGatewayMetrics();
+    registry.recordError('BACKEND_TIMEOUT', 'lifecycle');
+    app.route(
+      '/',
+      opsRoutes({
+        config,
+        store,
+        lifecycle: gatewayLifecycle(),
+        catalog: gateway.catalog,
+        metrics: registry,
+        authentication: 'required',
+      }),
+    );
+
+    store.close();
+
+    const { data } = await json<{ data: Record<string, any> }>(await app.request('/diagnostics'));
+    expect(data.database).toMatchObject({ status: 'unavailable', migrationVersion: null });
+    expect(data.backends).toEqual({ registered: null });
+
+    // The metrics registry is in-memory, so its facts are real exactly when the
+    // store's are not — neither side fabricates an answer.
+    expect(data.metrics).toMatchObject({ status: 'ok' });
+    expect(data.metrics.series).toBeGreaterThanOrEqual(1);
+    expect(data.recentErrors).toEqual([
+      expect.objectContaining({ code: 'BACKEND_TIMEOUT', component: 'lifecycle' }),
+    ]);
+  });
 });
 
 describe('settings', () => {
@@ -271,7 +309,7 @@ describe('settings', () => {
       readOnly: true,
     });
     expect(data.sessions.idleTimeoutMs).toBe(1_800_000);
-    expect(data.features).toMatchObject({ settingsMutation: false, metrics: false });
+    expect(data.features).toMatchObject({ settingsMutation: false, metrics: true });
   });
 
   it('exposes no secret material', async () => {

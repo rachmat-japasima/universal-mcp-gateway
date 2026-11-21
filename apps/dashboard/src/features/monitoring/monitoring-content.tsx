@@ -12,6 +12,7 @@ import type {
   Monitoring,
   MonitoringBackends,
   MonitoringHealth,
+  MonitoringMetrics,
   MonitoringSessions,
   Readiness,
 } from '@/lib/api/types';
@@ -20,11 +21,12 @@ import { authenticationStatus, formatCount, formatDuration, formatTimestamp, run
 
 import { dependencyStatus, livenessStatus, readinessDetail, readinessStatus } from './monitoring-status';
 import type { Read } from './read';
+import { TelemetryCard } from './telemetry-card';
 
 /**
  * The monitoring body.
  *
- * Four different questions, in four separate cards, because they are not
+ * Five different questions, in five separate cards, because they are not
  * interchangeable:
  *
  *   * **liveness** — `/health`: is the process serving? It never consults
@@ -34,11 +36,14 @@ import type { Read } from './read';
  *   * **dependency health** — `/monitoring/health`: storage plus the backend
  *     registry, which readiness deliberately ignores.
  *   * **backend runtime** — `/monitoring/backends`: what each connection is doing.
+ *   * **telemetry** — `/monitoring/metrics`: the counters the gateway itself
+ *     keeps, read by exact metric and label — no sums, no rates, no chart.
  *
- * Every value is a recorded field. There is no uptime percentage, no request
- * rate, no latency percentile and no graph, because the gateway collects none of
- * those — `features.metrics` is `false` in `/settings`, and inventing a trend
- * line from a single snapshot would be the most convincing lie on the page.
+ * Every value is a recorded field. The one thing deliberately absent is a
+ * derived figure: no percentage, no request rate, no latency percentile and no
+ * graph, because the registry keeps counts and bucketed durations since process
+ * start — a rate or trend line invented from a single snapshot of it would be
+ * the most convincing lie on the page.
  *
  * Each read is a `Read<T>`, so one failing endpoint degrades its own card. A
  * section whose read failed renders an error and an explicit "not read" note
@@ -51,6 +56,7 @@ export function MonitoringContent({
   liveness,
   backends,
   sessions,
+  telemetry,
   diagnostics,
 }: {
   monitoring: Read<Monitoring>;
@@ -59,6 +65,7 @@ export function MonitoringContent({
   liveness: Read<GatewayHealth>;
   backends: Read<MonitoringBackends>;
   sessions: Read<MonitoringSessions>;
+  telemetry: Read<MonitoringMetrics>;
   /** Rendered by the page below, not by these cards. */
   diagnostics?: React.ReactNode;
 }): React.ReactElement {
@@ -234,6 +241,8 @@ export function MonitoringContent({
           )}
         </VStack>
       </Card>
+
+      <TelemetryCard telemetry={telemetry} />
 
       {diagnostics}
     </VStack>

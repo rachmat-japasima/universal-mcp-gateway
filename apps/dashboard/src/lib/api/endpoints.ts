@@ -8,6 +8,7 @@ import type {
   Monitoring,
   MonitoringBackends,
   MonitoringHealth,
+  MonitoringMetrics,
   MonitoringRuntime,
   MonitoringSessions,
   Overview,
@@ -39,6 +40,9 @@ export const getMonitoringRuntime = (): Promise<MonitoringRuntime> =>
 
 export const getMonitoringHealth = (): Promise<MonitoringHealth> =>
   request<MonitoringHealth>('/api/v1/monitoring/health');
+
+export const getMonitoringMetrics = (): Promise<MonitoringMetrics> =>
+  request<MonitoringMetrics>('/api/v1/monitoring/metrics');
 
 export const getDiagnostics = (): Promise<Diagnostics> => request<Diagnostics>('/api/v1/diagnostics');
 

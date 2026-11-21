@@ -32,8 +32,13 @@ let session: TestOperatorSession;
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'gw-openapi-'));
   store = openStore({ path: join(directory, 'gateway.db') });
-  gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
-  session = createTestOperator(store, testKeys());
+  const keys = testKeys();
+  // The operator row must exist before assembly: `/metrics` is mounted only
+  // when an operator is configured at assembly time (the same semantics as a
+  // restart after `pnpm operator:create`), and this document describes the
+  // configured surface. A session is still minted after; only the row is needed.
+  session = createTestOperator(store, keys);
+  gateway = createGateway({ config, logger, store, credentialKeys: keys });
 });
 
 afterEach(async () => {

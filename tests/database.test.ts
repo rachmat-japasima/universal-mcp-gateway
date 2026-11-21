@@ -86,7 +86,7 @@ describe('migrations', () => {
       checksum: string;
     }>;
 
-    expect(applied.map((row) => row.version)).toEqual(['0001', '0002', '0003', '0004', '0005', '0006']);
+    expect(applied.map((row) => row.version)).toEqual(['0001', '0002', '0003', '0004', '0005', '0006', '0007']);
     for (const row of applied) expect(row.checksum).toMatch(/^[a-f0-9]{64}$/);
 
     store.close();

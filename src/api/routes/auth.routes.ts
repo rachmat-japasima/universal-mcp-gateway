@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import type { Config } from '../../config/config.js';
 import type { OperatorService } from '../../registry/operator-service.js';
+import { metrics } from '../../monitoring/metrics.js';
 import { AppError } from '../../shared/errors.js';
 import { getRequestId, ok, readJson } from '../http.js';
 import { clearOperatorCookie, currentOperator, issueOperatorCookie, OPERATOR_COOKIE } from '../middleware/operator-auth.js';
@@ -63,12 +64,16 @@ export function authRoutes(deps: AuthRouteDependencies): Hono {
       // operator needs to be told to run the bootstrap command. It is safe to
       // say so only when the instance has *no* operator at all — anything more
       // specific would become an oracle.
+      metrics.increment('umg_auth_total', { surface: 'operator', outcome: 'failure' });
+
       const message = deps.operators.isConfigured()
         ? 'The username or password is incorrect.'
         : 'No operator is configured. Run `pnpm operator:create` on the gateway host.';
 
       throw new AppError('AUTHENTICATION_ERROR', message, { requestId });
     }
+
+    metrics.increment('umg_auth_total', { surface: 'operator', outcome: 'success' });
 
     issueOperatorCookie(c, deps.config, result.token, result.session.expiresAt);
 

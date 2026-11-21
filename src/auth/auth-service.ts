@@ -5,6 +5,8 @@ import type { AgentCredential } from '../domain/agent-credential.js';
 import { credentialStatus } from '../domain/agent-credential.js';
 import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
+import { metrics } from '../monitoring/metrics.js';
+import { correlationLogFields } from '../monitoring/context.js';
 import { describeErrorForLog } from '../shared/errors.js';
 import type { CredentialKeys } from './credential-key.js';
 import { digest, digestMatches, isWellFormedToken } from './credential-key.js';
@@ -141,6 +143,8 @@ export class AuthService {
     if (agent === undefined) return this.fail('agent_missing', context, credential);
     if (!agent.enabled) return this.fail('agent_disabled', context, credential);
 
+    // Every branch above already counted itself as a failure via `fail`.
+    metrics.increment('umg_auth_total', { surface: 'agent', outcome: 'success' });
     this.touch(agent, credential);
     return { agent, credential };
   }
@@ -197,15 +201,22 @@ export class AuthService {
     context: { requestId?: string },
     extra: { misconfigured?: boolean; credential?: AgentCredential; agentId?: string } = {},
   ): void {
+    // One counter for every reason: the *reason* is internal detail, and a
+    // per-reason label would tell a scraper which probing angle pays off.
+    metrics.increment('umg_auth_total', { surface: 'agent', outcome: 'failure' });
+
     if (extra.misconfigured === true) {
       this.logger.error(
-        { requestId: context.requestId, reason },
+        { requestId: context.requestId, ...correlationLogFields(), reason },
         'MCP authentication is unavailable: CREDENTIAL_HASH_SECRET is missing or invalid',
       );
       return;
     }
 
-    this.logger.warn({ requestId: context.requestId, reason }, 'MCP authentication failed');
+    this.logger.warn(
+      { requestId: context.requestId, ...correlationLogFields(), reason },
+      'MCP authentication failed',
+    );
 
     if (!this.take(this.failureBuckets, reason)) return;
 

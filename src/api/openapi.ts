@@ -387,6 +387,7 @@ function schemas(): Record<string, unknown> {
           enum: ['mcp.initialize', 'tools.list', 'tools.call', 'backend.connected', 'backend.disconnected', 'backend.error', 'request.failed'],
         },
         requestId: { type: 'string' },
+        correlationId: { type: 'string', description: 'Groups one client task across requests; validated, bounded.' },
         agentId: uuid('Agent id.'),
         backendId: uuid('Backend id.'),
         toolName: { type: 'string' },
@@ -417,6 +418,49 @@ function schemas(): Record<string, unknown> {
         createdAt: instant('Recorded at.'),
       },
       additionalProperties: false,
+    },
+    MetricsSnapshot: {
+      type: 'object',
+      required: ['generatedAt', 'series', 'dropped', 'metrics', 'recentErrors'],
+      properties: {
+        generatedAt: { type: 'string', format: 'date-time' },
+        series: { type: 'integer', minimum: 0 },
+        dropped: { type: 'integer', minimum: 0, description: 'Observations dropped by label validation or the series cap.' },
+        metrics: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['name', 'type', 'help', 'samples'],
+            properties: {
+              name: { type: 'string' },
+              type: { type: 'string', enum: ['counter', 'gauge', 'histogram'] },
+              help: { type: 'string' },
+              samples: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  description: 'A counter/gauge sample carries `value`; a histogram carries `count`, `sum` and `buckets`.',
+                },
+              },
+            },
+          },
+        },
+        recentErrors: {
+          type: 'array',
+          maxItems: 20,
+          description: 'Error classes only — code, component, time, request id. Never a message.',
+          items: {
+            type: 'object',
+            required: ['code', 'component', 'at'],
+            properties: {
+              code: { type: 'string' },
+              component: { type: 'string' },
+              at: { type: 'string', format: 'date-time' },
+              requestId: { type: 'string' },
+            },
+          },
+        },
+      },
     },
     Overview: {
       type: 'object',
@@ -692,6 +736,19 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
           responses: {
             200: { description: 'Ready' },
             503: { description: 'Not ready' },
+          },
+        },
+      },
+      '/metrics': {
+        get: {
+          tags: ['monitoring'],
+          summary: 'Prometheus text export',
+          description:
+            'Exposition in Prometheus text format 0.0.4 from the in-memory registry (counters reset on restart). Loopback-only and requires an operator session cookie, like the management API; mounted only when an operator is configured. Labels are closed sets (route classes, methods, outcomes, stable error codes) — never tool names, ids, or user input. The JSON twin is `/api/v1/monitoring/metrics`.',
+          security: [{ operatorSession: [] }],
+          responses: {
+            200: { description: 'Prometheus text format 0.0.4', content: { 'text/plain': { schema: { type: 'string' } } } },
+            401: { description: 'No operator session' },
           },
         },
       },
@@ -1201,6 +1258,16 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
           summary: 'Session state distribution',
           description: 'Reports `available: false` when session tracking is not wired, rather than a fabricated zero.',
           responses: { 200: okBody({ type: 'object' }) },
+        },
+      },
+      '/api/v1/monitoring/metrics': {
+        get: {
+          tags: ['monitoring'],
+          summary: 'Metrics registry snapshot (JSON)',
+          description:
+            'The same numbers as the Prometheus export at `/metrics`, as JSON for the dashboard: metric families with samples, the registry facts (`series`, `dropped`), and the bounded recent-error ring. In-memory only; counters reset on restart.',
+          security: [{ operatorSession: [] }],
+          responses: { 200: okBody(ref('MetricsSnapshot')), ...errorResponses(['401', 'No operator session']) },
         },
       },
       '/api/v1/monitoring/runtime': {

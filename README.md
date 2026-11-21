@@ -30,9 +30,12 @@ Phases 1–8 are complete. Phase 9 (dashboard foundation) is **complete in its
 adjusted scope**: the foundation is implemented and verified. Phase 10.0
 (dashboard operator identity and authentication) is **implemented** — the gateway
 now requires an operator session on every `/api/v1` route and the dashboard has a
-real login. The remaining Phase 10 modules are not built.
+real login. The remaining Phase 10 modules are not built. Phase 11 (monitoring
+and observability foundation) is **implemented**: structured correlated logging
+and a metrics registry, exported at `GET /metrics` (operator-authenticated) and
+`GET /api/v1/monitoring/metrics`.
 - Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`,
-  528 gateway tests; `pnpm test:dashboard`, 38 tests).
+  582 gateway tests; `pnpm test:dashboard`, 432 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
 - `tools/list` serves the live catalog, filtered per agent; no backend is
@@ -115,6 +118,38 @@ now manages the backend registry end to end.
   settings) remain honest placeholders; runtime-status filtering needs an API
   parameter that does not exist. No backend was registered or connected, and the
   running gateway was not restarted. See `docs/DASHBOARD.md` Part IV.
+
+**Phase 11 — monitoring and observability foundation.** ADR-046, ADR-047; the
+gateway now keeps structured, correlated logs and aggregate telemetry — with no
+new runtime dependency.
+
+- Correlation first on the outer app: `X-Request-Id` generated/echoed on every
+  response; `X-Correlation-Id` accepted only when it matches
+  `^[A-Za-z0-9._-]{1,64}$` — validated, never trusted. Both travel via
+  AsyncLocalStorage, so no global mutable context exists and concurrent requests
+  stay isolated. Migration `0007` persists the join on activity rows; audit
+  keeps the gateway's own request id.
+- Structured logging with serializer-level redaction (`authorization`, cookies,
+  credential/token/secret field families); tool arguments and upstream responses
+  are never logged.
+- A hand-rolled in-memory registry (`src/monitoring/metrics.ts`): counters,
+  gauges, bucketed histograms, `umg_`-prefixed, **closed-enum labels only** —
+  never a tool name, agent id, or caller input; violations drop into
+  `umg_metrics_dropped_total`. In memory only: resets on restart, current facts
+  not history.
+- Instrumented at every layer that owns an outcome: HTTP surfaces, MCP methods,
+  tool calls, lifecycle (connect/reconnect/disconnect), auth, credentials,
+  backends, sessions.
+- Two exports, one boundary: `GET /metrics` (Prometheus text 0.0.4) behind the
+  same operator cookie and loopback check as `/api/v1`, mounted only when an
+  operator exists; JSON twin `GET /api/v1/monitoring/metrics` for the dashboard.
+- The dashboard's monitoring page gains a fifth card (Telemetry) reading the
+  registry by exact metric and label — no rates, no percentages, no charts — and
+  `/settings` reports `features.metrics: true`.
+- 50 new gateway tests (correlation, redaction, registry + access control,
+  instrumentation) → 582; 5 new dashboard tests → 432.
+- **Not verified:** a real Prometheus scrape of a long-running instance, and a
+  browser view of the telemetry card against a live gateway.
 
 **Phase 9 — Astryx dashboard foundation.** A Next.js 16 / React 19 dashboard
 lives in `apps/dashboard` (pnpm workspace) and uses Astryx directly as its design
@@ -438,6 +473,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 | `GET` | `/api/v1/monitoring/backends` |
 | `GET` | `/api/v1/monitoring/sessions` |
 | `GET` | `/api/v1/monitoring/runtime` |
+| `GET` | `/api/v1/monitoring/metrics` |
 | `GET` | `/api/v1/diagnostics` |
 | `GET` | `/api/v1/settings` |
 | `GET` | `/api/v1/openapi.json` |
@@ -450,7 +486,9 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 | `GET` | `/api/v1/tools/:publicName` |
 
 Outside the version prefix: `GET /health` (liveness) and `GET /ready`
-(readiness), plus `ALL /mcp` for the authenticated MCP surface.
+(readiness), `GET /metrics` (Prometheus text export; operator session required,
+mounted only when an operator exists), plus `ALL /mcp` for the authenticated MCP
+surface.
 
 `GET /api/v1/openapi.json` is the authoritative contract (OpenAPI 3.1). It is
 generated from a literal table and checked against the live route table by

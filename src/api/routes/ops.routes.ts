@@ -5,6 +5,7 @@ import type { BackendLifecycleManager } from '../../adapters/lifecycle.js';
 import type { Config } from '../../config/config.js';
 import type { Database } from '../../infrastructure/database/index.js';
 import type { SessionService } from '../../registry/session-service.js';
+import type { Metrics } from '../../monitoring/metrics.js';
 import { SERVICE_INFO } from '../../shared/service.js';
 import type { ToolCatalog } from '../../routing/catalog.js';
 import { ok } from '../http.js';
@@ -70,7 +71,7 @@ function publicSettings(config: Config) {
       backendLifecycle: true,
       auditTrail: true,
       settingsMutation: false,
-      metrics: false,
+      metrics: true,
     },
   };
 }
@@ -81,6 +82,8 @@ export interface OpsRouteDependencies {
   lifecycle: BackendLifecycleManager;
   catalog: ToolCatalog;
   sessions?: SessionService;
+  /** The process metrics registry, shared with every instrumentation site. */
+  metrics: Metrics;
   /** `unavailable` when no hashing key is configured. */
   authentication: 'required' | 'unavailable';
   /** Injected so a test can assert a fixed uptime without sleeping. */
@@ -187,6 +190,15 @@ export function opsRoutes(deps: OpsRouteDependencies): Hono {
 
   routes.get('/monitoring/runtime', (c) => ok(c, runtimePayload()));
 
+  /**
+   * The dashboard's view of the metrics registry: the same numbers as the
+   * Prometheus export at `/metrics`, plus the registry facts (series count,
+   * dropped observations, recent errors) an operator diagnosing "why is this
+   * number wrong" needs. Read-only, in-memory, reset on restart — stated in
+   * the response shape rather than implied.
+   */
+  routes.get('/monitoring/metrics', (c) => ok(c, deps.metrics.snapshot()));
+
   /** Safe facts for a bug report. Read-only by construction: nothing here writes. */
   routes.get('/diagnostics', (c) => {
     const state = snapshot();
@@ -211,6 +223,19 @@ export function opsRoutes(deps: OpsRouteDependencies): Hono {
         requestBodyLimitBytes: deps.config.requestBodyLimitBytes,
         requestTimeoutMs: deps.config.requestTimeoutMs,
       },
+      /**
+       * The metrics registry, summarized: `status` is "ok" because in-memory
+       * counters cannot half-fail — a real failure is a dropped observation,
+       * which is what `dropped` is for. `series` and `dropped` are the two
+       * numbers that answer "is this export trustworthy".
+       */
+      metrics: { status: 'ok', series: deps.metrics.seriesCount(), dropped: deps.metrics.dropped() },
+      /**
+       * The most recent error *classes*, never messages: stable code,
+       * component, time and request id, so an operator can jump from
+       * diagnostics into the logs. Bounded at 20 entries.
+       */
+      recentErrors: deps.metrics.recentErrorList(),
     });
   });
 

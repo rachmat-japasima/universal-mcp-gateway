@@ -6,6 +6,8 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import type { Agent } from '../domain/agent.js';
 import type { AgentCredential } from '../domain/agent-credential.js';
 import type { Logger } from '../monitoring/logger.js';
+import { metrics } from '../monitoring/metrics.js';
+import { enrichCorrelation } from '../monitoring/context.js';
 import type { SessionService } from '../registry/session-service.js';
 
 /**
@@ -115,7 +117,17 @@ export class McpSessionManager {
     if (presented !== null) {
       // Ownership, liveness, credential state and agent state are all decided
       // here, before the transport is consulted. Both layers must agree.
-      if ('failure' in this.service.validate(presented, identity)) return sessionNotFound();
+      if ('failure' in this.service.validate(presented, identity)) {
+        // One uniform 404 outside; two precise counters inside, because the
+        // operator reading the metrics is trusted with the split.
+        metrics.increment('umg_mcp_session_denied_total');
+        metrics.increment('umg_authz_denials_total', { surface: 'session' });
+        return sessionNotFound();
+      }
+
+      // A routing handle, not a credential: enriched so log lines inside this
+      // exchange can name the session without another parameter.
+      enrichCorrelation({ sessionId: presented });
 
       return this.entryFor(presented)?.transport.handleRequest(request, requestOptions) ?? sessionNotFound();
     }
@@ -193,6 +205,15 @@ export class McpSessionManager {
           transport: holder.transport!,
           internalId: session.id,
         });
+        // Session creation is the one initialize outcome the gateway owns:
+        // the SDK answers the request itself, and this callback fires exactly
+        // when the exchange succeeded and a session exists. A refused or
+        // malformed initialize never gets here — it is a method failure the
+        // SDK reports, not a fact this process can observe.
+        metrics.increment('umg_mcp_method_total', { method: 'initialize', outcome: 'success' });
+        // Still inside the initialize request's async context, so the
+        // session's own log lines can name it.
+        enrichCorrelation({ sessionId: mcpSessionId });
       },
 
       /** A client `DELETE` is an explicit termination, not a mere disconnect. */

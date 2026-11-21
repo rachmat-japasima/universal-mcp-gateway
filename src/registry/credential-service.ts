@@ -5,6 +5,7 @@ import type { AgentCredential } from '../domain/agent-credential.js';
 import { credentialStatus } from '../domain/agent-credential.js';
 import type { AuditAction } from '../domain/audit-event.js';
 import type { Database } from '../infrastructure/database/index.js';
+import { metrics } from '../monitoring/metrics.js';
 import { AppError } from '../shared/errors.js';
 import type { CredentialKeys } from '../auth/credential-key.js';
 import { issueToken } from '../auth/credential-key.js';
@@ -162,6 +163,9 @@ export class CredentialService {
       );
 
       this.store.credentials.revoke(previous.id, now);
+      // Rotation revokes exactly one credential; counted with direct revocation
+      // because both leave the same operational fact: a dead token.
+      metrics.increment('umg_credentials_revoked_total');
 
       // Rotation is replace-semantics: nothing that authenticated with the old
       // token may keep a session alive.
@@ -185,6 +189,8 @@ export class CredentialService {
       const revoked = this.store.credentials.revoke(existing.id, this.now());
 
       if (existing.revokedAt === undefined) {
+        // Idempotent re-revocation is not an operational event.
+        metrics.increment('umg_credentials_revoked_total');
         this.sessions?.invalidateFor({ credentialId: revoked.id }, 'credential_revoked', 'invalidated');
         this.audit('credential.revoked', 'success', revoked, { credentialId: revoked.id });
       }

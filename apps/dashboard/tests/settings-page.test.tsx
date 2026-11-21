@@ -51,7 +51,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
       backendLifecycle: true,
       auditTrail: true,
       settingsMutation: false,
-      metrics: false,
+      metrics: true,
     },
     readOnly: true,
     ...overrides,
@@ -102,6 +102,14 @@ describe('settings page', () => {
     expect(screen.getByText('Settings mutation')).toBeTruthy();
     expect(screen.queryByRole('switch')).toBeNull();
     expect(screen.queryByRole('checkbox')).toBeNull();
+  });
+
+  it('reports metrics as available, with the reset-on-restart caveat', async () => {
+    await renderPage();
+
+    expect(screen.getByText('Metrics')).toBeTruthy();
+    expect(screen.getByText(/In-memory counters and histograms/)).toBeTruthy();
+    expect(screen.getByText(/reset on restart/i)).toBeTruthy();
   });
 
   it('explains the operator account procedure rather than faking a password form', async () => {

@@ -179,7 +179,7 @@ src/
     mcp-server.ts        identity-scoped tools/list + tools/call
   api/
     index.ts             management API assembly + middleware order
-    http.ts              request id, envelopes, JSON parsing, error boundary
+    http.ts              correlation (request/correlation ids via ALS), envelopes, JSON parsing, error boundary, HTTP metrics
     middleware/
       guards.ts          loopbackOnly, requireJsonBody
       mcp-auth.ts        bearer authentication boundary for /mcp
@@ -210,16 +210,19 @@ src/
   infrastructure/
     database/
       connection.ts        pragmas, one handle per process
-      migration-runner.ts  transactional, checksummed migrations
+      migration-runner.ts transactional, checksummed migrations
       migrations/0001_initial_schema.sql
       migrations/0002_backend_version.sql
       migrations/0003_runtime_disconnecting.sql
       migrations/0004_agent_authentication.sql
       migrations/0005_session_isolation.sql
       migrations/0006_operator_authentication.sql
+      migrations/0007_activity_correlation.sql
       repositories/        SQLite implementations
   monitoring/
     logger.ts        Pino + redaction paths
+    context.ts       AsyncLocalStorage correlation: ids in, log fields out (Phase 11)
+    metrics.ts       the in-memory aggregate registry + exports (Phase 11)
   cli/
     operator-create.ts    `pnpm operator:create` bootstrap entry
     operator-bootstrap.ts prompt, validation, refusal when already configured
@@ -327,6 +330,42 @@ would describe the schemas and guess which one belongs to which handler. Query
 parameters are derived from the same Zod schemas the handlers parse, and
 `tests/openapi.test.ts` compares the document against the live route table in both
 directions, so neither an undocumented route nor an invented one survives.
+
+## 4.6 Observability layer (Phase 11)
+
+Two additions, one rule: **no store the gateway does not already own**. No
+Redis, no Prometheus, no OpenTelemetry — the phase adds an ALS correlation
+context and an in-memory aggregate registry, and both reset with the process.
+
+- **Correlation runs first on the outer app.** `requestCorrelation` mounts
+  before any guard, so even a request refused by loopback rejection is
+  correlatable. It generates/echoes `X-Request-Id` and accepts
+  `X-Correlation-Id` only when it matches `^[A-Za-z0-9._-]{1,64}$` — validated,
+  never trusted. Both ids live in `AsyncLocalStorage`
+  (`src/monitoring/context.ts`), not a global: deep call sites read them through
+  `correlationLogFields()` without a threaded parameter, and concurrent
+  requests stay isolated. `activity_events.correlation_id` persists the join
+  (migration `0007`); audit keeps `requestId` only.
+- **The registry is one module-level singleton.** Writers import `metrics`
+  from `src/monitoring/metrics.ts`; no constructor threading, no DI — the
+  aggregate must be observable from any layer, which is exactly the property
+  constructor injection exists to prevent. Labels are closed enums (never a
+  tool name, agent id, or user input), violations drop into
+  `umg_metrics_dropped_total`, and the API never throws into a request path.
+- **Two exports, one boundary.** `GET /metrics` (Prometheus text, root,
+  operator cookie + loopback, mounted only when an operator exists) and
+  `GET /api/v1/monitoring/metrics` (JSON, inside the versioned API) render the
+  same in-memory numbers. There is no unauthenticated metrics port.
+- **Telemetry is aggregate-only by design.** Activity rows keep the durable
+  per-event trail; audit keeps the security trail; the registry keeps counts.
+  No store duplicates another's facts, and none carries tool arguments,
+  results, credentials, or messages — the error ring keeps `{code, component,
+  at, requestId}` and nothing else.
+- **Health, readiness and diagnostics remain three answers.** Liveness never
+  consults storage; readiness checks storage and migrations; diagnostics adds
+  configuration facts, registry state and recent errors, and reports a closed
+  store as `unavailable` while the in-memory registry keeps reporting real
+  numbers — neither side fabricates the other's answer.
 
 ## 5. Inbound MCP lifecycle
 

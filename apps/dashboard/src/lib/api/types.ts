@@ -305,6 +305,28 @@ export interface MonitoringRuntime {
   timestamp: string;
 }
 
+/**
+ * `GET /api/v1/monitoring/metrics` — the in-memory registry, as JSON.
+ *
+ * The registry resets on restart, so these are current facts, not history:
+ * counters since process start, no derived rates, no trend lines. `samples` are
+ * `Record<string, unknown>` on the wire (counter/gauge samples carry `value`,
+ * histogram samples carry `count`/`sum`/`buckets`), so the card reads the one
+ * field it wants instead of re-declaring every family's shape.
+ */
+export interface MonitoringMetrics {
+  generatedAt: string;
+  series: number;
+  dropped: number;
+  metrics: Array<{
+    name: string;
+    type: 'counter' | 'gauge' | 'histogram';
+    help: string;
+    samples: Array<Record<string, unknown>>;
+  }>;
+  recentErrors: Array<{ code: string; component: string; at: string; requestId?: string }>;
+}
+
 export interface Diagnostics {
   service: ServiceInfo;
   runtime: { node: string; platform: string; uptimeMs: number };

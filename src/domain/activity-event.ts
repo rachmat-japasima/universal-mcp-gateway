@@ -34,6 +34,12 @@ export const activityEventSchema = z
     id: idSchema,
     type: activityTypeSchema,
     requestId: z.string().trim().max(64).optional(),
+    /**
+     * Groups one client task across requests. Client-supplied and validated
+     * (bounded shape) at the boundary; never used as a lookup key for
+     * anything security-relevant.
+     */
+    correlationId: z.string().trim().max(64).optional(),
     agentId: idSchema.optional(),
     backendId: idSchema.optional(),
     toolName: z.string().trim().max(200).optional(),

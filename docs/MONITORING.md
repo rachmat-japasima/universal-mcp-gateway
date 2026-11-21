@@ -11,8 +11,11 @@ Implemented through Phase 8. The questions the surface answers today:
 - What administrative/security changes occurred? — `/api/v1/audit`.
 - Are sessions accumulating or expiring? — `/api/v1/monitoring/sessions`.
 
-Still unanswerable, and therefore not shown: request latency percentiles, per-tool duration
-distributions, queue depth, and saturation. See §4.
+Still unanswerable, and therefore not shown: queue depth and saturation.
+Request and tool-call **duration distributions are now kept** (Phase 11
+histograms — counts and buckets, reset on restart); what stays unbuilt is the
+time-series history and any derived figure a dashboard could invent from one
+snapshot. See §4.3.
 
 ## 2. Health endpoints
 
@@ -68,6 +71,29 @@ Do not log:
 - sensitive headers
 - raw process environment
 
+### 3.1 Correlation and redaction (Phase 11)
+
+Every response carries `X-Request-Id`: generated as a UUIDv4 when absent or
+malformed, and the same middleware accepts an inbound `X-Correlation-Id`
+(**validated, never trusted** — it must match `^[A-Za-z0-9._-]{1,64}$` or it is
+replaced, because an attacker-supplied string must not become a log-injection
+vector). Both are carried through AsyncLocalStorage, not a global variable or a
+threaded parameter: any log line inside a request can call
+`correlationLogFields()` and get the ids without a signature change, and a
+concurrent request cannot see another's context.
+
+The logger redacts before serializing: pino's redaction list covers
+`authorization`, `cookie`, and the `*.token|credential|credentialHash|password|
+secret|apiKey` families, so a stray field cannot leak a verifier even if a
+future call site adds one by accident. Tool arguments and upstream responses are
+never logged at all (`describeErrorForLog` keeps messages but drops payload
+objects); activity rows carry names and outcomes, never content.
+
+`correlation_id` is persisted on `activity_events` (migration `0007`), so an
+operator can follow one external correlation id from log line to activity row
+without cross-joining by request id. Audit rows keep `requestId` only — the
+security trail records who did what, not the caller's trace id.
+
 ## 4. Metrics
 
 Implemented in Phase 8 as **read endpoints over live state**, not as a metrics
@@ -75,6 +101,12 @@ store. There is no sampler, no time series, and no cache: every value is read
 from a repository, the lifecycle manager, or the in-memory catalog at request
 time. A time-series backend remains unbuilt, and adding one without a concrete
 need would be a second source of truth.
+
+Phase 11 added the second kind: an **in-memory aggregate registry**
+(`src/monitoring/metrics.ts`) — counters, gauges and bucketed histograms the
+gateway maintains itself, exported for a scraper and for the dashboard. It is
+process memory only: it resets on restart, keeps no history, and is therefore a
+source of *current rates and ratios*, never a record. See §4.3.
 
 | Endpoint | Answers |
 | --- | --- |
@@ -84,18 +116,21 @@ need would be a second source of truth.
 | `GET /api/v1/monitoring/backends` | Counts, per-backend runtime states, discovery reports, conflicts. |
 | `GET /api/v1/monitoring/sessions` | Effective session distribution, or `available: false`. |
 | `GET /api/v1/monitoring/runtime` | Service version, Node version, platform, uptime. |
+| `GET /api/v1/monitoring/metrics` | The registry as JSON: every family, its samples, recent errors. |
+| `GET /metrics` | The same registry as Prometheus text 0.0.4, for a scraper. |
 
 Available now, all real: backend totals and enabled/disabled split, the runtime
 status distribution across every backend, tool totals by availability, backends
 with a catalog, discovery failures, agent totals and split, session counts by
-effective status, and activity totals grouped by type and by outcome.
+effective status, activity totals grouped by type and by outcome — plus, since
+Phase 11, per-surface request/latency/tool/auth/backend aggregates (§4.3).
 
-**Not available, and therefore not shown:** request throughput and latency
-percentiles (no request histogram is kept), queue depth and lock wait time (tool
-calls are not queue-gated yet — `docs/ARCHITECTURE.md` §11.2), per-tool duration
-distributions (each `tools.call` row has a `durationMs`, but nothing aggregates
-it), and saturation. A dashboard must render these as "not collected", never as
-zero.
+**Not available, and therefore not shown:** queue depth and lock wait time (tool
+calls are not queue-gated yet — `docs/ARCHITECTURE.md` §11.2) and saturation.
+Request and tool-call **durations are now recorded as histograms**; a *derived*
+percentile or rate is still not served, because one snapshot of a
+reset-on-restart registry cannot honestly produce either. A dashboard renders
+what is stored, never arithmetic invented from one instant.
 
 ### 4.1 Two rules the numbers keep
 
@@ -120,6 +155,66 @@ so the overview does not become an N+1.
 Use bounded labels; never use arbitrary user input as unbounded metric labels.
 The `byType`/`byOutcome` maps are keyed by closed enums, not by user input.
 
+### 4.3 The aggregate registry (Phase 11)
+
+A hand-rolled registry, not a client library: no Prometheus, OpenTelemetry, or
+time-series dependency was added, because the requirement is counts in memory
+and two exports, and a SDK would import a second pipeline the gateway does not
+have. `src/monitoring/metrics.ts` defines counter/gauge/histogram primitives
+with per-metric validation:
+
+- **Labels are closed enums.** Route class (`health|ready|metrics|mcp|api|
+  unmatched`), MCP method (`initialize|tools.list|tools.call`), outcome
+  (`success|failure|denied`), transport, error code (`^[A-Z][A-Z_]{0,63}$`),
+  HTTP status (`^\d{3}$`). Tool names, agent ids, usernames, and anything a
+  caller chose are **never** labels — an unbounded label is a cardinality bomb
+  and a disclosure in one. Violations are dropped and counted in
+  `umg_metrics_dropped_total`, so under-counting is visible, and no metric call
+  can throw into a request path.
+- **Every family is `umg_`-prefixed and series-capped** (256 by default), so a
+  hostile label flood cannot grow memory without bound.
+
+The families: HTTP requests/duration/in-flight by route class; MCP methods and
+duration; session denials; tool calls by outcome, failure code, and duration;
+backend connections/reconnects/disconnects/changes; authentication by surface
+and outcome; credential revocations; authorization denials by surface; errors by
+code; plus process gauges (uptime, RSS/heap, event-loop delay via
+`monitorEventLoopDelay`) and the live MCP-session and backend-runtime gauges.
+
+Two counting decisions are recorded here because they are deliberate:
+
+- **`initialize` counts at session creation** (`onsessioninitialized`), the one
+  outcome the gateway owns; the SDK answers the initialize request itself, and
+  a refused or malformed initialize is an SDK-reported failure this process
+  cannot observe. The family's help text says so.
+- **MCP-handler refusals count `outcome: failure`** — denials are
+  indistinguishable on the wire by design (a caller must not learn *why*), so
+  the denial split lives in the router's counters, which an operator reads.
+
+The error side is split by category: client-category refusals (a bad `limit`, an
+unknown tool) feed `umg_errors_total{code,component}` only — they are business
+as usual. Internal-category and unhandled errors additionally enter a bounded
+ring of 20 `{code, component, at, requestId}` entries — **never messages** —
+which diagnostics and the metrics snapshot expose as `recentErrors`.
+
+**Access model.** Root `GET /metrics` (Prometheus text) sits **behind the same
+operator session cookie and loopback check as `/api/v1`** — an unauthenticated
+metrics port is the classic leak, so there is none. It is mounted only when an
+operator row exists at assembly time, the same semantics as a restart after
+`pnpm operator:create`. The JSON twin `GET /api/v1/monitoring/metrics` lives
+inside the versioned API's existing boundary. A scrape renders before counting
+itself, so one scrape's own request appears in the next.
+
+**Reset semantics.** In memory only; restart zeroes every family. These are
+current facts, not history — the durable trail is `/api/v1/activity` and
+`/api/v1/audit`. DB operation durations are deliberately not instrumented:
+better-sqlite3 is synchronous, so a "duration" would measure a function call,
+not a query.
+
+`tests/metrics.test.ts` covers registry mechanics, validation, export formats,
+and access control; `tests/instrumentation.test.ts` proves each writer site
+against the live surface.
+
 ## 5. Dashboard visualizations
 
 Every page in `docs/DASHBOARD.md` must be buildable from the endpoints above, with no fixture data.
@@ -127,11 +222,16 @@ Every page in `docs/DASHBOARD.md` must be buildable from the endpoints above, wi
 - Gateway status card — `/api/v1/overview` (`status`, `database`, `authentication`).
 - Backend health table — `/api/v1/monitoring/backends` (`runtimes`, `counts`).
 - Session/queue overview — `/api/v1/monitoring/sessions`; queue depth is not collected.
+- Telemetry card — `/api/v1/monitoring/metrics`: counters read by exact metric
+  and label set. A failed read renders "not read"; a family nobody has
+  incremented reads 0, which is a counter's true value. No sums, no rates, no
+  chart — the registry keeps counts, not history.
 - Recent activity timeline — `/api/v1/activity`.
 - Audit trail — `/api/v1/audit` (list) and `/api/v1/audit/:eventId` (metadata).
 - Settings and diagnostics pages — `/api/v1/settings`, `/api/v1/diagnostics`.
-- Request throughput, latency percentiles, and error-rate charts — **not
-  collectable yet**; render as "not collected" rather than a flat line at zero.
+- Request-rate, latency-percentile, and error-trend charts — **still not
+  renderable**: the registry resets on restart and keeps no history, so a trend
+  line would be invented. Render "not collected" rather than a flat line.
 
 All charts must distinguish zero from unavailable/no data. Never populate production charts with fabricated demo data, and branch on `null` before formatting a number.
 
@@ -294,6 +394,7 @@ Implemented as commands, with the real API surface:
 - **Start / stop / restart.** `pnpm start` (compiled) or `pnpm dev`. `SIGINT`/`SIGTERM` runs `gateway.close()`: sessions are terminated as `gateway_shutdown`, connections close, then the store.
 - **View logs.** Pino JSON on stdout. `LOG_LEVEL` controls verbosity.
 - **Health checks.** `curl -s localhost:8787/health` (liveness) and `curl -s localhost:8787/ready` (readiness; `503` means storage or the migration ledger is unreadable).
+- **Scrape metrics.** `curl -s localhost:8787/metrics -H "cookie: …"` (Prometheus text; operator session required, loopback only), or the JSON twin `curl -s localhost:8787/api/v1/monitoring/metrics -H "cookie: …"`. Both reset on restart; scrape *rates*, not history. `/metrics` answers `404` until an operator exists — create one and restart.
 - **Snapshot for a bug report.** `curl -s localhost:8787/api/v1/diagnostics` — version, runtime, uptime, migration version, counts; contains no secret or environment value.
 - **Check effective configuration.** `curl -s localhost:8787/api/v1/settings` — read-only, non-secret.
 - **Check backend state.** `curl -s localhost:8787/api/v1/monitoring/backends` for the status distribution; `GET /api/v1/backends/:id/runtime` for one backend's last error.

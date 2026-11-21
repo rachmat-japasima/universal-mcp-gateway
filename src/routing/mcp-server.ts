@@ -8,6 +8,7 @@ import {
 import type { Agent } from '../domain/agent.js';
 import type { CatalogTool } from '../domain/tool.js';
 import type { Logger } from '../monitoring/logger.js';
+import { metrics } from '../monitoring/metrics.js';
 import type { AuthorizationService } from '../auth/authorization.js';
 import { toolTarget } from '../auth/authorization.js';
 import { AppError } from '../shared/errors.js';
@@ -65,22 +66,37 @@ export function createGatewayServerFactory(
     const server = new Server(SERVICE_INFO, { capabilities: { tools: {} } });
     const { agent, credentialId } = identity;
 
-    server.setRequestHandler('tools/list', () => ({
-      // No cursor: the catalog is a single bounded snapshot and the SDK
-      // aggregates pages automatically for clients. Inventing pagination would
-      // be a non-standard scheme for a list that already fits.
-      //
-      // Only tools this agent may call are published. Listing is a view, not the
-      // boundary — `tools/call` re-checks — but publishing an unauthorized name
-      // would leak topology and invite probing.
-      //
-      // The cast is the one place the gateway asserts a shape it has already
-      // validated: `toDefinition` rejects any tool whose `inputSchema` is not an
-      // object schema, which is the only part of `Tool` TypeScript cannot infer.
-      tools: authorization.visibleTools(agent).map(toWireTool) as Tool[],
-    }));
+    server.setRequestHandler('tools/list', () => {
+      // A read, but a real one: counted with the calls because method mix is an
+      // MCP-surface fact, not a tool-execution fact (which `umg_tool_calls_*`
+      // owns).
+      const startedAt = Date.now();
+      try {
+        // No cursor: the catalog is a single bounded snapshot and the SDK
+        // aggregates pages automatically for clients. Inventing pagination would
+        // be a non-standard scheme for a list that already fits.
+        //
+        // Only tools this agent may call are published. Listing is a view, not
+        // the boundary — `tools/call` re-checks — but publishing an
+        // unauthorized name would leak topology and invite probing.
+        //
+        // The cast is the one place the gateway asserts a shape it has already
+        // validated: `toDefinition` rejects any tool whose `inputSchema` is not
+        // an object schema, which is the only part of `Tool` TypeScript cannot
+        // infer.
+        const tools = authorization.visibleTools(agent).map(toWireTool) as Tool[];
+        metrics.increment('umg_mcp_method_total', { method: 'tools.list', outcome: 'success' });
+        return { tools };
+      } catch (error) {
+        metrics.increment('umg_mcp_method_total', { method: 'tools.list', outcome: 'failure' });
+        throw error;
+      } finally {
+        metrics.observe('umg_mcp_method_duration_ms', { method: 'tools.list' }, Date.now() - startedAt);
+      }
+    });
 
     server.setRequestHandler('tools/call', async (request, ctx) => {
+      const startedAt = Date.now();
       const signal = ctx.mcpReq?.signal;
       // The JSON-RPC id is the only correlation handle a protocol client gives
       // us; it is not secret, and it is what a client will quote in a bug report.
@@ -103,12 +119,21 @@ export function createGatewayServerFactory(
           ...(signal === undefined ? {} : { signal }),
         });
 
+        metrics.increment('umg_mcp_method_total', { method: 'tools.call', outcome: 'success' });
+
         // The SDK's own projection applies the era rules (a non-object
         // `structuredContent` root is wrapped on the 2025 wire, identity on
         // 2026). Doing it here keeps both eras consistent with `McpServer`.
         return server.projectCallToolResult(result, advertisedOutputSchema(publicName));
       } catch (error) {
+        // Every refusal maps onto the same vocabulary on the wire, so the
+        // aggregate honestly says "failure" without a denial sub-label: the
+        // router's own counters carry the denial split (`umg_tool_calls_total`
+        // and `umg_authz_denials_total`), where it is not an oracle.
+        metrics.increment('umg_mcp_method_total', { method: 'tools.call', outcome: 'failure' });
         throw toProtocolError(error, publicName, logger);
+      } finally {
+        metrics.observe('umg_mcp_method_duration_ms', { method: 'tools.call' }, Date.now() - startedAt);
       }
     });
 

@@ -5,6 +5,8 @@ import type { BackendRuntime, BackendStatus } from '../domain/backend-runtime.js
 import { canTransition, initialBackendRuntime } from '../domain/backend-runtime.js';
 import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
+import { metrics } from '../monitoring/metrics.js';
+import { correlationContext } from '../monitoring/context.js';
 import { AppError } from '../shared/errors.js';
 import type { BackendAdapter } from '../adapters/adapter.js';
 import { createAdapter } from '../adapters/adapter.js';
@@ -367,7 +369,10 @@ export class BackendLifecycleManager {
     const transport = backend.connection.type;
     const startedAt = Date.now();
 
-    this.logger.info({ backendId: backend.id, transport, requestId, state: 'connecting' }, 'Backend connection started');
+    this.logger.info(
+      { backendId: backend.id, transport, requestId, ...this.correlationFields(), state: 'connecting' },
+      'Backend connection started',
+    );
     this.persist(entry, { status: 'connecting' });
 
     const adapter = createAdapter({
@@ -407,12 +412,14 @@ export class BackendLifecycleManager {
           backendId: backend.id,
           transport,
           requestId,
+          ...this.correlationFields(),
           state: 'error',
           code: normalized.code,
           durationMs: Date.now() - startedAt,
         },
         'Backend connection failed',
       );
+      metrics.increment('umg_backend_connections_total', { outcome: 'failure' });
 
       // Permanent failures (bad executable, refused policy, unreachable host)
       // are not retried: the answer will not change without an edit.
@@ -423,9 +430,17 @@ export class BackendLifecycleManager {
 
     entry.connectedAt = Date.now();
     this.persist(entry, { status: 'connected', lastConnectedAt: this.now(), reconnectAttempts: 0 });
+    metrics.increment('umg_backend_connections_total', { outcome: 'success' });
 
     this.logger.info(
-      { backendId: backend.id, transport, requestId, state: 'connected', durationMs: Date.now() - startedAt },
+      {
+        backendId: backend.id,
+        transport,
+        requestId,
+        ...this.correlationFields(),
+        state: 'connected',
+        durationMs: Date.now() - startedAt,
+      },
       'Backend connected',
     );
 
@@ -448,6 +463,7 @@ export class BackendLifecycleManager {
       {
         backendId: entry.backendId,
         transport,
+        ...this.correlationFields(),
         state: 'unhealthy',
         uptimeMs: connectedAt === undefined ? undefined : Date.now() - connectedAt,
       },
@@ -507,9 +523,11 @@ export class BackendLifecycleManager {
 
         try {
           await this.open(current, latest, requestId);
+          metrics.increment('umg_backend_reconnects_total', { outcome: 'success' });
         } catch {
           // `open` already recorded the failure and may have scheduled the next
           // attempt; a second schedule here would double the retry rate.
+          metrics.increment('umg_backend_reconnects_total', { outcome: 'failure' });
           this.logger.warn(
             { backendId: entry.backendId, transport: latest.connection.type, state: 'error' },
             'Backend reconnect failed',
@@ -522,7 +540,7 @@ export class BackendLifecycleManager {
     entry.timer = timer;
 
     this.logger.info(
-      { backendId: backend.id, transport: backend.connection.type, attempts, delayMs: delay, state: entry.runtime.status },
+      { backendId: backend.id, transport: backend.connection.type, attempts, delayMs: delay, state: entry.runtime.status, ...this.correlationFields() },
       'Backend reconnect scheduled',
     );
   }
@@ -583,11 +601,14 @@ export class BackendLifecycleManager {
     entry.adapter = undefined;
     entry.client = undefined;
     entry.connectedAt = undefined;
+    // A client was actually released, whatever the reason: operator request,
+    // unexpected close, disable, delete, shutdown.
+    metrics.increment('umg_backend_disconnects_total');
 
     if (entry.runtime.status === 'disconnecting') this.persist(entry, { status: 'disconnected' });
 
     this.logger.info(
-      { backendId: entry.backendId, transport: adapter.transport, reason, durationMs: Date.now() - startedAt },
+      { backendId: entry.backendId, transport: adapter.transport, reason, durationMs: Date.now() - startedAt, ...this.correlationFields() },
       'Backend disconnected',
     );
 
@@ -666,6 +687,12 @@ export class BackendLifecycleManager {
   private view(entry: Entry): RuntimeView {
     const view = toView(entry.runtime);
     return entry.connectedAt === undefined ? view : { ...view, uptimeMs: Date.now() - entry.connectedAt };
+  }
+
+  /** Correlation fields for log lines; empty for background work (timers, callbacks). */
+  private correlationFields(): { correlationId?: string } {
+    const context = correlationContext();
+    return context === undefined ? {} : { correlationId: context.correlationId };
   }
 
   /** Diagnostic only; used by tests and by shutdown logging. */

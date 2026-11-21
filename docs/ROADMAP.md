@@ -560,12 +560,61 @@ verified:** a real browser pass over all routes.
 dashboard route renders real API data, and no placeholder remains.**
 
 ## Phase 11 — Observability and operations
-- Structured request logs.
-- Metrics aggregation.
-- Health/diagnostics.
-- Reconnect/backoff.
-- Audit retention.
-- Backup/restore and runbooks.
+
+**Implemented.** Scope as specified: structured request logs, metrics
+aggregation, health/diagnostics. Reconnect/backoff, audit, and runbooks were
+already in place from Phases 4–8; this phase added the telemetry layer they
+never had.
+
+**Correlation and structured logging.** One `requestCorrelation` middleware
+runs first on the outer app: it generates/echoes `X-Request-Id`, and accepts
+`X-Correlation-Id` **validated, never trusted** (`^[A-Za-z0-9._-]{1,64}$`, else
+replaced — an attacker-supplied string must not reach the log stream). Both ids
+travel via AsyncLocalStorage, so deep call sites log them without a threaded
+parameter and no global mutable context exists. Pino redaction covers
+`authorization`, `cookie`, and credential/secret field families; tool arguments
+and upstream responses are never logged. Migration `0007` persists
+`activity_events.correlation_id`; audit keeps `requestId` only. Instrumented
+sites: router, lifecycle, auth services, MCP handlers, session manager,
+gateway modern leg.
+
+**Metrics aggregation.** A hand-rolled in-memory registry
+(`src/monitoring/metrics.ts`) — no Prometheus/OTel/Redis dependency. Counter/
+gauge/histogram primitives; **closed-enum labels only** (route class, MCP
+method, outcome, transport, stable error code, HTTP status — never tool names,
+agent ids, or user input); violations dropped and counted in
+`umg_metrics_dropped_total`; per-metric series caps; the API never throws into
+a request path. Every family is `umg_`-prefixed. `initialize` counts at
+session creation — the one outcome the gateway owns, since the SDK answers the
+request itself. Client-category errors feed a counter only; internal and
+unhandled errors also enter a 20-entry ring of `{code, component, at,
+requestId}` (never messages), surfaced by diagnostics.
+
+**Export and access.** Root `GET /metrics` (Prometheus text 0.0.4) behind the
+same operator session cookie and loopback check as `/api/v1`, mounted only when
+an operator row exists — the same restart-after-`operator:create` semantics as
+every configured feature. JSON twin `GET /api/v1/monitoring/metrics` inside the
+versioned API. Registry is in memory: resets on restart, current facts not
+history. DB op durations deliberately uninstrumented (synchronous better-sqlite3).
+
+**Health vs readiness vs diagnostics** stay three distinct answers
+(`/health` liveness, `/ready` storage+migrations, `/diagnostics` safe facts
+including registry state and `recentErrors`). With a closed store, diagnostics
+reports `database: unavailable` while metrics stay real — tested.
+
+**Dashboard.** Monitoring page gains a Telemetry card — the eighth concurrent
+read — rendering counters by exact metric and label, with "not read" for a
+failed read and a true 0 for an unincremented family. Settings reports
+`features.metrics: true` with the reset caveat. No proxy entry: the card is a
+server-component read.
+
+**Verification:** gateway 582 tests (was 532) across 31 files — 20 registry/
+access tests, 11 instrumentation tests, correlation and redaction suites
+included; dashboard 432 (was 427); both typechecks; both production builds;
+OpenAPI route-table parity both directions; API_REFERENCE §1/§3.2/§4.4
+document the two exports. **Not verified:** a real Prometheus scrape of a
+long-running instance, and a browser view of the telemetry card against a live
+gateway.
 
 ## Phase 12 — Agent compatibility
 - Verify Claude Code, Codex CLI, OpenCode, and DeepSeek client compatibility.

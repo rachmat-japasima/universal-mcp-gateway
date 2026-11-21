@@ -16,11 +16,15 @@ import { Hono } from 'hono';
 
 import { API_PREFIX, createManagementApi } from '../api/index.js';
 import { readyHandler } from '../api/routes/ops.routes.js';
+import { getRequestId, httpMetrics, requestCorrelation } from '../api/http.js';
+import { loopbackOnly } from '../api/middleware/guards.js';
+import { operatorAuth } from '../api/middleware/operator-auth.js';
 import type { BackendLifecycleManager } from '../adapters/lifecycle.js';
 import { BackendLifecycleManager as Lifecycle } from '../adapters/lifecycle.js';
 import type { Config } from '../config/config.js';
 import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
+import { metrics } from '../monitoring/metrics.js';
 import { ToolCatalog } from '../routing/catalog.js';
 import { ToolDiscovery } from '../routing/discovery.js';
 import { createGatewayServerFactory } from '../routing/mcp-server.js';
@@ -30,7 +34,6 @@ import { AuthService } from '../auth/auth-service.js';
 import { CredentialKeys } from '../auth/credential-key.js';
 import { AuthorizationService } from '../auth/authorization.js';
 import { mcpAuthenticate, toAuthInfo } from '../api/middleware/mcp-auth.js';
-import { getRequestId } from '../api/http.js';
 import { isInitializeBody, McpSessionManager, sessionNotFound } from '../sessions/session-manager.js';
 import { SessionService } from '../registry/session-service.js';
 import { OperatorService } from '../registry/operator-service.js';
@@ -297,6 +300,22 @@ export function createGateway(options: GatewayOptions): Gateway {
   let shuttingDown = false;
   const app = new Hono();
 
+  /**
+   * Correlation ids for every surface, mounted before any guard so even a
+   * request refused by a guard is correlatable in the logs. Runs the whole
+   * chain inside `AsyncLocalStorage`, which is what makes the ids readable in
+   * auth, routing, transports and audit writes without a parameter threaded
+   * through every signature — and what keeps concurrent requests isolated.
+   */
+  app.use('*', requestCorrelation);
+
+  /**
+   * Request metrics for every surface, after correlation: a request refused by
+   * a later guard is still a request the process did work for, and in-flight
+   * pressure from probe storms is exactly what the gauge exists to show.
+   */
+  app.use('*', httpMetrics(metrics));
+
   // DNS-rebinding defence for the MCP surface. Scoped to `/mcp` and `/health`
   // rather than `*` so the management API can answer with its own error envelope
   // (the SDK middleware replies with a JSON-RPC envelope, which a REST client
@@ -362,6 +381,33 @@ export function createGateway(options: GatewayOptions): Gateway {
           maxLifetimeMs: config.operatorSessionMaxLifetimeMs,
         });
 
+  /**
+   * Live-state collectors, registered where the live objects exist. Keyed, so
+   * a second assembly in the same process (tests) replaces rather than piles
+   * onto the first. Both are read-only views of already-tracked state: the
+   * runtime row set and the session manager's map. `undefined` collectors
+   * simply never register, and the metric is then absent from an export
+   * rather than fabricated as zero — a storeless gateway has no backends and
+   * no sessions to count.
+   */
+  if (lifecycle !== undefined) {
+    metrics.collect('backend-runtime', () => {
+      const counts = new Map<string, number>();
+      for (const view of lifecycle.getAllRuntimeStates()) {
+        counts.set(view.status, (counts.get(view.status) ?? 0) + 1);
+      }
+      return [...counts].map(([status, value]) => ({
+        name: 'umg_backend_runtime',
+        help: 'Registered backends by current runtime status.',
+        labels: { status },
+        value,
+      }));
+    });
+  }
+  metrics.collect('mcp-sessions', () => [
+    { name: 'umg_mcp_sessions_active', help: 'Live MCP protocol sessions.', value: sessionManager?.size ?? 0 },
+  ]);
+
   if (store !== undefined && lifecycle !== undefined && operators !== undefined) {
     app.route(
       API_PREFIX,
@@ -378,6 +424,33 @@ export function createGateway(options: GatewayOptions): Gateway {
         operators,
         ...(sessions === undefined ? {} : { sessions }),
       }),
+    );
+  }
+
+  /**
+   * Prometheus text export (format 0.0.4), for a scraper running on the same
+   * machine.
+   *
+   * Access model — both controls, deliberately:
+   *   * loopback binding + the loopback guard, like the management API;
+   *   * an operator session, because the numbers describe the operator's own
+   *     gateway and labels include error codes and route classes; nothing here
+   *     is per-user data, but "local process" is not an identity.
+   *
+   * Mounted only when an operator is configured, mirroring `/ready`: a route
+   * that can only ever answer 401 would misinform a scraper ("endpoint exists,
+   * credentials missing") instead of the truth (nothing to serve yet). It
+   * appears after `pnpm operator:create` and a restart.
+   *
+   * The JSON twin for the dashboard is `/api/v1/monitoring/metrics`, inside
+   * the versioned API's existing operator boundary.
+   */
+  if (store !== undefined && operators !== undefined && operators.isConfigured()) {
+    app.get(
+      '/metrics',
+      loopbackOnly(config),
+      operatorAuth({ operators, config }),
+      (c) => c.text(metrics.prometheus(), 200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' }),
     );
   }
 
@@ -454,12 +527,21 @@ export function createGateway(options: GatewayOptions): Gateway {
 
       const presented = c.req.header('mcp-session-id');
       if (presented !== undefined && 'failure' in sessions.validate(presented, identity)) {
+        // The modern-era twin of the sessionful leg's refusal: same uniform 404,
+        // same two counters.
+        metrics.increment('umg_mcp_session_denied_total');
+        metrics.increment('umg_authz_denials_total', { surface: 'session' });
         return sessionNotFound();
       }
 
       return handler.fetch(c.req.raw, authInfo === undefined ? undefined : { authInfo });
     },
   );
+
+  // Event-loop delay sampling for the process' whole lifetime; `close()`
+  // stops it, and `unref`-safe internals mean a bare createGateway without a
+  // listener cannot keep a test process alive.
+  metrics.start();
 
   return {
     app,
@@ -490,6 +572,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       await sessionManager?.closeAll();
       await handler.close();
       await lifecycle?.shutdown();
+      metrics.stop();
     },
   };
 }

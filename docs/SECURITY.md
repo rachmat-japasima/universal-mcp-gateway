@@ -67,6 +67,25 @@ Neither `settings` nor `diagnostics` mutates state, and `settings` answers `404`
 
 One tightening landed with these: `GET /api/v1/backends/:id/tools` now answers `404` for an unknown backend instead of `200` with an empty list. That is an information-quality fix, not a security one — an unknown backend and an empty backend were indistinguishable to an operator.
 
+**What changed in Phase 11.** Two new disclosure surfaces arrived, and both were
+designed against what they must not become:
+
+- `GET /metrics` (root, Prometheus text) is aggregate operational data — a
+  metrics port is the classic leak, so it sits behind the **same operator
+  session and loopback checks as `/api/v1`** and is mounted only when an
+  operator row exists. There is no unauthenticated scrape path, and its JSON
+  twin `/api/v1/monitoring/metrics` lives inside the versioned API's existing
+  boundary. Neither ever carries a tool name, agent id, username, or anything
+  a caller chose: **labels are closed enums**, so the export cannot disclose
+  topology or identity by construction. The error ring keeps
+  `{code, component, at, requestId}` — codes and components, never messages,
+  stacks, or paths.
+- An inbound `X-Correlation-Id` is **validated, never trusted**: it must match
+  `^[A-Za-z0-9._-]{1,64}$` or it is replaced, because a header the operator
+  cannot control must not become a log-injection vector. It flows to log
+  fields and one nullable activity column; audit rows keep the gateway's own
+  `requestId` only.
+
 ## 3.2 Outbound destination policy (SSRF)
 
 Implemented in `src/security/network-policy.ts`. A gateway that dials operator-supplied URLs is an SSRF primitive unless destinations are constrained; `http://169.254.169.254/` or `http://10.0.0.5:6379/` in a backend definition would otherwise turn the local API into a network scanner.
@@ -475,6 +494,36 @@ Phase 7 session actions (`docs/MONITORING.md` §6.4 has the full table): `sessio
 - Repeated failures are collapsed per reason within a 60-second window, with the suppressed count folded into the next row, so a loop cannot grow the table linearly.
 - Audit is best-effort by design: `safeAudit` swallows a write failure after logging it, because a request that was already refused for security reasons must not turn into a 500.
 - Tokens, headers, agent-supplied names, and authorization reasons never appear in metadata. `tests/mcp-auth.test.ts` and `tests/authentication.test.ts` assert both the presence of the ids and the absence of the token.
+
+### 9.1.4 Correlation and telemetry stores (Phase 11)
+
+The phase adds two mechanisms an operator will rely on, so both get the same
+treatment as the trails above: what they must never carry is decided before
+what they do.
+
+- An inbound `X-Correlation-Id` is accepted only when it matches
+  `^[A-Za-z0-9._-]{1,64}$`; anything else is replaced. The id is an operator
+  convenience for joining log lines, not an input to trust — an unsanitized
+  header would be a log-injection primitive (newlines, ANSI escapes, forged
+  JSON fields). `tests/correlation.test.ts` pins the validation, the isolation
+  between concurrent requests, and the absence of leaked context.
+- The id travels via `AsyncLocalStorage`, never a global: concurrent requests
+  cannot read each other's context, and no mutable module state exists to
+  leak across a boundary.
+- The metrics registry is an **identity-free store**: label values are closed
+  enums, so no series can name a tool, agent, username, or free-form string. A
+  hostile client cannot create a series at all — only the gateway's own call
+  sites increment, with values from fixed vocabularies. Validation drops
+  anything else and counts it in `umg_metrics_dropped_total`, so an attempt is
+  visible without succeeding.
+- The recent-error ring stores `{code, component, at, requestId}` — codes
+  from the fixed `ErrorCode` set, components from a fixed vocabulary, and the
+  id the gateway issued. No message, stack, driver text, or path enters it,
+  because the ring's whole job is to be safe to paste into a bug report.
+- One store per fact, no duplication: activity = operational, audit =
+  security, metrics = aggregate, logs = diagnostic. The registry never
+  records what a row already records, so no new surface repeats an old
+  disclosure.
 
 ### 9.2 Implemented in Phase 2
 

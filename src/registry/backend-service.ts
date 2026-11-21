@@ -6,6 +6,7 @@ import { backendSchema, createBackendSchema, updateBackendSchema } from '../doma
 import { initialBackendRuntime } from '../domain/backend-runtime.js';
 import type { BackendPage, BackendQuery } from '../domain/repositories.js';
 import type { Database } from '../infrastructure/database/index.js';
+import { metrics } from '../monitoring/metrics.js';
 import { AppError, safeIssueMessage, safeIssuePath } from '../shared/errors.js';
 
 /**
@@ -112,6 +113,7 @@ export class BackendService {
       // Keep the runtime row consistent with configuration state without
       // inventing connection transitions: only the disabled/not-disabled axis.
       if (updated.enabled !== existing.enabled) {
+        metrics.increment('umg_backend_changes_total', { action: updated.enabled ? 'enabled' : 'disabled' });
         this.syncEnabledRuntime(updated);
       }
 
@@ -138,6 +140,7 @@ export class BackendService {
       }
 
       const updated = this.store.backends.update(backendId, { enabled }, this.now(), expectedVersion);
+      metrics.increment('umg_backend_changes_total', { action: enabled ? 'enabled' : 'disabled' });
       this.syncEnabledRuntime(updated);
       this.audit(enabled ? 'backend.enabled' : 'backend.disabled', 'success', updated, {});
 

@@ -9,6 +9,7 @@ import type {
   Monitoring,
   MonitoringBackends,
   MonitoringHealth,
+  MonitoringMetrics,
   MonitoringSessions,
   Readiness,
 } from '@/lib/api/types';
@@ -19,19 +20,24 @@ import type {
  * The claims pinned here are the ones that would otherwise become a fabricated
  * status:
  *
- *  * liveness, readiness, dependency health and backend runtime are four separate
- *    sections — collapsing them would let a passing liveness probe imply readiness;
+ *  * liveness, readiness, dependency health, backend runtime and telemetry are
+ *    separate sections — collapsing them would let a passing liveness probe
+ *    imply readiness;
  *  * a failed read degrades its own card and never renders a zero;
  *  * readiness is trusted from its parsed body, because `fetch` does not throw on
  *    the documented `503`;
- *  * no percentage, rate, latency, CPU or memory figure appears anywhere — the
- *    gateway collects none, so any such number would be invented.
+ *  * telemetry reads counters the gateway actually keeps, by exact metric and
+ *    label — absent families read 0, which is a counter's true value, while a
+ *    failed read renders "not read";
+ *  * no percentage, rate, latency percentile, CPU or memory figure appears
+ *    anywhere — those would be derived from one snapshot, not recorded in it.
  */
 
 const getMonitoring = vi.fn();
 const getMonitoringHealth = vi.fn();
 const getMonitoringBackends = vi.fn();
 const getMonitoringSessions = vi.fn();
+const getMonitoringMetrics = vi.fn();
 const getDiagnostics = vi.fn();
 const fetchReadiness = vi.fn();
 const fetchLiveness = vi.fn();
@@ -41,6 +47,7 @@ vi.mock('@/lib/api/endpoints', () => ({
   getMonitoringHealth: () => getMonitoringHealth(),
   getMonitoringBackends: () => getMonitoringBackends(),
   getMonitoringSessions: () => getMonitoringSessions(),
+  getMonitoringMetrics: () => getMonitoringMetrics(),
   getDiagnostics: () => getDiagnostics(),
 }));
 vi.mock('@/lib/api/client', () => ({
@@ -145,12 +152,47 @@ function diagnostics(overrides: Partial<Diagnostics> = {}): Diagnostics {
   };
 }
 
+function metricsSnapshot(overrides: Partial<MonitoringMetrics> = {}): MonitoringMetrics {
+  return {
+    generatedAt: '2026-11-21T00:00:00.000Z',
+    series: 6,
+    dropped: 0,
+    metrics: [
+      {
+        name: 'umg_tool_calls_total',
+        type: 'counter',
+        help: 'Tool calls by outcome.',
+        samples: [
+          { labels: { outcome: 'success' }, value: 9 },
+          { labels: { outcome: 'failure' }, value: 2 },
+          { labels: { outcome: 'denied' }, value: 1 },
+        ],
+      },
+      {
+        name: 'umg_auth_total',
+        type: 'counter',
+        help: 'Authentication attempts by surface and outcome.',
+        samples: [{ labels: { surface: 'agent', outcome: 'failure' }, value: 3 }],
+      },
+      {
+        name: 'umg_mcp_session_denied_total',
+        type: 'counter',
+        help: 'MCP session access denials.',
+        samples: [{ labels: {}, value: 4 }],
+      },
+    ],
+    recentErrors: [],
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   for (const mock of [
     getMonitoring,
     getMonitoringHealth,
     getMonitoringBackends,
     getMonitoringSessions,
+    getMonitoringMetrics,
     getDiagnostics,
     fetchReadiness,
     fetchLiveness,
@@ -162,6 +204,7 @@ beforeEach(() => {
   getMonitoringHealth.mockResolvedValue(health());
   getMonitoringBackends.mockResolvedValue(backends());
   getMonitoringSessions.mockResolvedValue(sessions());
+  getMonitoringMetrics.mockResolvedValue(metricsSnapshot());
   getDiagnostics.mockResolvedValue(diagnostics());
   fetchReadiness.mockResolvedValue(readiness());
   fetchLiveness.mockResolvedValue(liveness());
@@ -260,6 +303,70 @@ describe('monitoring page', () => {
     await renderPage();
 
     expect(screen.getByText('Diagnostics could not be read')).toBeTruthy();
+  });
+
+  it('renders telemetry counts from the snapshot, by exact metric and label', async () => {
+    await renderPage();
+
+    expect(screen.getByText('Telemetry')).toBeTruthy();
+    // Three exact lookups on umg_tool_calls_total: success, failure, denied.
+    const success = screen.getByText('Tool calls (success)').closest('div');
+    expect(success?.textContent).toContain('9');
+    const failure = screen.getByText('Tool calls (failure)').closest('div');
+    expect(failure?.textContent).toContain('2');
+    const denied = screen.getByText('Tool calls (denied)').closest('div');
+    expect(denied?.textContent).toContain('1');
+
+    // An exact label lookup, not a sum over surfaces.
+    const authFailures = screen.getByText('Agent authentication failures').closest('div');
+    expect(authFailures?.textContent).toContain('3');
+
+    expect(screen.getByText('No recent internal errors.')).toBeTruthy();
+  });
+
+  it('reads an absent series as a true zero, and says why the values reset', async () => {
+    getMonitoringMetrics.mockResolvedValue(
+      metricsSnapshot({
+        metrics: [],
+        recentErrors: [],
+      }),
+    );
+
+    await renderPage();
+
+    const success = screen.getByText('Tool calls (success)').closest('div');
+    expect(success?.textContent).toContain('0');
+    expect(screen.getByText(/reset on restart/i)).toBeTruthy();
+  });
+
+  it('degrades the telemetry card alone when its read fails', async () => {
+    getMonitoringMetrics.mockRejectedValue(new ApiError('unavailable', 'Cannot reach the gateway.'));
+
+    await renderPage();
+
+    expect(screen.getByText('Telemetry could not be read')).toBeTruthy();
+    // The other questions still have their answers.
+    expect(screen.getByText('Process alive')).toBeTruthy();
+    expect(screen.getByText('Ready')).toBeTruthy();
+  });
+
+  it('lists recent internal errors as codes and components, never messages', async () => {
+    getMonitoringMetrics.mockResolvedValue(
+      metricsSnapshot({
+        recentErrors: [
+          { code: 'INTERNAL_ERROR', component: 'api', at: '2026-11-21T00:00:01.000Z', requestId: 'r-1' },
+          { code: 'BACKEND_TIMEOUT', component: 'lifecycle', at: '2026-11-21T00:00:00.000Z', requestId: 'r-2' },
+        ],
+      }),
+    );
+
+    await renderPage();
+
+    expect(screen.getByText(/Recent internal errors/)).toBeTruthy();
+    expect(screen.getByText(/INTERNAL_ERROR · api/)).toBeTruthy();
+    expect(screen.getByText(/BACKEND_TIMEOUT · lifecycle/)).toBeTruthy();
+    // Request ids are correlation handles, not content: they stay out of the card.
+    expect(screen.queryByText(/r-1/)).toBeNull();
   });
 
   it('invents no rate, percentage, latency, CPU or memory figure', async () => {

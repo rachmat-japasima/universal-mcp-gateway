@@ -6,6 +6,7 @@ import type { CredentialKeys } from '../auth/credential-key.js';
 import type { Config } from '../config/config.js';
 import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
+import { metrics } from '../monitoring/metrics.js';
 import { AgentService } from '../registry/agent-service.js';
 import { BackendService } from '../registry/backend-service.js';
 import type { Actor } from '../registry/backend-service.js';
@@ -16,7 +17,7 @@ import type { OperatorService } from '../registry/operator-service.js';
 import type { SessionService } from '../registry/session-service.js';
 import type { ToolCatalog } from '../routing/catalog.js';
 import type { ToolDiscovery } from '../routing/discovery.js';
-import { apiErrorHandler, getRequestId, jsonBodyLimit, requestId } from './http.js';
+import { apiErrorHandler, getRequestId, jsonBodyLimit } from './http.js';
 import { loopbackOnly, requireJsonBody } from './middleware/guards.js';
 import { operatorAuth } from './middleware/operator-auth.js';
 import { agentsRoutes } from './routes/agents.routes.js';
@@ -59,7 +60,8 @@ export const API_PREFIX = '/api/v1';
  * Management API assembly.
  *
  * Middleware order is deliberate:
- *   1. request id      — so every later log/error line is correlatable
+ *   1. correlation ids — assigned by the outer app for every surface, so any
+ *      later log/error line is correlatable
  *   2. loopback guard  — reject non-local traffic before reading a body
  *   3. body limit      — bound allocation before parsing
  *   4. JSON content type — reject cross-site form posts
@@ -99,17 +101,15 @@ export function createManagementApi(options: ManagementApiOptions): Hono {
 
   /**
    * Order, and why:
-   *   1. request id       — every later line is correlatable
-   *   2. loopback guard   — non-local traffic (and a foreign Origin) never reaches auth
-   *   3. operator session — default deny, before any handler or body read
-   *   4. body limit       — bound allocation before parsing
-   *   5. JSON content type— refuse cross-site form posts
+   *   1. operator session — default deny, before any handler or body read
+   *      (correlation ids are assigned on the outer app, for every surface)
+   *   2. body limit       — bound allocation before parsing
+   *   3. JSON content type— refuse cross-site form posts
    *
    * The session check runs before the body is touched so an unauthenticated
    * caller cannot spend the gateway's parse budget, and so a route added later
    * is protected by registration order rather than by remembering to add a guard.
    */
-  api.use('*', requestId);
   api.use('*', loopbackOnly(config));
   api.use('*', operatorAuth({ operators, config }));
   api.use('*', jsonBodyLimit(config));
@@ -120,6 +120,7 @@ export function createManagementApi(options: ManagementApiOptions): Hono {
     store,
     lifecycle,
     catalog: options.catalog,
+    metrics,
     ...(sessions === undefined ? {} : { sessions }),
     authentication: options.credentialKeys.issuing === undefined ? 'unavailable' : 'required',
   });

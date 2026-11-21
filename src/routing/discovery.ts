@@ -5,6 +5,7 @@ import type { Backend } from '../domain/backend.js';
 import type { DiscoveryReport, ToolDefinition } from '../domain/tool.js';
 import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
+import { correlationContext } from '../monitoring/context.js';
 import { AppError, describeErrorForLog } from '../shared/errors.js';
 import type { BackendLifecycleManager } from '../adapters/lifecycle.js';
 import type { McpBackendClient } from '../adapters/mcp-client.js';
@@ -309,6 +310,10 @@ export class ToolDiscovery {
     },
   ): void {
     try {
+      // Present when the discovery was triggered by a request; absent when it
+      // follows a background connection change. Omitted, never fabricated.
+      const correlationId = correlationContext()?.correlationId;
+
       this.store.activity.append({
         id: randomUUID(),
         type,
@@ -316,6 +321,7 @@ export class ToolDiscovery {
         createdAt: this.now(),
         ...(fields.backendId === undefined ? {} : { backendId: fields.backendId }),
         ...(fields.requestId === undefined ? {} : { requestId: fields.requestId }),
+        ...(correlationId === undefined ? {} : { correlationId }),
         ...(fields.toolName === undefined ? {} : { toolName: fields.toolName }),
         ...(fields.errorCode === undefined ? {} : { errorCode: fields.errorCode }),
         ...(fields.durationMs === undefined ? {} : { durationMs: fields.durationMs }),
