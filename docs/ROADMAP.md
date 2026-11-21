@@ -616,21 +616,101 @@ document the two exports. **Not verified:** a real Prometheus scrape of a
 long-running instance, and a browser view of the telemetry card against a live
 gateway.
 
-## Phase 12 — Agent compatibility
+## Phase 12 — Integration-ready architecture
+
+**Implemented** (executed ahead of the previously planned agent-compatibility
+phase, which renumbers to Phase 13; the first-real-backend phase becomes
+Phase 14). ADR-048–052. The goal was the shape, not a provider: two tool source
+types — MCP backends and managed integrations — sharing catalog, authorization,
+execution, observability, and audit, with **zero production providers**.
+
+**Tool sources and catalog.** Every catalog tool carries a stable
+`{ sourceType, sourceId }` from the moment it enters the catalog: `mcp_backend`
+(unchanged — `backendId` survives and equals `sourceId`) or
+`managed_integration` (a gateway-generated connection id; no fabricated
+`backendId`). One catalog with composite `"<sourceType>:<sourceId>"` snapshot
+keys, so the same id in both types never collides; deterministic namespacing
+(`<sourceId>__<tool>`) is reused, not forked, and **no existing MCP public
+tool name changed**. Cross-source name collisions withhold both claimants and
+report each source honestly.
+
+**Registry and connectors.** Providers are registered in code — a module
+constant that ships **empty**; no dynamic loading, marketplace, or plugins.
+Registration is zod-validated, duplicate ids fail closed (`RESOURCE_CONFLICT`),
+and declared capabilities are cross-checked against the connector's methods at
+registration time. The connector contract separates discovery from execution,
+mandates a timeout and an `AbortSignal` (enforced by the gateway's
+`withCancellation` wrapper, not requested of the connector), and normalizes
+errors to a closed kind set. The execution context is a whitelist — exactly
+`{ connectionId, metadata, resolveCredential, signal, timeoutMs }` — no store
+handle, no eager credential value, no agent or operator identity.
+
+**Execution seam and policy.** One branch in `ToolRouter.call()` after
+authorization; MCP-only helpers are narrowed to the MCP tool variant so the
+compiler enforces the seam. Denied callers of managed tools get the uniform
+unknown-tool answer and the connector records zero executions. The existing
+policy evaluator is untouched: `sourceId` rides the existing `backendId` query
+field (identical value for MCP), a `backend`-scoped rule naming a connection
+id is **rejected at policy creation**, and managed tools are granted via
+tool-scoped rules and wildcards exactly like MCP tools. Connector failures map
+onto the existing public codes (`BACKEND_TIMEOUT`, `BACKEND_UNAVAILABLE`,
+`VALIDATION_ERROR`, `BACKEND_CONNECTION_ERROR`, `TOOL_UNAVAILABLE`); the
+connector's own message stays in `details`. `reauthorization_required` flips
+the connection status, withdraws its tools, and fails closed until an operator
+acts — the router never drives a connection out of trouble.
+
+**Credentials.** An AES-256-GCM envelope vault (`src/integrations/vault.ts`):
+per-record random DEK with per-record nonces, a versioned envelope
+`{v, keyId, wrappedDek, wrapNonce, wrapTag, nonce, ct, tag}`, master key from
+`INTEGRATION_MASTER_KEY` only (optional `INTEGRATION_MASTER_KEY_PREVIOUS` for
+rotation), lazy fail-closed — a missing key never blocks startup but no
+credential can ever be stored without one. The database holds a reference id;
+audit rows record `integration.credential.sealed` / `.resolved` with the
+reference, never the value; no endpoint returns a value. The security suite
+scans every database file byte-for-byte for the plaintext after a round trip.
+
+**Connection lifecycle.** Seven statuses with legal edges declared as data;
+every non-terminal status can reach `disabled` (an operator can always turn a
+connection off, including mid-connect), `disabled` is the only terminal, and
+`error` / `reauthorization_required` exit only through an explicit operator
+connect. Withdrawal is synchronous with the state change; removal cascades the
+credential rows structurally.
+
+**Database and API.** Migration `0008` is additive-only: two new tables plus
+nullable `activity_events.connection_id`, tested against a genuine Phase 11
+database built with Phase 11-shaped SQL — every row survives, the new tables
+arrive empty, reopening is idempotent, hand-edited rows fail at the read
+boundary. The operator API gains two read-only endpoints,
+`GET /api/v1/integrations/{providers,connections}`, behind the same operator
+session as every `/api/v1` route, answering honest empty states in production
+(`[]` — the registry ships empty). OpenAPI parity holds in both directions.
+No write endpoint and no dashboard page exist: with zero providers, both would
+be surfaces over nothing.
+
+**Verification:** 76 new gateway tests across five suites — vault (14),
+domain/registry/catalog (22), execution through the real router seam (22),
+database/migration (8), security regression (10) — → 658 gateway across 36
+files; dashboard 432 unchanged; both typechecks; both production builds.
+**Not built:** any real provider, any OAuth flow, the operator write API, any
+dashboard integrations page. **Not verified:** nothing claims provider behavior
+beyond fixture connectors, because no provider exists.
+
+## Phase 13 — Agent compatibility
 - Verify Claude Code, Codex CLI, OpenCode, and DeepSeek client compatibility.
 - Connect one client at a time.
 - Direct HTTP where supported.
 - Local stdio bridge only where necessary.
 - Do not alter agent configs without user approval.
 
-## Phase 13 — First real backend integration
-- Select one pilot backend with user approval.
+## Phase 14 — First real provider integration
+- Select one pilot provider with user approval; a code-registered connector,
+  not a config file, is the integration mechanism (ADR-050).
 - Start with read-only/safe tools.
-- Validate permissions and concurrency.
-- Add further backends only after pilot is stable.
+- Validate permissions and concurrency through the Phase 12 seam.
+- Add further providers only after pilot is stable.
 - FigCraft is a candidate, not a required first integration.
 
-## Phase 14 — Hardening and release
+## Phase 15 — Hardening and release
 - Security review.
 - Performance and soak tests.
 - Failure/recovery tests.
@@ -639,7 +719,7 @@ gateway.
 - Local deployment and process supervision.
 - Explicit security gate before non-loopback exposure.
 
-## Phase 15 — Optional enhancements
+## Phase 16 — Optional enhancements
 - Import/export configuration.
 - Advanced alerting.
 - More transports.

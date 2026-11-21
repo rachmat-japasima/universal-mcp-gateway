@@ -94,7 +94,14 @@ export class AuthorizationService {
   describeAccess(agent: Agent): {
     agentId: string;
     policies: Array<{ id: string; name: string; priority: number }>;
-    visibleTools: Array<{ publicName: string; backendId: string; allowed: boolean; reason: string }>;
+    visibleTools: Array<{
+      publicName: string;
+      sourceType: 'mcp_backend' | 'managed_integration';
+      sourceId: string;
+      backendId: string;
+      allowed: boolean;
+      reason: string;
+    }>;
   } {
     const tools = this.catalog.listAvailable();
 
@@ -107,7 +114,10 @@ export class AuthorizationService {
         const decision = this.evaluate(agent, toolTarget(tool));
         return {
           publicName: tool.publicName,
-          backendId: tool.backendId,
+          sourceType: tool.sourceType,
+          sourceId: tool.sourceId,
+          // Kept for existing consumers: the source id (backend id for MCP).
+          backendId: tool.sourceId,
           allowed: decision.allowed,
           reason: decision.reason,
         };
@@ -156,7 +166,9 @@ export class AuthorizationService {
   /** Best-effort resolution used only for audit metadata; never for a decision. */
   resolveTarget(publicName: string): { backendId?: string; toolId: string } {
     const resolved = this.catalog.resolve(publicName);
-    if ('tool' in resolved) return { backendId: resolved.tool.backendId, toolId: resolved.tool.publicName };
+    // The source id (backend or connection, ADR-048) under the established
+    // audit field name — the same vocabulary `toolTarget` uses.
+    if ('tool' in resolved) return { backendId: resolved.tool.sourceId, toolId: resolved.tool.publicName };
 
     // A conflicted name still has claimants, but exposing which backend claims
     // it would leak topology. The tool id alone is enough to audit.
@@ -207,9 +219,16 @@ export interface AuditContext {
   rateLimit?: { suppressed: number };
 }
 
-/** The two identifiers a policy rule can name. */
+/**
+ * The two identifiers a policy rule can name. `backendId` is the tool's
+ * *source id* (ADR-048): for MCP tools it is exactly what it always was, the
+ * backend id; for managed tools it is the connection id. The policy schema is
+ * unchanged — a `backend`-scoped rule matches the calling tool's source, and
+ * integration tools additionally participate through `tool`-scoped rules
+ * (the documented migration strategy, ADR-052).
+ */
 export function toolTarget(tool: CatalogTool): { backendId: string; toolId: string } {
-  return { backendId: tool.backendId, toolId: tool.publicName };
+  return { backendId: tool.sourceId, toolId: tool.publicName };
 }
 
 /** Credential usability is a system restriction too, checked before policy for the same reason. */

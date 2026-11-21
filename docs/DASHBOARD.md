@@ -1703,3 +1703,24 @@ collected") stopped being true the moment the registry landed.
       production build clean.
 - [ ] A real browser view of the telemetry card against a live gateway —
       **not verified** here.
+
+## 54. Phase 12 — no dashboard change, by decision
+
+Managed integrations (ADR-048–052) add **nothing** to the dashboard, and this
+section exists so the absence is recorded as a decision rather than an
+omission.
+
+- **No integrations route, no card, no proxy entry.** The gateway exposes two
+  read-only endpoints (`GET /api/v1/integrations/{providers,connections}`), but
+  in production both answer `[]` because the provider registry ships empty
+  (ADR-050). A page over two empty lists is not a milestone; rendering it
+  would violate the placeholder rule this document has enforced since Phase 9.
+- **Nothing else moved.** The tool catalog gained `sourceType`/`sourceId`, but
+  with no provider registered no managed tool can exist, so `/tools` pages,
+  fixtures, and tests are untouched — 432 dashboard tests pass unchanged.
+- **When a provider exists (Phase 14), the surface to build is:** an
+  integrations module page listing providers and connections from the two
+  endpoints, honest empty states preserved, credentials shown as references
+  (never values — none exist to show), and the write actions mounted on the
+  gateway API that Phase 13/14 must add first. The dashboard never grows a
+  write path the gateway does not already own.

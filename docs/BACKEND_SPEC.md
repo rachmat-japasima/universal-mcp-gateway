@@ -541,6 +541,28 @@ Two behaviour changes, both documented rather than silent:
 A `backendId` or `agentId` policy filter that names nothing is a `404`, not an
 empty page: a typo must not look like "no policies".
 
+## 7.7 Integrations endpoints (Phase 12)
+
+Read-only, operator-session-gated like every `/api/v1` route (ADR-052; payload
+detail in `docs/API_REFERENCE.md` §3.10).
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/integrations/providers` | Registered providers. **Empty in production** — the registry is code and ships zero entries (ADR-050). |
+| `GET` | `/api/v1/integrations/connections` | Connections, newest first; `providerName` present iff the provider is still registered. |
+
+No write endpoint exists, deliberately: the domain service implements create/
+connect/disconnect/disable/remove, but with zero registered providers an
+operator write surface would be a form over nothing. Phase 13 mounts the write
+API on the same `IntegrationService` when a provider exists to connect to.
+
+This section also records the domain distinction the endpoints sit on
+(ADR-048): a **backend** is an MCP peer configured by an operator; a
+**provider** is a code registration; a **connection** is an operator's instance
+of a provider. The tables are separate, the ids are disjoint, and a
+`backend`-scoped policy rule naming a connection id is rejected at creation.
+Managed tools are granted through tool-scoped rules exactly like MCP tools.
+
 ## 8. Error codes
 
 Implemented: see section 2, plus the Phase 5 additions:

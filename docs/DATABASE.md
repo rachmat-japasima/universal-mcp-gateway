@@ -38,6 +38,9 @@ There is exactly **one connection per process** (`openStore()`), created after c
 `0003_runtime_disconnecting.sql` — rebuilds `backend_runtime` to add the `disconnecting` status (Phase 4).
 `0004_agent_authentication.sql` — adds credential key id/prefix and agent auth timestamps (Phase 6).
 `0005_session_isolation.sql` — adds persistent session binding, status, termination, and indexes (Phase 7).
+`0006_operator_identity.sql` — operator tables (Phase 10.0).
+`0007_correlation.sql` — adds `activity_events.correlation_id` (Phase 11).
+`0008_managed_integrations.sql` — adds `integration_connections`, `integration_credentials`, and `activity_events.connection_id` (Phase 12, ADR-052).
 
 ### `backends`
 `id`, `name`, `description`, `transport` (`stdio` | `streamable-http`), `config_json`, `enabled`, `timeout_ms`, `concurrency_mode` (`parallel` | `serialized` | `limited`), `concurrency_limit`, `version`, `created_at`, `updated_at`, `deleted_at`.
@@ -106,9 +109,11 @@ Two identifiers, deliberately distinct:
 - `revoked_at` is kept from `0001` (additive rule) and was back-filled into `status = 'invalidated'` with `terminated_at = revoked_at` on upgrade.
 
 ### `activity_events` (operational)
-`id`, `type`, `request_id`, `agent_id` (FK `ON DELETE SET NULL`), `backend_id` (FK `ON DELETE SET NULL`), `tool_name`, `outcome` (`success` | `failure` | `denied`), `error_code`, `duration_ms`, `created_at`.
+`id`, `type`, `request_id`, `agent_id` (FK `ON DELETE SET NULL`), `backend_id` (FK `ON DELETE SET NULL`), `connection_id` (plain nullable `TEXT`, migration `0008` — same pattern as `0007`: no FK, no index until a consumer exists), `tool_name`, `outcome` (`success` | `failure` | `denied`), `error_code`, `duration_ms`, `created_at`.
 
 Never contains tool arguments or results.
+
+A row names **one** source: the zod schema refuses a record carrying both `backend_id` and `connection_id`, so a writer bug fails at the read boundary instead of poisoning consumers (ADR-048).
 
 ### `audit_events` (administrative/security)
 `id`, `actor_type` (`admin` | `agent` | `system`), `actor_id`, `action`, `target_type`, `target_id`, `result`, `request_id`, `metadata_json`, `created_at`.
@@ -137,6 +142,20 @@ There is one operator in practice. `role` stays `owner`; no RBAC engine exists (
 
 Both an idle window (`last_seen_at`) and an absolute ceiling (`expires_at`) are stored and **derived on read**, not trusted from a sweep, so a missed cleanup cannot extend access.
 
+### `integration_connections` (Phase 12)
+`id` (UUID, caller-supplied), `provider_id`, `name`, `status` (`pending` | `connecting` | `connected` | `disconnected` | `error` | `reauthorization_required` | `disabled`, with a DB `CHECK`), `credential_id` (nullable reference), `metadata_json` (validated non-secret JSON), `created_at`, `updated_at`.
+
+Created in `0008` along with the credential table and `activity_events.connection_id`. A provider id is a registry concept, not a foreign key: a connection row survives its provider being unregistered, and the API view says so instead of pretending the provider never existed.
+
+`status` transitions are declared as data in `src/integrations/connection.ts` (`CONNECTION_TRANSITIONS`): every non-terminal status can reach `disabled`, `disabled` is the only terminal, and `error`/`reauthorization_required` exit only through an explicit operator connect. The DB `CHECK` and the zod schema agree; anything else fails at the boundary.
+
+`credential_id` is a vault reference only — the schema rejects anything that is not a UUID, so a pasted token string is a validation error, not a stored secret.
+
+### `integration_credentials` (Phase 12)
+`id`, `connection_id` → `integration_connections` **`ON DELETE CASCADE`**, `envelope`, `created_at`, `updated_at`.
+
+The only column that holds credential material is `envelope`, and it holds an AES-256-GCM envelope (ADR-051): `{v, keyId, wrappedDek, wrapNonce, wrapTag, nonce, ct, tag}` — ciphertext, tags, and nonces, nothing else. The cascade is structural: a deleted connection cannot leave an orphaned secret, whatever the deletion order. There is no column that could hold plaintext, and the security suite scans the database file bytes to prove the value never appears.
+
 Two triggers enforce the state machine: a revoked row must carry a `revocation_reason`, and a revoked session can never become live again (so a bug cannot resurrect a logged-out cookie).`user_agent`/`ip_address` are for the audit trail only — never proof of identity.
 
 ## 5. Indexes
@@ -152,6 +171,7 @@ Two triggers enforce the state machine: a revoked row must carry a `revocation_r
 - `audit_events`: `created_at`, `(actor_id, created_at)`, `(action, created_at)`, `(target_id, created_at)`.
 - `admin_users`: unique `username` (`0001`; `0006` re-creates it with `IF NOT EXISTS` so a database that predates it is repaired rather than assumed).
 - `operator_sessions`: unique `token_hash` (the digest lookup is the only read path, so this index *is* verification); `(operator_id, last_seen_at)` for sweeping one operator; `expires_at` for cleanup.
+- `integration_connections` / `integration_credentials` (Phase 12): **none, deliberately.** The listing is a full-table scan over a table that is empty in production and small in every honest deployment; `findById` is the primary key. `activity_events.connection_id` gets no index either — nothing queries by connection id yet, and a write-path index with no reader is amplification. Add each when a consumer exists (the same rule `0007` set for `correlation_id`).
 
 Partial unique indexes (`WHERE deleted_at IS NULL`) allow a name to be reused after a tombstone while keeping the old row.
 
@@ -218,6 +238,8 @@ Declared in `src/domain/repositories.ts` in domain terms — no SQL, no driver t
 | `ActivityRepository` | append, list, findById, query, count, countByType, countByOutcome |
 | `AuditRepository` | append, list, findById, query, count, countByResult, countByActorType |
 | `OperatorRepository` | create, findById, findByUsername, count, list, setPassword, recordLoginSuccess, recordLoginFailure, disable — and for sessions: createSession, findSessionById, findSessionByTokenHash, touchSession, revokeSession, revokeSessionsForOperator, expireSessions, countActiveSessions |
+| `IntegrationConnectionRepository` (Phase 12) | create, findById, list, update, updateStatus, updateCredential, remove |
+| `IntegrationCredentialRepository` (Phase 12) | create, findById, remove |
 
 `query(criteria)` is the only listing method that filters and paginates. Every value is a bound parameter; the sort column and direction are interpolated only from a fixed whitelist (`SORT_COLUMNS`) because SQLite cannot parameterize identifiers. Ordering always tie-breaks on `id` so equal names or timestamps cannot produce unstable pages, and `total` is a separate `COUNT(*)` over the same `WHERE` before `LIMIT`.
 

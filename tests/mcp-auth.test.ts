@@ -190,7 +190,8 @@ describe('identity scoping', () => {
       rejected: [],
     });
     gateway.catalog.replace({
-      backendId: backend.id,
+      sourceType: 'mcp_backend',
+      sourceId: backend.id,
       tools,
       report: {
         backendId: backend.id,
@@ -225,7 +226,8 @@ describe('identity scoping', () => {
       rejected: [],
     });
     gateway.catalog.replace({
-      backendId: backend.id,
+      sourceType: 'mcp_backend',
+      sourceId: backend.id,
       tools,
       report: {
         backendId: backend.id,
@@ -272,7 +274,8 @@ describe('identity scoping', () => {
       rejected: [],
     });
     gateway.catalog.replace({
-      backendId: backend.id,
+      sourceType: 'mcp_backend',
+      sourceId: backend.id,
       tools,
       report: {
         backendId: backend.id,

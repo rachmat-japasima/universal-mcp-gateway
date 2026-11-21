@@ -29,6 +29,9 @@ import { policiesRoutes } from './routes/policies.routes.js';
 import { sessionsRoutes } from './routes/sessions.routes.js';
 import { systemRoutes } from './routes/system.routes.js';
 import { backendToolsRoutes, toolsRoutes } from './routes/tools.routes.js';
+import { integrationsRoutes } from './routes/integrations.routes.js';
+import type { IntegrationService } from '../integrations/service.js';
+import type { ProviderRegistry } from '../integrations/registry.js';
 
 export interface ManagementApiOptions {
   config: Config;
@@ -52,6 +55,10 @@ export interface ManagementApiOptions {
    * there is no unauthenticated mode to fall back into.
    */
   operators: OperatorService;
+  /** Managed integrations (Phase 12). Read-only routes mount against it. */
+  integrations: IntegrationService;
+  /** The code-registered provider registry backing `integrations`. */
+  registry: ProviderRegistry;
 }
 
 export const API_PREFIX = '/api/v1';
@@ -142,6 +149,11 @@ export function createManagementApi(options: ManagementApiOptions): Hono {
   if (sessions !== undefined) api.route('/sessions', sessionsRoutes({ sessions }));
   api.route('/activity', activityRoutes({ store }));
   api.route('/audit', auditRoutes({ store }));
+  // Read-only: providers and connections with honest empty states (ADR-052).
+  api.route(
+    '/integrations',
+    integrationsRoutes({ registry: options.registry, integrations: options.integrations }),
+  );
   // Overview, monitoring, readiness, diagnostics, settings and the OpenAPI
   // document share one snapshot reader, so their numbers cannot disagree.
   api.route('/', ops);

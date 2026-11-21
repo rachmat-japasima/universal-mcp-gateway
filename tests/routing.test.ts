@@ -145,9 +145,15 @@ describe('catalog', () => {
     const first = buildTools({ backendId: 'a b', now, tools: [tool('get_status')], rejected: [] });
     const second = buildTools({ backendId: 'a_b', now, tools: [tool('get_status')], rejected: [] });
 
-    catalog.replace({ backendId: 'a b', tools: first.tools, report: reportFor('a b', first.tools, 0) });
+    catalog.replace({
+      sourceType: 'mcp_backend',
+      sourceId: 'a b',
+      tools: first.tools,
+      report: reportFor('a b', first.tools, 0),
+    });
     const outcome = catalog.replace({
-      backendId: 'a_b',
+      sourceType: 'mcp_backend',
+      sourceId: 'a_b',
       tools: second.tools,
       report: reportFor('a_b', second.tools, 0),
     });
@@ -157,8 +163,8 @@ describe('catalog', () => {
       {
         publicName: 'a_b__get_status',
         claimants: [
-          { backendId: 'a b', originalName: 'get_status' },
-          { backendId: 'a_b', originalName: 'get_status' },
+          { sourceType: 'mcp_backend', sourceId: 'a b', backendId: 'a b', originalName: 'get_status' },
+          { sourceType: 'mcp_backend', sourceId: 'a_b', backendId: 'a_b', originalName: 'get_status' },
         ],
       },
     ]);
@@ -172,7 +178,8 @@ describe('catalog', () => {
   it('detects a real collision across one backend and withholds both', () => {
     const collision = detectConflicts([
       {
-        backendId: 'a',
+        sourceType: 'mcp_backend' as const,
+        sourceId: 'a',
         report: reportFor('a', new Map(), 0),
         tools: new Map([
           ['a__x', catalogTool('a__x', 'a', 'a__x')],
@@ -180,7 +187,8 @@ describe('catalog', () => {
         ]),
       },
       {
-        backendId: 'a',
+        sourceType: 'mcp_backend' as const,
+        sourceId: 'a',
         report: reportFor('a', new Map(), 0),
         tools: new Map([['a__x', catalogTool('a__x', 'a', 'a__x')]]),
       },
@@ -348,7 +356,9 @@ describe('routing', () => {
     const router = new ToolRouter({ store, logger, lifecycle, catalog });
     const { result, tool } = await router.call(`${b.id}__create_item`, { kind: 'a', name: 'widget' });
 
-    expect(tool.backendId).toBe(b.id);
+    // `sourceId` is the routing identity (ADR-048); for an MCP tool it equals
+    // the backend id.
+    expect(tool.sourceId).toBe(b.id);
     expect(tool.originalName).toBe('create_item');
     expect(result.isError).not.toBe(true);
     expect((result.content[0] as { text: string }).text).toContain('"backend":"b"');
@@ -488,6 +498,8 @@ function catalogTool(publicName: string, backendId: string, originalName: string
     name: originalName,
     publicName,
     originalName,
+    sourceType: 'mcp_backend' as const,
+    sourceId: backendId,
     backendId,
     inputSchema: { type: 'object' },
     availability: 'available' as const,

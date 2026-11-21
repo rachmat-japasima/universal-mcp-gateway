@@ -346,11 +346,13 @@ function schemas(): Record<string, unknown> {
     },
     Tool: {
       type: 'object',
-      required: ['publicName', 'originalName', 'backendId', 'inputSchema', 'availability', 'discoveredAt', 'updatedAt'],
+      required: ['publicName', 'originalName', 'sourceType', 'sourceId', 'inputSchema', 'availability', 'discoveredAt', 'updatedAt'],
       properties: {
         publicName: { type: 'string', description: 'Namespaced, routing name.' },
         originalName: { type: 'string' },
-        backendId: uuid('Owning backend id.'),
+        sourceType: { type: 'string', enum: ['mcp_backend', 'managed_integration'], description: 'Where the tool comes from (ADR-048).' },
+        sourceId: uuid('Owning source id: backend id for `mcp_backend`, connection id for `managed_integration`.'),
+        backendId: uuid('Present iff `sourceType` is `mcp_backend`; equals `sourceId`.'),
         title: { type: 'string' },
         description: { type: 'string' },
         inputSchema: { type: 'object', description: 'Forwarded verbatim from the backend.' },
@@ -377,6 +379,41 @@ function schemas(): Record<string, unknown> {
       },
       additionalProperties: false,
     },
+    Provider: {
+      type: 'object',
+      required: ['id', 'name', 'description', 'capabilities', 'registeredAt'],
+      properties: {
+        id: uuid('Registry key. Stable once published.'),
+        name: { type: 'string' },
+        description: { type: 'string' },
+        capabilities: { type: 'array', items: { type: 'string', enum: ['discovery', 'execution'] } },
+        metadata: { type: 'object', description: 'Non-secret provider metadata; never a credential.' },
+        registeredAt: instant('When the provider was registered in code.'),
+      },
+      additionalProperties: false,
+    },
+    IntegrationConnection: {
+      type: 'object',
+      required: ['id', 'providerId', 'name', 'status', 'credentialId', 'metadata', 'createdAt', 'updatedAt'],
+      properties: {
+        id: uuid('Gateway-generated connection id.'),
+        providerId: uuid('Registry key of the provider this connection instantiates.'),
+        providerName: { type: 'string', description: 'Present while the provider stays registered.' },
+        name: { type: 'string' },
+        status: {
+          type: 'string',
+          enum: ['pending', 'connecting', 'connected', 'disconnected', 'error', 'reauthorization_required', 'disabled'],
+        },
+        credentialId: {
+          type: ['string', 'null'],
+          description: 'Vault reference, never a value. `null` when no credential is stored.',
+        },
+        metadata: { type: 'object', description: 'Validated non-secret settings.' },
+        createdAt: instant('Created at.'),
+        updatedAt: instant('Updated at.'),
+      },
+      additionalProperties: false,
+    },
     ActivityEvent: {
       type: 'object',
       required: ['id', 'type', 'outcome', 'createdAt'],
@@ -389,7 +426,8 @@ function schemas(): Record<string, unknown> {
         requestId: { type: 'string' },
         correlationId: { type: 'string', description: 'Groups one client task across requests; validated, bounded.' },
         agentId: uuid('Agent id.'),
-        backendId: uuid('Backend id.'),
+        backendId: uuid('Backend id. Set for MCP-backend calls; never a connection id.'),
+        connectionId: uuid('Managed-integration connection id. Set for managed calls; never a backend id.'),
         toolName: { type: 'string' },
         outcome: { type: 'string', enum: ['success', 'failure', 'denied'] },
         errorCode: { type: 'string' },
@@ -406,7 +444,7 @@ function schemas(): Record<string, unknown> {
         actorType: { type: 'string', enum: ['admin', 'agent', 'system'] },
         actorId: { type: 'string' },
         action: { type: 'string', description: 'One of the fixed `AUDIT_ACTIONS` values.' },
-        targetType: { type: 'string', enum: ['backend', 'agent', 'credential', 'policy', 'session', 'settings'] },
+        targetType: { type: 'string', enum: ['backend', 'agent', 'credential', 'policy', 'session', 'settings', 'connection'] },
         targetId: { type: 'string' },
         result: { type: 'string', enum: ['success', 'failure', 'denied'] },
         requestId: { type: 'string' },
@@ -627,6 +665,10 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
       { name: 'sessions', description: 'Persisted MCP sessions.' },
       { name: 'activity', description: 'Operational history. Not the security audit trail.' },
       { name: 'audit', description: 'Administrative and security history. Append-only.' },
+      {
+        name: 'integrations',
+        description: 'Managed-integration providers and connections (Phase 12). Read-only; the production registry is empty by design.',
+      },
       { name: 'monitoring', description: 'Operational metrics from live state.' },
       { name: 'meta', description: 'API documentation and settings.' },
     ],
@@ -965,6 +1007,25 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
           summary: 'One tool by public name',
           parameters: [pathParam('publicName')],
           responses: { 200: okBody(ref('Tool')), ...errorResponses(['404', 'Not found']) },
+        },
+      },
+
+      '/api/v1/integrations/providers': {
+        get: {
+          tags: ['integrations'],
+          summary: 'Registered managed-integration providers',
+          description:
+            'The provider registry is code-registered and ships EMPTY in production (ADR-050): an empty list is the accurate state, not a missing feature. No marketplace, no plugins, no dynamic loading.',
+          responses: { 200: okBody({ type: 'array', items: ref('Provider') }) },
+        },
+      },
+      '/api/v1/integrations/connections': {
+        get: {
+          tags: ['integrations'],
+          summary: 'Managed-integration connections',
+          description:
+            'Read-only in Phase 12: connections exist as a domain, but no operator write path is mounted because no provider is registered. Empty list is the accurate production state. Credentials appear only as vault references.',
+          responses: { 200: okBody({ type: 'array', items: ref('IntegrationConnection') }) },
         },
       },
 

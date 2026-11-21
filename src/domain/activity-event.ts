@@ -42,6 +42,8 @@ export const activityEventSchema = z
     correlationId: z.string().trim().max(64).optional(),
     agentId: idSchema.optional(),
     backendId: idSchema.optional(),
+    /** Managed-integration connection (ADR-048). Never set on the same row as a `backendId`. */
+    connectionId: idSchema.optional(),
     toolName: z.string().trim().max(200).optional(),
     outcome: activityOutcomeSchema,
     /** Stable `ErrorCode`; not a free-form message. */
@@ -49,6 +51,12 @@ export const activityEventSchema = z
     durationMs: z.number().int().min(0).max(86_400_000).optional(),
     createdAt: timestampSchema,
   })
-  .strict();
+  .strict()
+  // ADR-048, made structural: one call names one source. A row claiming both
+  // a backend and a connection is a bug in the writer, and the read boundary
+  // is where it fails instead of poisoning every consumer.
+  .refine((event) => !(event.backendId !== undefined && event.connectionId !== undefined), {
+    message: 'An activity row cannot name both a backend and a connection',
+  });
 
 export type ActivityEvent = z.infer<typeof activityEventSchema>;

@@ -32,6 +32,8 @@ export interface CorrelationContext {
   /** MCP protocol session id, when one has been resolved. */
   sessionId?: string;
   backendId?: string;
+  /** Managed-integration connection id. Mutually exclusive with `backendId` by construction (ADR-048). */
+  connectionId?: string;
   /** Public tool name (the catalog's namespaced name, never raw arguments). */
   toolId?: string;
 }

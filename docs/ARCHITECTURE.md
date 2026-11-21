@@ -367,6 +367,44 @@ context and an in-memory aggregate registry, and both reset with the process.
   store as `unavailable` while the in-memory registry keeps reporting real
   numbers — neither side fabricates the other's answer.
 
+## 4.7 Managed integrations (Phase 12)
+
+ADR-048–052. A second tool source type — `managed_integration` — enters through
+one seam and borrows everything else: catalog, authorization, metrics, audit.
+**Zero production providers exist**; the provider registry ships empty, by code.
+
+- **`src/integrations/` is the whole module:** `source.ts` (the closed
+  `{sourceType, sourceId}` pair), `provider.ts` (registration schema and the
+  two capabilities), `connection.ts` (seven statuses, transitions-as-data,
+  non-secret metadata), `registry.ts` (the empty module constant plus a
+  validating `register()`), `connector.ts` (the guest contract and
+  `withCancellation`), `runtime.ts` (the dispatch gate), `vault.ts` (the
+  AES-256-GCM envelope), `service.ts` (lifecycle, credentials, `dispatchable`).
+- **The seam is one branch in `ToolRouter.call()`, after authorization.**
+  MCP-only helpers are narrowed to the MCP variant of the `CatalogTool` union
+  so the compiler enforces the seam. No runtime wired → `TOOL_UNAVAILABLE`;
+  no MCP fallback exists behind the seam. The runtime re-checks the
+  connection row before every dispatch, so a stale catalog entry is refused,
+  not routed.
+- **Connectors are bounded guests (ADR-049).** The execution context is a
+  whitelist — `{connectionId, metadata, resolveCredential, signal, timeoutMs}`
+  — with no store handle, no services, no eager credential value, and no agent
+  or operator identity. Timeouts and cancellation are enforced by the gateway,
+  not requested of the connector; connector errors normalize onto the existing
+  public codes with the connector's message confined to `details`.
+- **The identity domains never merge (ADR-048).** Provider = code
+  registration; connection = operator row; backend = MCP peer. Connection ids
+  are UUIDs; a `backend`-scoped policy rule naming a connection id is rejected
+  at creation. Catalog snapshots key on `"<sourceType>:<sourceId>"`, and
+  activity rows name one source, structurally: the schema refuses a row with
+  both `backendId` and `connectionId`.
+- **Fail-closed is the resting state (ADR-050/051).** A connection in any
+  non-`connected` status is undispatchable; `reauthorization_required` is
+  terminal until an operator acts; a missing `INTEGRATION_MASTER_KEY` never
+  blocks startup but no credential can be stored without it. In a production
+  deployment the entire surface answers empty and no managed tool can exist —
+  that is the honest Phase 12 state, not a gap.
+
 ## 5. Inbound MCP lifecycle
 
 1. Client connects to `/mcp`.
@@ -447,6 +485,17 @@ releases the names it was blocking.
 Nothing is persisted: the catalog is derived state, rebuilt by rediscovery. A
 stored catalog would outlive the connection it described, which is the exact
 staleness the spec forbids.
+
+**Phase 12 addendum (ADR-048).** The catalog record's `backend ID` field became
+a source pair: `sourceType` (`mcp_backend` | `managed_integration`) plus
+`sourceId`. For MCP the `sourceId` **is** the backend id and the record keeps
+its `backendId` field with the same value, so every pre-Phase-12 reader is
+unchanged; for a managed tool the `sourceId` is a connection id and no
+`backendId` is fabricated. The same deterministic naming path produces
+`<sourceId>__<tool>` for both, snapshots key on `"<sourceType>:<sourceId>"`,
+and conflicts behave identically across source types — two claimants of one
+public name withhold both, whoever they are. Discovery reports remain
+MCP-only: a managed source has no handshake to describe.
 
 ## 9. Authentication and authorization
 

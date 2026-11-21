@@ -33,9 +33,12 @@ now requires an operator session on every `/api/v1` route and the dashboard has 
 real login. The remaining Phase 10 modules are not built. Phase 11 (monitoring
 and observability foundation) is **implemented**: structured correlated logging
 and a metrics registry, exported at `GET /metrics` (operator-authenticated) and
-`GET /api/v1/monitoring/metrics`.
+`GET /api/v1/monitoring/metrics`. Phase 12 (integration-ready architecture) is
+**implemented**: two tool source types — MCP backends and managed integrations —
+share one catalog, one authorization model, and one audit trail. No real
+provider exists; the registry ships empty by design.
 - Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`,
-  582 gateway tests; `pnpm test:dashboard`, 432 tests).
+  658 gateway tests; `pnpm test:dashboard`, 432 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
 - `tools/list` serves the live catalog, filtered per agent; no backend is
@@ -150,6 +153,45 @@ new runtime dependency.
   instrumentation) → 582; 5 new dashboard tests → 432.
 - **Not verified:** a real Prometheus scrape of a long-running instance, and a
   browser view of the telemetry card against a live gateway.
+
+**Phase 12 — integration-ready architecture.** ADR-048–052; the gateway can now
+host two kinds of tool sources without forking any pipeline. Architecture only:
+**zero production providers are registered**, and no connection can exist in a
+production deployment.
+
+- Every catalog tool carries a stable `{ sourceType, sourceId }`:
+  `mcp_backend` (unchanged; `backendId` survives, equal to `sourceId`) or
+  `managed_integration` (connection id; no fabricated `backendId`). One catalog,
+  composite snapshot keys, deterministic namespacing reused — no existing MCP
+  public tool name changed.
+- A code-registered provider registry (`src/integrations/`): zod-validated
+  registrations, duplicate ids refused, declared capabilities cross-checked
+  against the connector. No dynamic loading, no marketplace, no plugins.
+- Connectors are bounded guests: the execution context is exactly
+  `{ connectionId, metadata, resolveCredential, signal, timeoutMs }` — no store
+  handle, no eager credential value. Errors normalize onto the existing
+  `BACKEND_*` codes; the connector's own message stays in `details`.
+- One dispatch seam in the router, **after** authorization: a denied caller of
+  a managed tool gets the uniform unknown-tool answer and the connector never
+  runs. A `reauthorization_required` answer flips the connection status,
+  withdraws its tools, and fails closed until an operator acts.
+- Credentials are sealed in an AES-256-GCM envelope vault (per-record DEK,
+  versioned envelope, master key from `INTEGRATION_MASTER_KEY` only, lazy
+  fail-closed — no key means no credential can be stored, ever). The database
+  holds a reference; no endpoint returns a value; a test scans every database
+  file for the plaintext and finds none.
+- Connection lifecycle is data: seven statuses, every non-terminal status can
+  reach `disabled`, `disabled` is the only terminal, and `error` /
+  `reauthorization_required` exit only through an explicit operator connect.
+- Migration `0008` is additive only and is tested against a genuine Phase 11
+  database: every row survives, the new tables arrive empty. Read-only operator
+  endpoints `GET /api/v1/integrations/{providers,connections}` answer honestly
+  (`[]` in production); managed calls reuse `tools.call` activity rows and
+  `umg_tool_calls_total`.
+- 76 new gateway tests across five suites (domain/registry/catalog, execution,
+  vault, database migration, security regression) → 658; dashboard unchanged at
+  432. **Not built:** the operator write API, any dashboard page, and any real
+  provider — none exists to point them at.
 
 **Phase 9 — Astryx dashboard foundation.** A Next.js 16 / React 19 dashboard
 lives in `apps/dashboard` (pnpm workspace) and uses Astryx directly as its design
@@ -515,13 +557,17 @@ Phase 8 behaviour changes — is `docs/API_REFERENCE.md`.
 
 ## Next task
 
-Phase 10 — dashboard operator identity (10.0) then the feature pages, against the
-contract in `docs/API_REFERENCE.md` and the live OpenAPI document.
+Phase 13 — by approval, one of two candidates (see the Phase 12 report's
+recommendation): the first **real provider integration** (a code-registered
+connector against one approved provider, read-only tools first — the shape
+Phase 12 exists to host), or agent-compatibility verification (Claude Code,
+Codex CLI, OpenCode, DeepSeek against the live `/mcp` surface). The previously
+planned roadmap renumbers accordingly (old 12 → 13, old 13 → 14).
 
-**Start with 10.0:** investigate and document the operator identity model before
-choosing any mechanism, then implement authentication, sessions, and
-authorization for sensitive operations (ADR-044). Only then build the module
-pages. Not to be added without approval: real backends, agent client config
-changes, OAuth, non-loopback exposure. Still deferred from Phase 7–9:
-real-browser click-path verification, per-backend `limited` queueing
-(`docs/ARCHITECTURE.md` §11.2), backup/restore APIs, and audit retention.
+**Start with a decision, not code:** both candidates need user approval before
+anything is registered or connected. Not to be added without approval: real
+backends, agent client config changes, OAuth or any third-party auth flow,
+non-loopback exposure. Still deferred from Phase 7–12: real-browser
+click-path verification, per-backend `limited` queueing
+(`docs/ARCHITECTURE.md` §11.2), backup/restore APIs, audit retention, session
+cleanup sweep UI, operator password-change API.

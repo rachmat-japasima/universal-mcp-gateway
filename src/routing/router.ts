@@ -5,12 +5,14 @@ import type { CallToolResult } from '@modelcontextprotocol/client';
 import type { ActivityType } from '../domain/activity-event.js';
 import type { Agent } from '../domain/agent.js';
 import type { Backend } from '../domain/backend.js';
-import type { CatalogTool } from '../domain/tool.js';
+import type { CatalogTool, ManagedCatalogTool, McpCatalogTool } from '../domain/tool.js';
 import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
 import { metrics } from '../monitoring/metrics.js';
 import { correlationContext, enrichCorrelation } from '../monitoring/context.js';
 import { AppError, describeErrorForLog } from '../shared/errors.js';
+import { withCancellation, type ConnectorContext, type ConnectorError } from '../integrations/connector.js';
+import type { IntegrationRuntime } from '../integrations/runtime.js';
 import type { BackendLifecycleManager } from '../adapters/lifecycle.js';
 import { normalizeMcpError } from '../adapters/mcp-client.js';
 import type { AuthorizationService } from '../auth/authorization.js';
@@ -43,6 +45,12 @@ export interface RouterOptions {
    * `call()` cannot reach a backend without a decision.
    */
   authorization?: AuthorizationService;
+  /**
+   * The managed-integration side of the source seam (ADR-049). When supplied,
+   * managed tools dispatch through it; when absent, every managed tool fails
+   * closed as unavailable — there is no fallback that could bypass the seam.
+   */
+  integrations?: IntegrationRuntime;
   now?: () => string;
   /**
    * Ceiling for one routed call. The backend's own `timeoutMs` applies inside
@@ -73,6 +81,7 @@ export class ToolRouter {
   private readonly lifecycle: BackendLifecycleManager;
   private readonly catalog: ToolCatalog;
   private readonly authorization: AuthorizationService | undefined;
+  private readonly integrations: IntegrationRuntime | undefined;
   private readonly now: () => string;
   private readonly timeoutMs: number;
 
@@ -82,6 +91,7 @@ export class ToolRouter {
     this.lifecycle = options.lifecycle;
     this.catalog = options.catalog;
     this.authorization = options.authorization;
+    this.integrations = options.integrations;
     this.now = options.now ?? (() => new Date().toISOString());
     this.timeoutMs = options.timeoutMs ?? 60_000;
   }
@@ -128,8 +138,20 @@ export class ToolRouter {
     const tool = this.resolve(publicName);
 
     // Enriches the request's correlation context: the resolved tool and its
-    // backend are now known, so later log lines can name them.
-    enrichCorrelation({ backendId: tool.backendId, toolId: tool.publicName });
+    // source are now known, so later log lines can name them. The two id
+    // fields are mutually exclusive by source type (ADR-048).
+    enrichCorrelation(
+      tool.sourceType === 'mcp_backend'
+        ? { backendId: tool.sourceId, toolId: tool.publicName }
+        : { connectionId: tool.sourceId, toolId: tool.publicName },
+    );
+
+    // The source seam (ADR-049): a managed tool never reaches a line of the
+    // MCP path below, and an MCP tool never reaches a connector. Everything
+    // under this branch is the unchanged Phase 11 backend path.
+    if (tool.sourceType === 'managed_integration') {
+      return this.callManaged(tool, args, context, startedAt);
+    }
 
     const backend = this.assertReachable(tool, context);
     const arguments_ = this.validateArguments(tool, args, context);
@@ -190,6 +212,137 @@ export class ToolRouter {
     return { tool, result: normalizeResult(result), durationMs };
   }
 
+  /**
+   * The managed-integration dispatch (ADR-049). Same discipline as the MCP
+   * path, in the same order — reachability, argument validation, then the
+   * call — because authorization already happened at the top of `call()` and
+   * must not be repeated differently per source.
+   */
+  private async callManaged(
+    tool: ManagedCatalogTool,
+    args: unknown,
+    context: RoutingContext,
+    startedAt: number,
+  ): Promise<RoutedCall> {
+    // No runtime wired (or a store without integrations): fail closed. There
+    // is deliberately no "try the backend path anyway" fallback.
+    if (this.integrations === undefined) {
+      this.record('tools.call', 'failure', {
+        tool,
+        requestId: context.requestId,
+        errorCode: 'TOOL_UNAVAILABLE',
+        durationMs: Date.now() - startedAt,
+      });
+      throw new AppError('TOOL_UNAVAILABLE', `The tool "${tool.publicName}" is not available.`);
+    }
+
+    const reachable = this.integrations.dispatchable(tool.sourceId);
+    if ('unavailable' in reachable) {
+      this.logger.warn(
+        {
+          connectionId: tool.sourceId,
+          tool: tool.publicName,
+          requestId: context.requestId,
+          ...this.correlationFields(),
+          reason: reachable.unavailable,
+        },
+        'Managed tool mapping rejected',
+      );
+      this.record('tools.call', 'failure', {
+        tool,
+        requestId: context.requestId,
+        errorCode: 'TOOL_UNAVAILABLE',
+        durationMs: Date.now() - startedAt,
+      });
+      throw new AppError('TOOL_UNAVAILABLE', `The tool "${tool.publicName}" is not available.`);
+    }
+
+    const arguments_ = this.validateArguments(tool, args, context);
+
+    if (context.signal?.aborted === true) throw cancelled(tool.publicName, context);
+
+    const { dispatch } = reachable;
+    const connectorContext: ConnectorContext = {
+      connectionId: tool.sourceId,
+      metadata: dispatch.connection.metadata,
+      resolveCredential: dispatch.resolveCredential,
+      timeoutMs: dispatch.timeoutMs,
+      // The call's cancellation is the request's; a caller without a signal
+      // gets a never-aborting one rather than `undefined` semantics drifting
+      // into the connector contract.
+      signal: context.signal ?? new AbortController().signal,
+    };
+
+    this.logger.info(
+      { connectionId: tool.sourceId, tool: tool.publicName, requestId: context.requestId, ...this.correlationFields() },
+      'Managed tool invocation started',
+    );
+
+    const outcome = await withCancellation(connectorContext, () =>
+      dispatch.executeTool(connectorContext, tool.originalName, arguments_),
+    );
+
+    const durationMs = Date.now() - startedAt;
+
+    if (!outcome.ok) {
+      if (outcome.error.kind === 'reauthorization_required') {
+        try {
+          this.integrations.markReauthorizationRequired(tool.sourceId);
+        } catch (error) {
+          // Best effort: the call has already failed; a failed bookkeeping
+          // write must not mask the caller's error.
+          this.logger.warn(
+            { error: describeErrorForLog(error), connectionId: tool.sourceId },
+            'Connection reauthorization transition could not be recorded',
+          );
+        }
+      }
+
+      const failure = connectorFailure(outcome.error, tool.publicName);
+      this.record('tools.call', 'failure', {
+        tool,
+        requestId: context.requestId,
+        errorCode: failure.code,
+        durationMs,
+      });
+      this.logger.warn(
+        {
+          connectionId: tool.sourceId,
+          tool: tool.publicName,
+          requestId: context.requestId,
+          ...this.correlationFields(),
+          code: failure.code,
+          durationMs,
+        },
+        'Managed tool invocation failed',
+      );
+      throw failure;
+    }
+
+    // A connector may answer `isError: true` for a tool-level failure, exactly
+    // like a backend. Successful round trip, failed call — both recorded.
+    this.record('tools.call', outcome.value.isError === true ? 'failure' : 'success', {
+      tool,
+      requestId: context.requestId,
+      errorCode: outcome.value.isError === true ? 'TOOL_UNAVAILABLE' : undefined,
+      durationMs,
+    });
+
+    this.logger.info(
+      {
+        connectionId: tool.sourceId,
+        tool: tool.publicName,
+        requestId: context.requestId,
+        ...this.correlationFields(),
+        outcome: outcome.value.isError === true ? 'tool-error' : 'success',
+        durationMs,
+      },
+      'Managed tool invocation completed',
+    );
+
+    return { tool, result: outcome.value, durationMs };
+  }
+
   /** Resolves without connecting or validating. Exposed for `tools/list` consumers and tests. */
   resolve(publicName: string): CatalogTool {
     const resolved = this.catalog.resolve(publicName);
@@ -230,8 +383,12 @@ export class ToolRouter {
    * The catalog says a backend tool exists; the runtime says whether it can be
    * reached. A disabled or absent backend is a stale mapping, not a call to
    * forward and hope.
+   *
+   * Takes the MCP variant by type: a managed tool cannot reach this check,
+   * which is the seam (ADR-049) enforced by the compiler rather than by
+   * discipline.
    */
-  private assertReachable(tool: CatalogTool, context: RoutingContext): Backend {
+  private assertReachable(tool: McpCatalogTool, context: RoutingContext): Backend {
     const backend = this.store.backends.findById(tool.backendId);
 
     if (backend === undefined) {
@@ -276,7 +433,11 @@ export class ToolRouter {
 
     if (compiled.validate === undefined) {
       this.logger.warn(
-        { backendId: tool.backendId, tool: tool.publicName, reason: compiled.unvalidatedReason },
+        {
+          ...(tool.sourceType === 'mcp_backend' ? { backendId: tool.backendId } : { connectionId: tool.sourceId }),
+          tool: tool.publicName,
+          reason: compiled.unvalidatedReason,
+        },
         'Tool arguments forwarded without validation',
       );
       return record;
@@ -298,7 +459,7 @@ export class ToolRouter {
     return record;
   }
 
-  private rejectStale(tool: CatalogTool, context: RoutingContext, reason: string): void {
+  private rejectStale(tool: McpCatalogTool, context: RoutingContext, reason: string): void {
     this.logger.warn(
       {
         backendId: tool.backendId,
@@ -318,7 +479,7 @@ export class ToolRouter {
   }
 
   /** Classifies a dispatch failure, records it, and returns it for the caller to throw. */
-  private fail(tool: CatalogTool, error: unknown, context: RoutingContext, startedAt: number): AppError {
+  private fail(tool: McpCatalogTool, error: unknown, context: RoutingContext, startedAt: number): AppError {
     // Cancellation is decided by the caller's signal, not by the error's shape:
     // the SDK's abort error carries no stable code, and a backend may report the
     // same cancellation differently or not at all.
@@ -371,7 +532,11 @@ export class ToolRouter {
         id: randomUUID(),
         type,
         outcome,
-        backendId: fields.tool.backendId,
+        // Exactly one of the two: the row names its source by type, never a
+        // connection id under the backend label (ADR-048).
+        ...(fields.tool.sourceType === 'mcp_backend'
+          ? { backendId: fields.tool.backendId }
+          : { connectionId: fields.tool.sourceId }),
         toolName: fields.tool.publicName,
         createdAt: this.now(),
         ...(fields.requestId === undefined ? {} : { requestId: fields.requestId }),
@@ -414,4 +579,37 @@ function cancelled(publicName: string, context: RoutingContext): AppError {
     details: { publicName },
     ...(context.requestId === undefined ? {} : { requestId: context.requestId }),
   });
+}
+
+/**
+ * Maps a connector's normalized failure onto the gateway's error vocabulary.
+ * The client sees a fixed message; the connector's own words go to `details`,
+ * which never leaves the process — a provider message can name URLs, scopes or
+ * internal paths. The existing `BACKEND_*` codes are reused deliberately
+ * (ADR-049): they are transport-neutral from a client's perspective, and
+ * renaming public error codes is a versioned API change held for Phase 14.
+ */
+function connectorFailure(error: ConnectorError, publicName: string): AppError {
+  switch (error.kind) {
+    case 'timeout':
+      return new AppError('BACKEND_TIMEOUT', `Calling tool "${publicName}" timed out.`, {
+        details: { publicName, connectorMessage: error.message },
+      });
+    case 'unreachable':
+      return new AppError('BACKEND_UNAVAILABLE', `The provider for "${publicName}" is unreachable.`, {
+        details: { publicName, connectorMessage: error.message },
+      });
+    case 'invalid_request':
+      return new AppError('VALIDATION_ERROR', `The arguments for "${publicName}" were rejected.`, {
+        details: { publicName, connectorMessage: error.message },
+      });
+    case 'reauthorization_required':
+      return new AppError('TOOL_UNAVAILABLE', `The connection for "${publicName}" requires reauthorization.`, {
+        details: { publicName, connectorMessage: error.message },
+      });
+    case 'provider_error':
+      return new AppError('BACKEND_CONNECTION_ERROR', `Calling tool "${publicName}" failed.`, {
+        details: { publicName, connectorMessage: error.message },
+      });
+  }
 }

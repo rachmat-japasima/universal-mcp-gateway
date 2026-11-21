@@ -403,6 +403,40 @@ The decision is not “Astryx-inspired shadcn”. The decision is to use Astryx 
 - CSRF protection where cookie-authenticated mutations are used.
 - Secure, HttpOnly, SameSite cookies.
 - Content Security Policy and security headers.
+
+### 8.10 Managed integrations (Phase 12)
+
+**FR-INT-01 — Two tool source types, one gateway**
+- Every catalog tool carries a stable `{ sourceType, sourceId }`: MCP backends (unchanged) and managed integrations.
+- Deterministic namespacing reused; no existing public MCP tool name changes.
+- Cross-source name collisions withhold all claimants and report each source.
+
+**FR-INT-02 — Code-registered providers**
+- Providers are registered in code, validated at registration, duplicate-safe.
+- No dynamic loading, marketplace, or plugin surface.
+- Zero production providers ship.
+
+**FR-INT-03 — Bounded connectors**
+- Discovery separated from execution; timeout and cancellation enforced by the gateway.
+- Errors normalized to a closed kind set; connector messages never reach the client message.
+- The execution context carries no store handle and no eager credential value.
+
+**FR-INT-04 — Unified execution and authorization**
+- Authorization precedes dispatch for both source types, through the existing evaluator and policy model.
+- Fail closed at every gate: no runtime, unavailable runtime, or non-`connected` status means the call does not happen.
+
+**FR-INT-05 — Sealed credentials**
+- AES-256-GCM envelope encryption; per-record keys and nonces; master key from the environment only.
+- The database stores references, never values; no endpoint returns a value; resolution is audited.
+- Missing key material fails closed — no plaintext fallback.
+
+**FR-INT-06 — Connection lifecycle**
+- Explicit statuses with validated transitions; withdrawal of tools is synchronous with the state change; deletion cascades credential cleanup.
+- Multiple connections per provider without cross-talk.
+
+**FR-INT-07 — Operator visibility**
+- Read-only provider and connection listings behind operator authentication, with honest empty states.
+- Managed calls appear in the existing activity log, metrics, and audit trail — no forked observability.
 - Rate limits for authentication and sensitive endpoints.
 - Validate Origin/Host according to MCP transport guidance.
 

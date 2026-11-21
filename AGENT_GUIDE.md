@@ -27,10 +27,20 @@ The full product includes gateway core, backend registry, adapters, tool routing
 - Official MCP SDK v2 (`@modelcontextprotocol/server` 2.4.0, `client` 2.4.0, `hono` 2.0.2)
 - Zod 4, Pino, YAML, `better-sqlite3`, Vitest
 - Phases 1–8 are complete, Phase 9 (dashboard foundation) is complete in its
-  adjusted scope, and **Phase 10.0 (dashboard operator identity and
-  authentication) is implemented** (ADR-045). `pnpm typecheck`, `pnpm build`,
-  and `pnpm test` pass (528 tests), and the dashboard passes its own typecheck,
-  build, and 38 tests.
+  adjusted scope, **Phase 10.0 (dashboard operator identity and
+  authentication) is implemented** (ADR-045), Phase 11 (observability) is
+  implemented (ADR-046/047), and **Phase 12 (integration-ready architecture)
+  is implemented** (ADR-048–052). `pnpm typecheck`, `pnpm build`, and
+  `pnpm test` pass (658 tests), and the dashboard passes its own typecheck,
+  build, and 432 tests.
+- `src/integrations/` holds the Phase 12 managed-integration domain: source
+  refs, provider registration (the registry is code and **ships empty**),
+  connection lifecycle as data, the bounded connector contract, the
+  AES-256-GCM envelope vault (`INTEGRATION_MASTER_KEY` only, lazy fail-closed),
+  and `IntegrationService`. The router dispatches managed tools through one
+  seam **after** authorization; the operator API exposes two read-only
+  endpoints under `/api/v1/integrations`. No provider, no OAuth, and no write
+  path exists — none can, until a provider is registered in code.
 - `src/core/gateway.ts` builds the app via `createGateway({ config, logger, store?, credentialKeys? })`:
   SDK `createMcpHandler` + Host/Origin middleware for non-API paths + `/health`, mounts the
   management API at `/api/v1` when a store is present, and mounts bearer authentication on
@@ -62,28 +72,38 @@ The full product includes gateway core, backend registry, adapters, tool routing
   0.7.16), served at `localhost:3000` and reading the gateway through
   `GATEWAY_ORIGIN` server-side (default `http://127.0.0.1:8787`). The gateway stays
   the **root** package — there is no `apps/gateway/package.json`.
-- Production backend registry must remain empty initially.
+- Production backend registry must remain empty initially, and the **provider
+  registry ships empty by code** — do not register a real provider or store a
+  real credential without explicit user approval (Phase 14+, ADR-050).
 
 Inspect actual repository state before editing. This document may lag the code.
 
 ## 3. Immediate assignment
 
-Phases 1–9 are complete in their stated scopes, and **workstream 10.0 (dashboard
-operator identity and authentication) is implemented** (ADR-045). The remaining
-Phase 10 module pages are not started. Start them in `ROADMAP.md` only when
-authorized; do not start them automatically.
+Phases 1–12 are complete in their stated scopes (Phase 12 is the
+integration-ready architecture, ADR-048–052). The remaining Phase 10 module
+pages are not started. **Phase 13 is not started and must not be started
+without explicit approval** — the recommendation in the Phase 12 report names
+the candidates (first real provider integration, or agent compatibility), and
+the previously planned roadmap renumbered accordingly (agent compatibility →
+Phase 13, first real provider → Phase 14).
 
 Phase 9 built the dashboard foundation: shell, navigation, theme, Astryx
 integration, typed API client, same-origin read proxy, and feedback compositions.
 10.0 added operator identity and the gateway-enforced boundary those pages will
 rely on. `/dashboard` (overview) reads real data; every other module route is an
-honest placeholder.
+honest placeholder. Phase 12 added **no dashboard page and no provider**: the
+integrations surface exists in the gateway only, and an empty page over an empty
+registry would not be a milestone.
 
 **Two authentication boundaries exist and must stay separate.** `/mcp` requires a
 per-agent bearer credential (Phase 6); every `/api/v1` route requires an operator
 session (Phase 10.0). Neither is accepted by the other, they share no table, and
 `tests/operator-auth.test.ts` asserts both negations. Do not "unify" them, and do
-not treat an operator session as a way to call tools.
+not treat an operator session as a way to call tools. Phase 12 adds a third
+domain on the same principle: a **connection** is neither an agent nor an
+operator, and a `backend`-scoped policy rule naming a connection id is rejected
+at creation — identity domains never merge (ADR-048).
 
 The management API is no longer unauthenticated, but it is still **loopback-only
 and not remote-ready**: there is no TLS, no RBAC beyond a single `owner`, and no

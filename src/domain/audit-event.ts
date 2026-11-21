@@ -55,6 +55,16 @@ export const AUDIT_ACTIONS = [
   'operator.created',
   'operator.disabled',
   'operator.password_changed',
+  /**
+   * Managed integrations (Phase 12). Connection lifecycle is administrative
+   * history; credential events record the *reference* and the actor, never a
+   * value (`docs/SECURITY.md`).
+   */
+  'integration.connection.created',
+  'integration.connection.updated',
+  'integration.connection.deleted',
+  'integration.credential.sealed',
+  'integration.credential.resolved',
 ] as const;
 
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -83,7 +93,10 @@ export const auditEventSchema = z
     actorType: auditActorTypeSchema,
     actorId: z.string().trim().max(200).optional(),
     action: auditActionSchema,
-    targetType: z.enum(['backend', 'agent', 'credential', 'policy', 'session', 'settings', 'operator']).optional(),
+    /** `connection` is a managed-integration connection (Phase 12). */
+    targetType: z
+      .enum(['backend', 'agent', 'credential', 'policy', 'session', 'settings', 'operator', 'connection'])
+      .optional(),
     targetId: z.string().trim().max(200).optional(),
     result: auditResultSchema,
     requestId: z.string().trim().max(64).optional(),

@@ -314,6 +314,36 @@ disclosure boundary.
 Activity and audit are distinct on purpose: operational volume must not dilute
 the security record.
 
+### 3.10 Integrations (Phase 12)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/v1/integrations/providers` | Registered providers, sorted by id. Every entry is code-registered (ADR-050); production answers `{ "data": [] }` because the registry ships empty — that is the truth, not a stub. |
+| `GET` | `/api/v1/integrations/connections` | Connections, newest first, with `providerName` present when the provider is still registered and omitted when it is not (the row outliving its registration is reported, not hidden). |
+
+```json
+{
+  "data": [
+    {
+      "id": "c0a8…", "providerId": "4444…", "providerName": "Fixture Provider",
+      "name": "ops-org", "status": "connected", "credentialId": "9af1…",
+      "metadata": { "org": "acme" },
+      "createdAt": "2026-11-22T00:00:00.000Z", "updatedAt": "2026-11-22T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+Both routes sit behind the operator session like every `/api/v1` route — an
+unauthenticated call is `401` on both, and an honest deployment with no
+providers answers `200 { "data": [] }` rather than an error.
+
+`credentialId` is a vault **reference**; no route on this surface returns a
+credential value, and the OpenAPI document contains no other integrations path
+(pinned by the security suite). There are no write endpoints and no per-connection
+tool listing: with zero registered providers both would be surfaces over nothing,
+and Phase 13 mounts the write API on the same `IntegrationService`.
+
 ## 4. Operations payloads
 
 ### 4.1 `/api/v1/overview`

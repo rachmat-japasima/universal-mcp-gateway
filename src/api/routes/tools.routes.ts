@@ -53,7 +53,11 @@ function toView(tool: CatalogTool): Record<string, unknown> {
   return {
     publicName: tool.publicName,
     originalName: tool.originalName,
-    backendId: tool.backendId,
+    sourceType: tool.sourceType,
+    sourceId: tool.sourceId,
+    // Present iff the source is an MCP backend (ADR-048). Managed tools have
+    // none, and nothing fabricates a value to keep an older field populated.
+    ...(tool.sourceType === 'mcp_backend' ? { backendId: tool.backendId } : {}),
     ...(tool.title === undefined ? {} : { title: tool.title }),
     ...(tool.description === undefined ? {} : { description: tool.description }),
     inputSchema: tool.inputSchema,
@@ -111,7 +115,10 @@ export function toolsRoutes(deps: ToolsRouteDependencies): Hono {
     const query = parseQuery(c, listToolsQuerySchema);
 
     const matching = catalog.listAll().filter((tool) => {
-      if (query.backendId !== undefined && tool.backendId !== query.backendId) return false;
+      // `backendId` filters MCP tools only: a managed tool has no backend, so
+      // it can never match and is never silently shown under a backend filter.
+      if (query.backendId !== undefined && !(tool.sourceType === 'mcp_backend' && tool.backendId === query.backendId))
+        return false;
       if (query.availability !== undefined && tool.availability !== query.availability) return false;
       if (query.search !== undefined) {
         const needle = query.search.toLowerCase();
@@ -232,5 +239,8 @@ export function backendToolsRoutes(deps: ToolsRouteDependencies): Hono {
 }
 
 function sortKey(tool: CatalogTool, sort: 'publicName' | 'backendId' | 'discoveredAt'): string {
-  return sort === 'backendId' ? tool.backendId : sort === 'discoveredAt' ? tool.discoveredAt : tool.publicName;
+  // The `backendId` sort key sorts by source id: identical values for MCP
+  // tools, a stable key for managed ones. The query-param name is API
+  // contract and stays.
+  return sort === 'backendId' ? tool.sourceId : sort === 'discoveredAt' ? tool.discoveredAt : tool.publicName;
 }

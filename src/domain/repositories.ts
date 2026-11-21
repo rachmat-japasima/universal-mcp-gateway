@@ -5,6 +5,7 @@ import type { AuditEvent } from '../domain/audit-event.js';
 import type { Backend, CreateBackendInput, UpdateBackendInput } from '../domain/backend.js';
 import type { TransportType } from '../domain/backend.js';
 import type { BackendRuntime } from '../domain/backend-runtime.js';
+import type { ConnectionStatus, IntegrationConnection, StoredIntegrationCredential } from '../integrations/connection.js';
 import type { CreatePolicyInput, Policy, UpdatePolicyInput } from '../domain/policy.js';
 import type { Operator, OperatorSession, OperatorSessionRevocationReason } from '../domain/operator.js';
 import type { Session, SessionStatus, SessionTerminationReason } from '../domain/session.js';
@@ -284,7 +285,8 @@ export interface SessionRepository {
 }
 
 /** Every repository a store provides, wired once at startup. */
-export interface Repositories {  backends: BackendRepository;
+export interface Repositories {
+  backends: BackendRepository;
   backendRuntime: BackendRuntimeRepository;
   agents: AgentRepository;
   credentials: CredentialRepository;
@@ -293,6 +295,8 @@ export interface Repositories {  backends: BackendRepository;
   activity: ActivityRepository;
   audit: AuditRepository;
   operators: OperatorRepository;
+  integrationConnections: IntegrationConnectionRepository;
+  integrationCredentials: IntegrationCredentialRepository;
 }
 
 /** Everything needed to create an operator. The caller has already hashed. */
@@ -347,4 +351,32 @@ export interface OperatorRepository {
   /** Revokes rows past their ceiling or idle deadline. Returns the rows changed. */
   expireSessions(now: string, idleCutoff: string): OperatorSession[];
   countActiveSessions(operatorId: string, now: string, idleCutoff: string): number;
+}
+
+/**
+ * Managed-integration persistence (Phase 12, ADR-050/051).
+ *
+ * Connection rows are validated at the service boundary; nothing here stores
+ * a credential value — `StoredIntegrationCredential` carries a sealed envelope
+ * only. No create/update for providers: the provider registry is code, and a
+ * table would be a second copy that can drift (ADR-050).
+ */
+export interface IntegrationConnectionRepository {
+  create(input: IntegrationConnection): IntegrationConnection;
+  findById(id: string): IntegrationConnection | undefined;
+  list(): IntegrationConnection[];
+  /** Status-only write; the service owns transition legality. */
+  updateStatus(id: string, status: ConnectionStatus, now: string): IntegrationConnection | undefined;
+  /** Links (or unlinks with `null`) the vault reference. Value writes go to `IntegrationCredentialRepository`. */
+  updateCredential(id: string, credentialId: string | null, now: string): IntegrationConnection | undefined;
+  /** Update of operator-facing fields. Status is untouched: use `updateStatus`. */
+  update(id: string, fields: { name?: string; metadata?: Record<string, unknown> }, now: string): IntegrationConnection | undefined;
+  /** Hard delete; `integration_credentials` rows cascade (migration 0008). */
+  remove(id: string): boolean;
+}
+
+export interface IntegrationCredentialRepository {
+  create(credential: StoredIntegrationCredential): StoredIntegrationCredential;
+  findById(id: string): StoredIntegrationCredential | undefined;
+  remove(id: string): boolean;
 }

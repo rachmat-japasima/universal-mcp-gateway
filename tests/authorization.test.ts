@@ -145,7 +145,8 @@ function setup() {
   });
 
   catalog.replace({
-    backendId: backend.id,
+    sourceType: 'mcp_backend',
+    sourceId: backend.id,
     tools,
     report: {
       backendId: backend.id,
@@ -271,8 +272,22 @@ describe('AuthorizationService', () => {
     const described = authorization.describeAccess(agent);
     expect(described.policies).toEqual([{ id: grant.id, name: 'read-only', priority: 0 }]);
     expect(described.visibleTools).toEqual([
-      { publicName: `${backend.id}__echo`, backendId: backend.id, allowed: true, reason: 'explicit_allow' },
-      { publicName: `${backend.id}__write`, backendId: backend.id, allowed: false, reason: 'default_deny' },
+      {
+        publicName: `${backend.id}__echo`,
+        sourceType: 'mcp_backend',
+        sourceId: backend.id,
+        backendId: backend.id,
+        allowed: true,
+        reason: 'explicit_allow',
+      },
+      {
+        publicName: `${backend.id}__write`,
+        sourceType: 'mcp_backend',
+        sourceId: backend.id,
+        backendId: backend.id,
+        allowed: false,
+        reason: 'default_deny',
+      },
     ]);
   });
 });

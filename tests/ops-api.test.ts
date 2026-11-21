@@ -213,7 +213,7 @@ describe('readiness', () => {
 
     const body = await json<Record<string, unknown>>(response);
     expect(body).toMatchObject({ status: 'ready', checks: { database: 'ok', migrations: 'ok' } });
-    expect(body['migrationVersion']).toBe('0007');
+    expect(body['migrationVersion']).toBe('0008');
   });
 
   it('fails closed when the database is closed', async () => {
@@ -240,7 +240,7 @@ describe('diagnostics', () => {
 
     expect(data.service).toMatchObject({ name: 'universal-mcp-gateway', version: '1.0.0' });
     expect(data.runtime.node).toMatch(/^v\d+/);
-    expect(data.database).toMatchObject({ status: 'ok', migrationVersion: '0007' });
+    expect(data.database).toMatchObject({ status: 'ok', migrationVersion: '0008' });
     expect(data.configuration).toMatchObject({ status: 'ok', environment: 'test' });
     expect(data.backends).toEqual({ registered: 0 });
     expect(data.sessions).toEqual({ total: 0 });

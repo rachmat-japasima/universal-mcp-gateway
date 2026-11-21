@@ -362,6 +362,34 @@ Shutdown policy: `gateway.close()` terminates every active session (`gateway_shu
 closing transports and the store. The alternative — leaving `active` rows behind — would make
 the next process believe sessions are live that nothing can serve.
 
+### 6.5 Integration audit (Phase 12)
+
+Five new closed-enum actions, `target_type` gains `'connection'`; no DB `CHECK`
+changed — the enum lives in zod at the boundary, consistent with every prior
+phase (ADR-052).
+
+| Action | Target | Metadata |
+| --- | --- | --- |
+| `integration.connection.created` | `connection` | `providerId`, `name` |
+| `integration.connection.updated` | `connection` | `changed` (field whitelist) |
+| `integration.connection.deleted` | `connection` | `providerId` |
+| `integration.credential.sealed` | `connection` | `credentialId` — the reference, never the value |
+| `integration.credential.resolved` | `connection` | `credentialId` — written on **every** resolution, not deduplicated: a connector pulling a secret is exactly the event the trail exists to record |
+
+- No credential value, envelope, or key material is ever a metadata field. The
+  security suite asserts the sealed and resolved rows do not contain the
+  plaintext of what they describe.
+- Lifecycle status changes (connect/disconnect/disable) write **activity**, not
+  audit: they are operational, and the row already names the connection.
+
+**Managed calls in the operational log (same phase).** A routed managed call is
+one `tools.call` activity row with `connectionId` set and no `backendId` — the
+zod schema refuses a row carrying both, so one call names one source. It
+increments the same `umg_tool_calls_total` as an MCP call: there is no
+`managed_tool_calls_total`, because a second series would be a second place a
+dashboard could drift. The correlation context carries `connectionId` alongside
+`backendId`, mutually exclusive the same way.
+
 ## 7. Alerts and notifications
 
 Not implemented. Phase 8 exposes the data an alerting layer would need — counts,

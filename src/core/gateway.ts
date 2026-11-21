@@ -37,6 +37,9 @@ import { mcpAuthenticate, toAuthInfo } from '../api/middleware/mcp-auth.js';
 import { isInitializeBody, McpSessionManager, sessionNotFound } from '../sessions/session-manager.js';
 import { SessionService } from '../registry/session-service.js';
 import { OperatorService } from '../registry/operator-service.js';
+import { IntegrationService } from '../integrations/service.js';
+import { ProviderRegistry, providerRegistry } from '../integrations/registry.js';
+import { EnvelopeVault } from '../integrations/vault.js';
 
 export interface GatewayOptions {
   config: Config;
@@ -57,6 +60,11 @@ export interface GatewayOptions {
   createServer?: McpServerFactory;
   /** Injected lifecycle manager, so tests can control the clock and backoff. */
   lifecycle?: BackendLifecycleManager;
+  /**
+   * Injected provider registry, so tests can register fixture providers.
+   * Production uses the module-level registry, which ships empty (ADR-050).
+   */
+  providerRegistry?: ProviderRegistry;
 }
 
 export interface Gateway {
@@ -73,6 +81,8 @@ export interface Gateway {
   readonly sessionManager?: McpSessionManager;
   /** Dashboard operator authentication. Absent only when there is no store. */
   readonly operators?: OperatorService;
+  /** Managed integrations (Phase 12). Absent only when there is no store. */
+  readonly integrations?: IntegrationService;
 }
 
 export { SERVICE_INFO };
@@ -180,6 +190,28 @@ export function createGateway(options: GatewayOptions): Gateway {
   const authorization =
     store === undefined ? undefined : new AuthorizationService({ store, catalog, logger });
 
+  /**
+   * Managed integrations (Phase 12).
+   *
+   * Built whenever a store exists: the provider registry ships empty, so this
+   * service can never dispatch anything in production — every managed tool
+   * fails closed as `TOOL_UNAVAILABLE` because `dispatchable()` has no
+   * registered provider to answer for. The vault is lazy fail-closed: a
+   * missing master key never blocks startup, only the first credential
+   * operation (ADR-051).
+   */
+  const integrations =
+    store === undefined
+      ? undefined
+      : new IntegrationService({
+          store,
+          registry: options.providerRegistry ?? providerRegistry,
+          vault: new EnvelopeVault(),
+          catalog,
+          logger,
+          timeoutMs: config.toolCallTimeoutMs,
+        });
+
   const router =
     store !== undefined && lifecycle !== undefined && authorization !== undefined
       ? new ToolRouter({
@@ -188,6 +220,7 @@ export function createGateway(options: GatewayOptions): Gateway {
           lifecycle,
           catalog,
           authorization,
+          ...(integrations === undefined ? {} : { integrations }),
           timeoutMs: config.toolCallTimeoutMs,
         })
       : undefined;
@@ -422,6 +455,9 @@ export function createGateway(options: GatewayOptions): Gateway {
         authorization: authorization!,
         credentialKeys: options.credentialKeys ?? EMPTY_KEYS,
         operators,
+        // `integrations` is defined whenever `store` is.
+        integrations: integrations!,
+        registry: options.providerRegistry ?? providerRegistry,
         ...(sessions === undefined ? {} : { sessions }),
       }),
     );
@@ -553,6 +589,7 @@ export function createGateway(options: GatewayOptions): Gateway {
     ...(sessions === undefined ? {} : { sessions }),
     ...(sessionManager === undefined ? {} : { sessionManager }),
     ...(operators === undefined ? {} : { operators }),
+    ...(integrations === undefined ? {} : { integrations }),
     async close() {
       shuttingDown = true;
       // Order matters: stop serving, then release outbound connections, then let

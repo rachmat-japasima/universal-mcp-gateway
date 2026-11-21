@@ -32,6 +32,7 @@ interface ActivityRow {
   correlation_id: string | null;
   agent_id: string | null;
   backend_id: string | null;
+  connection_id: string | null;
   tool_name: string | null;
   outcome: string;
   error_code: string | null;
@@ -49,6 +50,7 @@ function toActivity(row: ActivityRow): ActivityEvent {
         ...(row.correlation_id === null ? {} : { correlationId: row.correlation_id }),
         ...(row.agent_id === null ? {} : { agentId: row.agent_id }),
         ...(row.backend_id === null ? {} : { backendId: row.backend_id }),
+        ...(row.connection_id === null ? {} : { connectionId: row.connection_id }),
         ...(row.tool_name === null ? {} : { toolName: row.tool_name }),
         outcome: row.outcome,
         ...(row.error_code === null ? {} : { errorCode: row.error_code }),
@@ -68,9 +70,9 @@ export class SqliteActivityRepository implements ActivityRepository {
     try {
       this.database
         .prepare(
-          `INSERT INTO activity_events (id, type, request_id, correlation_id, agent_id, backend_id, tool_name, outcome,
-             error_code, duration_ms, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO activity_events (id, type, request_id, correlation_id, agent_id, backend_id, connection_id,
+             tool_name, outcome, error_code, duration_ms, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           parsed.id,
@@ -79,6 +81,7 @@ export class SqliteActivityRepository implements ActivityRepository {
           parsed.correlationId ?? null,
           parsed.agentId ?? null,
           parsed.backendId ?? null,
+          parsed.connectionId ?? null,
           parsed.toolName ?? null,
           parsed.outcome,
           parsed.errorCode ?? null,

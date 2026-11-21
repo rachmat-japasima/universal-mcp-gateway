@@ -7,6 +7,10 @@ import { SqliteCredentialRepository } from './repositories/credentials.js';
 import { SqliteActivityRepository, SqliteAuditRepository, SqliteSessionRepository } from './repositories/events.js';
 import { SqliteOperatorRepository } from './repositories/operators.js';
 import { SqlitePolicyRepository } from './repositories/policies.js';
+import {
+  SqliteIntegrationConnectionRepository,
+  SqliteIntegrationCredentialRepository,
+} from './repositories/integrations.js';
 
 export interface Database extends Repositories {
   /** Direct handle, for tests and future transactional services. Prefer repositories elsewhere. */
@@ -48,6 +52,8 @@ export function openStore(options: OpenStoreOptions): Database {
     activity: new SqliteActivityRepository(handle),
     audit: new SqliteAuditRepository(handle),
     operators: new SqliteOperatorRepository(handle),
+    integrationConnections: new SqliteIntegrationConnectionRepository(handle),
+    integrationCredentials: new SqliteIntegrationCredentialRepository(handle),
     transaction: (work) => handle.transaction(work)(),
     close: () => closeDatabase(handle),
   };

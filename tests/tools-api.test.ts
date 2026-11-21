@@ -149,7 +149,8 @@ describe('GET /tools', () => {
       availability: 'available',
       inputSchema: expect.any(Object),
     });
-    // Internal routing state never leaves the gateway.
+    // Internal routing state never leaves the gateway; the source fields are
+    // the ADR-048 identity (backendId stays for `mcp_backend` tools).
     expect(Object.keys(first).sort()).toEqual([
       'availability',
       'backendId',
@@ -158,6 +159,8 @@ describe('GET /tools', () => {
       'inputSchema',
       'originalName',
       'publicName',
+      'sourceId',
+      'sourceType',
       'updatedAt',
     ]);
 

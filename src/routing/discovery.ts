@@ -7,10 +7,11 @@ import type { Database } from '../infrastructure/database/index.js';
 import type { Logger } from '../monitoring/logger.js';
 import { correlationContext } from '../monitoring/context.js';
 import { AppError, describeErrorForLog } from '../shared/errors.js';
+import { backendSource } from '../integrations/source.js';
 import type { BackendLifecycleManager } from '../adapters/lifecycle.js';
 import type { McpBackendClient } from '../adapters/mcp-client.js';
 import { normalizeMcpError } from '../adapters/mcp-client.js';
-import { buildTools, ToolCatalog, type BackendSnapshot, type DiscoveryOutcome } from './catalog.js';
+import { buildTools, ToolCatalog, type DiscoveryOutcome } from './catalog.js';
 
 /**
  * Tool discovery.
@@ -106,7 +107,7 @@ export class ToolDiscovery {
    * single answer to "this backend's tools must stop being callable now".
    */
   invalidate(backendId: string, reason: string, options: { requestId?: string } = {}): void {
-    const removed = this.catalog.remove(backendId);
+    const removed = this.catalog.remove(backendSource(backendId));
     if (!removed) return;
 
     this.logger.info({ backendId, reason, requestId: options.requestId }, 'Tool catalog entry removed');
@@ -167,12 +168,13 @@ export class ToolDiscovery {
       };
     }
 
-    const snapshot: BackendSnapshot = {
-      backendId,
+    const snapshot = {
+      sourceType: 'mcp_backend' as const,
+      sourceId: backendId,
       tools,
       report: {
         backendId,
-        status: 'ok',
+        status: 'ok' as const,
         toolCount: tools.size,
         // Baseline only: the catalog computes the live count at read time,
         // because a conflict is a property of the whole catalog, not of this
