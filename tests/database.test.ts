@@ -95,6 +95,7 @@ describe('migrations', () => {
       '0006',
       '0007',
       '0008',
+      '0009',
     ]);
     for (const row of applied) expect(row.checksum).toMatch(/^[a-f0-9]{64}$/);
 

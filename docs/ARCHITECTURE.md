@@ -367,19 +367,27 @@ context and an in-memory aggregate registry, and both reset with the process.
   store as `unavailable` while the in-memory registry keeps reporting real
   numbers — neither side fabricates the other's answer.
 
-## 4.7 Managed integrations (Phase 12)
+## 4.7 Managed integrations (Phases 12–13)
 
-ADR-048–052. A second tool source type — `managed_integration` — enters through
+ADR-048–053. A second tool source type — `managed_integration` — enters through
 one seam and borrows everything else: catalog, authorization, metrics, audit.
-**Zero production providers exist**; the provider registry ships empty, by code.
+**GitHub is the first registered provider** (ADR-053) — code-registered,
+fine-grained PAT, read-only; the registry is still code and still has no
+runtime widening.
 
 - **`src/integrations/` is the whole module:** `source.ts` (the closed
   `{sourceType, sourceId}` pair), `provider.ts` (registration schema and the
   two capabilities), `connection.ts` (seven statuses, transitions-as-data,
-  non-secret metadata), `registry.ts` (the empty module constant plus a
-  validating `register()`), `connector.ts` (the guest contract and
+  non-secret metadata), `registry.ts` (the `REGISTRATIONS` module constant —
+  `githubRegistration` is its first entry — plus a validating `register()`;
+  the constructor default is an empty registry, so tests wire exactly what
+  they assert), `connector.ts` (the guest contract and
   `withCancellation`), `runtime.ts` (the dispatch gate), `vault.ts` (the
-  AES-256-GCM envelope), `service.ts` (lifecycle, credentials, `dispatchable`).
+  AES-256-GCM envelope), `service.ts` (lifecycle, credentials, `verify`,
+  `dispatchable`), `github/` (the first connector: `registration.ts`,
+  `client.ts` — the provider-owned HTTP client with fixed origin, closed
+  header set, bounded single retry — `tools.ts` — six read-only tools with
+  strict zod inputs and required identity fields in the normalizers).
 - **The seam is one branch in `ToolRouter.call()`, after authorization.**
   MCP-only helpers are narrowed to the MCP variant of the `CatalogTool` union
   so the compiler enforces the seam. No runtime wired → `TOOL_UNAVAILABLE`;
@@ -401,9 +409,11 @@ one seam and borrows everything else: catalog, authorization, metrics, audit.
 - **Fail-closed is the resting state (ADR-050/051).** A connection in any
   non-`connected` status is undispatchable; `reauthorization_required` is
   terminal until an operator acts; a missing `INTEGRATION_MASTER_KEY` never
-  blocks startup but no credential can be stored without it. In a production
-  deployment the entire surface answers empty and no managed tool can exist —
-  that is the honest Phase 12 state, not a gap.
+  blocks startup but no credential can be stored without it. With no
+  connection created, the surface still answers empty — the difference in
+  Phase 13 is that the operator API and the dashboard can now create one,
+  store a token, prove it (`test`, data either way), and publish its tools
+  (`enable`, the only path to `connected`).
 
 ## 5. Inbound MCP lifecycle
 

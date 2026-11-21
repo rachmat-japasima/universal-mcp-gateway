@@ -5,6 +5,7 @@ import {
   type ProviderRegistration,
 } from './provider.js';
 import type { Connector } from './connector.js';
+import { githubConnector } from './github/connector.js';
 
 /**
  * Code-registered provider registry (ADR-050).
@@ -16,9 +17,9 @@ import type { Connector } from './connector.js';
  * so persisting it would only create a second copy that can drift from the
  * code.
  *
- * The production registry is EMPTY (same stance as ADR-002 for backends).
- * Test fixtures register throwaway providers in their own registry instance;
- * nothing here ships a real provider.
+ * Production registrations: GitHub (ADR-053), read-only through a fine-grained
+ * personal access token. Test fixtures register throwaway providers in their
+ * own registry instance; this list stays production truth.
  */
 
 /** A provider's code-side entry: its definition plus its connector. */
@@ -27,13 +28,39 @@ export interface RegisteredProvider {
   connector: Connector;
 }
 
+/**
+ * The GitHub registration (ADR-053), exported so its contract tests wire the
+ * production registration to a fixture connector — the registration under test
+ * is the one the gateway ships, not a lookalike.
+ */
+export const githubRegistration: ProviderRegistration = {
+  id: 'github',
+  name: 'GitHub',
+  description:
+    'Read-only GitHub access through a fine-grained personal access token. Six tools cover repositories, issues, and pull requests; the token must carry Metadata (read) plus Issues and Pull requests (read) on the repositories it should see.',
+  capabilities: ['discovery', 'execution'],
+  metadata: {
+    authMethod: 'fine-grained personal access token',
+    requiredPermissions: ['Metadata:read', 'Issues:read', 'Pull requests:read'],
+    apiOrigin: 'https://api.github.com',
+    docs: 'https://docs.github.com/en/rest',
+  },
+};
+
 /** Registrations go here when a real provider is implemented (Phase 13+). */
-const REGISTRATIONS: ReadonlyArray<{ registration: ProviderRegistration; connector: Connector }> = [];
+const REGISTRATIONS: ReadonlyArray<{ registration: ProviderRegistration; connector: Connector }> = [
+  { registration: githubRegistration, connector: githubConnector },
+];
 
 export class ProviderRegistry {
   private readonly providers = new Map<string, RegisteredProvider>();
 
-  constructor(registrations: ReadonlyArray<{ registration: ProviderRegistration; connector: Connector }> = REGISTRATIONS) {
+  /**
+   * A registry registers exactly what it is handed — an empty instance is
+   * empty, which is what test fixtures construct. The production singleton
+   * below is the one wired with `REGISTRATIONS`.
+   */
+  constructor(registrations: ReadonlyArray<{ registration: ProviderRegistration; connector: Connector }> = []) {
     for (const entry of registrations) this.register(entry.registration, entry.connector);
   }
 
@@ -81,7 +108,8 @@ export class ProviderRegistry {
 }
 
 /**
- * The registry the gateway assembles with. Empty in production by design;
- * tests construct their own instance instead of mutating this one.
+ * The registry the gateway assembles with. Wired with the code registrations
+ * (GitHub, ADR-053); tests construct their own instance instead of mutating
+ * this one.
  */
-export const providerRegistry = new ProviderRegistry();
+export const providerRegistry = new ProviderRegistry(REGISTRATIONS);

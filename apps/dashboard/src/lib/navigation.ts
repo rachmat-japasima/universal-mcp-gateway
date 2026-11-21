@@ -30,6 +30,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { href: '/dashboard/backends', label: 'Backends', icon: 'externalLink' },
       { href: '/dashboard/tools', label: 'Tools', icon: 'wrench' },
+      { href: '/dashboard/integrations', label: 'Integrations', icon: 'externalLink' },
       { href: '/dashboard/agents', label: 'Agents', icon: 'info' },
       { href: '/dashboard/policies', label: 'Access Policies', icon: 'check' },
     ],

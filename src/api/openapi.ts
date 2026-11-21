@@ -383,7 +383,11 @@ function schemas(): Record<string, unknown> {
       type: 'object',
       required: ['id', 'name', 'description', 'capabilities', 'registeredAt'],
       properties: {
-        id: uuid('Registry key. Stable once published.'),
+        id: {
+          type: 'string',
+          pattern: '^[a-z][a-z0-9-]{0,63}$',
+          description: 'Registry key: a lowercase slug, stable once published. GitHub ships registered (ADR-053).',
+        },
         name: { type: 'string' },
         description: { type: 'string' },
         capabilities: { type: 'array', items: { type: 'string', enum: ['discovery', 'execution'] } },
@@ -394,10 +398,14 @@ function schemas(): Record<string, unknown> {
     },
     IntegrationConnection: {
       type: 'object',
-      required: ['id', 'providerId', 'name', 'status', 'credentialId', 'metadata', 'createdAt', 'updatedAt'],
+      required: ['id', 'providerId', 'name', 'status', 'credentialId', 'metadata', 'validatedAt', 'createdAt', 'updatedAt'],
       properties: {
         id: uuid('Gateway-generated connection id.'),
-        providerId: uuid('Registry key of the provider this connection instantiates.'),
+        providerId: {
+          type: 'string',
+          pattern: '^[a-z][a-z0-9-]{0,63}$',
+          description: 'Registry key of the provider this connection instantiates.',
+        },
         providerName: { type: 'string', description: 'Present while the provider stays registered.' },
         name: { type: 'string' },
         status: {
@@ -409,6 +417,11 @@ function schemas(): Record<string, unknown> {
           description: 'Vault reference, never a value. `null` when no credential is stored.',
         },
         metadata: { type: 'object', description: 'Validated non-secret settings.' },
+        validatedAt: {
+          type: ['string', 'null'],
+          format: 'date-time',
+          description: 'When the credential was last proved against the provider; `null` until the first successful connect.',
+        },
         createdAt: instant('Created at.'),
         updatedAt: instant('Updated at.'),
       },
@@ -620,11 +633,68 @@ const CREDENTIAL_ISSUE = {
   additionalProperties: false,
 };
 
+const CONNECTION_CREATE = {
+  type: 'object',
+  required: ['providerId', 'name'],
+  properties: {
+    providerId: { type: 'string', pattern: '^[a-z][a-z0-9-]{0,63}$', description: 'A registered provider id.' },
+    name: { type: 'string', minLength: 1, maxLength: 100 },
+    metadata: { type: 'object', description: 'Non-secret connection settings; never a credential.' },
+  },
+  additionalProperties: false,
+};
+
+/** Write-only: the token exists in this body and the vault, never in a response. */
+const CONNECTION_CREDENTIAL = {
+  type: 'object',
+  required: ['token'],
+  properties: { token: { type: 'string', minLength: 1, maxLength: 4096, writeOnly: true } },
+  additionalProperties: false,
+};
+
+/** The handshake answer from `test`: data either way, never an error envelope. */
+const CONNECTION_VERIFY = {
+  oneOf: [
+    { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean', enum: [true] } }, additionalProperties: false },
+    {
+      type: 'object',
+      required: ['ok', 'kind', 'message'],
+      properties: {
+        ok: { type: 'boolean', enum: [false] },
+        kind: { type: 'string', enum: ['invalid_request', 'reauthorization_required', 'unreachable', 'provider_error'] },
+        message: { type: 'string', description: 'The connector vocabulary; never provider prose.' },
+      },
+      additionalProperties: false,
+    },
+  ],
+};
+
+/** The `enable` response: the committed row plus what the catalog learned. */
+const CONNECTION_ENABLE = {
+  type: 'object',
+  required: ['connection', 'tools'],
+  properties: {
+    connection: ref('IntegrationConnection'),
+    tools: {
+      type: 'object',
+      required: ['added', 'removed', 'changed'],
+      properties: {
+        added: { type: 'array', items: { type: 'string' }, description: 'Provider tool names newly published.' },
+        removed: { type: 'array', items: { type: 'string' } },
+        changed: { type: 'array', items: { type: 'string' } },
+      },
+      additionalProperties: false,
+    },
+  },
+  additionalProperties: false,
+};
+
 const BACKEND_ID = pathParam('backendId', 'uuid');
 const AGENT_ID = pathParam('agentId', 'uuid');
 const POLICY_ID = pathParam('policyId', 'uuid');
 const SESSION_ID = pathParam('sessionId', 'uuid');
 const EVENT_ID = pathParam('eventId', 'uuid');
+const CONNECTION_ID = pathParam('connectionId', 'uuid');
 const EXPECTED_VERSION = {
   name: 'expectedVersion',
   in: 'query',
@@ -1015,17 +1085,110 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
           tags: ['integrations'],
           summary: 'Registered managed-integration providers',
           description:
-            'The provider registry is code-registered and ships EMPTY in production (ADR-050): an empty list is the accurate state, not a missing feature. No marketplace, no plugins, no dynamic loading.',
+            'The provider registry is code-registered (ADR-050): no marketplace, no plugins, no dynamic loading. GitHub ships registered and read-only (ADR-053); the listing is the whole truth.',
           responses: { 200: okBody({ type: 'array', items: ref('Provider') }) },
         },
       },
+
       '/api/v1/integrations/connections': {
         get: {
           tags: ['integrations'],
           summary: 'Managed-integration connections',
-          description:
-            'Read-only in Phase 12: connections exist as a domain, but no operator write path is mounted because no provider is registered. Empty list is the accurate production state. Credentials appear only as vault references.',
+          description: 'Newest first. Credentials appear only as vault references; `validatedAt` says when the token was last proved.',
           responses: { 200: okBody({ type: 'array', items: ref('IntegrationConnection') }) },
+        },
+        post: {
+          tags: ['integrations'],
+          summary: 'Create a connection',
+          description: 'Creates the row as `pending`: it exists, nothing is verified, nothing is callable. Storing a credential and connecting are separate, explicit steps.',
+          requestBody: jsonBody(CONNECTION_CREATE),
+          responses: {
+            201: okBody(ref('IntegrationConnection'), 'Created'),
+            ...errorResponses(['400', 'Invalid body'], ['404', 'Unknown providerId']),
+          },
+        },
+      },
+
+      '/api/v1/integrations/connections/{connectionId}': {
+        get: {
+          tags: ['integrations'],
+          summary: 'Get a connection',
+          parameters: [CONNECTION_ID],
+          responses: { 200: okBody(ref('IntegrationConnection')), ...errorResponses(['404', 'Not found']) },
+        },
+        delete: {
+          tags: ['integrations'],
+          summary: 'Delete a connection',
+          description: 'Hard delete: tools are withdrawn first, then the row, then its credentials cascade (migration 0008). Answers with the removed row.',
+          parameters: [CONNECTION_ID],
+          responses: { 200: okBody(ref('IntegrationConnection')), ...errorResponses(['404', 'Not found']) },
+        },
+      },
+
+      '/api/v1/integrations/connections/{connectionId}/credential': {
+        post: {
+          tags: ['integrations'],
+          summary: 'Store or replace the credential',
+          description:
+            'Write-only (ADR-051): the token exists in this body and the vault, never in any response, log, or audit row. A replacement deletes the previous envelope in the same transaction. Does not connect; `enable` or `test` follows.',
+          parameters: [CONNECTION_ID],
+          requestBody: jsonBody(CONNECTION_CREDENTIAL),
+          responses: { 200: okBody(ref('IntegrationConnection')), ...errorResponses(['404', 'Not found']) },
+        },
+      },
+
+      '/api/v1/integrations/connections/{connectionId}/test': {
+        post: {
+          tags: ['integrations'],
+          summary: 'Test the stored credential',
+          description:
+            'Runs the provider verification handshake (GitHub: one authenticated GET) without moving the row. The refusal arrives as `200` data: `reauthorization_required` means store a new token.',
+          parameters: [CONNECTION_ID],
+          responses: { 200: okBody(CONNECTION_VERIFY), ...errorResponses(['404', 'Not found']) },
+        },
+      },
+
+      '/api/v1/integrations/connections/{connectionId}/enable': {
+        post: {
+          tags: ['integrations'],
+          summary: 'Connect (and re-enable or reconnect)',
+          description:
+            'The one path to `connected`: verification handshake, tool publication, and the `validatedAt` stamp. Also the explicit exit from `disabled` and the reconnect from `disconnected` — never automatic.',
+          parameters: [CONNECTION_ID],
+          responses: {
+            200: okBody(CONNECTION_ENABLE),
+            ...errorResponses(['404', 'Not found'], ['409', 'Illegal status transition'], ['502', 'Provider handshake failed']),
+          },
+        },
+      },
+
+      '/api/v1/integrations/connections/{connectionId}/disable': {
+        post: {
+          tags: ['integrations'],
+          summary: 'Disable a connection',
+          description: 'Withdraws the tools in the same instant. The row survives; `enable` is the only way back.',
+          parameters: [CONNECTION_ID],
+          responses: { 200: okBody(ref('IntegrationConnection')), ...errorResponses(['404', 'Not found'], ['409', 'Illegal status transition']) },
+        },
+      },
+
+      '/api/v1/integrations/connections/{connectionId}/disconnect': {
+        post: {
+          tags: ['integrations'],
+          summary: 'Disconnect a connection',
+          description: 'Tools withdrawn, row survives at rest. Reconnect is `enable`, which re-proves the credential.',
+          parameters: [CONNECTION_ID],
+          responses: { 200: okBody(ref('IntegrationConnection')), ...errorResponses(['404', 'Not found'], ['409', 'Illegal status transition']) },
+        },
+      },
+
+      '/api/v1/integrations/connections/{connectionId}/tools': {
+        get: {
+          tags: ['integrations'],
+          summary: 'The tools this connection publishes',
+          description: 'Public names follow ADR-048 namespacing (`<connectionId>__<tool>`). Empty until the connection is connected.',
+          parameters: [CONNECTION_ID],
+          responses: { 200: okBody({ type: 'array', items: ref('Tool') }), ...errorResponses(['404', 'Not found']) },
         },
       },
 

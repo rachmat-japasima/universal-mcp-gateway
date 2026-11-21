@@ -795,3 +795,85 @@ export interface SessionQuery {
   sort?: 'createdAt' | 'lastActivityAt';
   order?: 'asc' | 'desc';
 }
+
+/**
+ * Managed integrations (Phase 13). The provider list is code-registered — no
+ * marketplace, no plugins — so a short list is the whole truth, and GitHub is
+ * the first registered provider (ADR-053).
+ */
+export interface IntegrationProvider {
+  /** Registry key: a lowercase slug, stable once published. */
+  id: string;
+  name: string;
+  description: string;
+  capabilities: string[];
+  metadata: Record<string, unknown>;
+  registeredAt: string;
+}
+
+export const INTEGRATION_STATUSES = [
+  'pending',
+  'connecting',
+  'connected',
+  'disconnected',
+  'error',
+  'reauthorization_required',
+  'disabled',
+] as const;
+export type IntegrationStatus = (typeof INTEGRATION_STATUSES)[number];
+
+export interface IntegrationConnection {
+  id: string;
+  providerId: string;
+  /** Present while the provider stays registered. */
+  providerName?: string;
+  name: string;
+  status: IntegrationStatus;
+  /** Vault reference, never a value. `null` when no credential is stored. */
+  credentialId: string | null;
+  metadata: Record<string, unknown>;
+  /**
+   * When the credential was last proved against the provider. `null` until
+   * the first successful connect — storing a token proves nothing.
+   */
+  validatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * `GET …/connections/:id/tools` — the same vocabulary as `Tool`, but the
+ * source is a managed integration, not a registered backend, so the source
+ * fields differ and the dashboard must not reuse the backend-typed view.
+ */
+export interface IntegrationTool {
+  publicName: string;
+  originalName: string;
+  sourceType: 'managed_integration';
+  sourceId: string;
+  title?: string;
+  description?: string;
+  /** Opaque JSON Schema, forwarded verbatim from the provider. Never executed here. */
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+  availability: ToolAvailability;
+  discoveredAt: string;
+  updatedAt: string;
+}
+
+/** `POST …/test` — the handshake answer as data, never an error envelope. */
+export type IntegrationVerifyResult =
+  | { ok: true }
+  | {
+      ok: false;
+      kind: 'invalid_request' | 'reauthorization_required' | 'unreachable' | 'provider_error';
+      /** The connector vocabulary; never provider prose. */
+      message: string;
+    };
+
+/** `POST …/enable` — the committed row plus what the catalog learned. */
+export interface IntegrationEnableResult {
+  connection: IntegrationConnection;
+  tools: { added: string[]; removed: string[]; changed: string[] };
+}

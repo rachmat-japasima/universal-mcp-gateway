@@ -14,12 +14,13 @@ import { integrationConnectionSchema, type IntegrationConnection } from '../src/
 import { AppError } from '../src/shared/errors.js';
 
 /**
- * Migration 0008 and its repositories (ADR-048..052).
+ * Migrations 0008/0009 and their repositories (ADR-048..053).
  *
- * The critical test is the upgrade path: a database written by the Phase 11
- * schema (migrations 0001–0007, nothing more) must open cleanly under Phase 12,
- * keep every row, and gain the integration tables. Additive-only is a promise
- * the test enforces on real bytes, not on a diagram.
+ * The critical tests are the upgrade paths: a database written by the Phase 11
+ * schema (migrations 0001–0007) must open cleanly under Phase 12, and one
+ * written by Phase 12 (0001–0008) must open cleanly under Phase 13 — every
+ * row surviving, the schema growing additively. Additive-only is a promise
+ * the tests enforce on real bytes, not on a diagram.
  */
 
 const NOW = '2026-11-22T00:00:00.000Z';
@@ -39,7 +40,7 @@ afterEach(() => {
 function connectionRow(overrides: Partial<IntegrationConnection> = {}): IntegrationConnection {
   return integrationConnectionSchema.parse({
     id: randomUUID(),
-    providerId: randomUUID(),
+    providerId: 'fixture-db',
     name: 'fixture-connection',
     status: 'pending',
     credentialId: null,
@@ -144,6 +145,48 @@ describe('migration 0008', () => {
         updatedAt: NOW,
       }),
     ).toThrow(AppError);
+  });
+});
+
+describe('migration 0009', () => {
+  it('upgrades a Phase 12 database in place: rows survive, `validatedAt` starts honestly null', () => {
+    const path = join(directory, 'gateway.db');
+
+    // Phase 12: migrations 0001–0008 only — no `validated_at` column yet. The
+    // row is written the way the Phase 12 process wrote it: raw SQL against
+    // the 0008 column set, because the Phase 13 repository writes a column
+    // the old schema does not have yet.
+    const phase12 = openStore({ path, migrations: loadMigrations().slice(0, 8) });
+    const connectionId = randomUUID();
+    phase12.handle
+      .prepare(
+        `INSERT INTO integration_connections (id, provider_id, name, status, credential_id, metadata_json,
+           created_at, updated_at)
+         VALUES (?, 'github', 'legacy-connection', 'connected', NULL, '{}', ?, ?)`,
+      )
+      .run(connectionId, NOW, NOW);
+    phase12.close();
+
+    // Phase 13 opens the same file: 0009 applies additively.
+    store = openStore({ path });
+    const upgraded = store.integrationConnections.findById(connectionId)!;
+    expect(upgraded.providerId).toBe('github');
+    // Null by meaning: the row never validated anything under the old
+    // schema, and the upgrade does not invent a fact.
+    expect(upgraded.validatedAt).toBeNull();
+
+    // The new write path stamps it.
+    const stamped = store.integrationConnections.updateStatus(connectionId, 'connected', NOW, NOW)!;
+    expect(stamped.validatedAt).toBe(NOW);
+
+    // Reopening is idempotent, and the ledger still says 0009 exactly once.
+    store.close();
+    store = openStore({ path });
+    expect(store.integrationConnections.findById(connectionId)?.validatedAt).toBe(NOW);
+    expect(
+      (store.handle.prepare('SELECT COUNT(*) AS n FROM schema_migrations WHERE version = ?').get('0009') as { n: number })
+        .n,
+    ).toBe(1);
   });
 });
 

@@ -27,6 +27,7 @@ interface ConnectionRow {
   status: string;
   credential_id: string | null;
   metadata_json: string;
+  validated_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -41,6 +42,7 @@ function toConnection(row: ConnectionRow): IntegrationConnection {
         status: row.status,
         credentialId: row.credential_id,
         metadata: JSON.parse(row.metadata_json),
+        validatedAt: row.validated_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       }),
@@ -49,7 +51,7 @@ function toConnection(row: ConnectionRow): IntegrationConnection {
 }
 
 const CONNECTION_COLUMNS =
-  'id, provider_id, name, status, credential_id, metadata_json, created_at, updated_at';
+  'id, provider_id, name, status, credential_id, metadata_json, validated_at, created_at, updated_at';
 
 export class SqliteIntegrationConnectionRepository implements IntegrationConnectionRepository {
   constructor(private readonly database: SqliteDatabase) {}
@@ -61,8 +63,8 @@ export class SqliteIntegrationConnectionRepository implements IntegrationConnect
       this.database
         .prepare(
           `INSERT INTO integration_connections (id, provider_id, name, status, credential_id, metadata_json,
-             created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+             validated_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           parsed.id,
@@ -71,6 +73,7 @@ export class SqliteIntegrationConnectionRepository implements IntegrationConnect
           parsed.status,
           parsed.credentialId,
           JSON.stringify(parsed.metadata),
+          parsed.validatedAt,
           parsed.createdAt,
           parsed.updatedAt,
         );
@@ -95,10 +98,17 @@ export class SqliteIntegrationConnectionRepository implements IntegrationConnect
     return rows.map(toConnection);
   }
 
-  updateStatus(id: string, status: ConnectionStatus, now: string): IntegrationConnection | undefined {
+  updateStatus(
+    id: string,
+    status: ConnectionStatus,
+    now: string,
+    validatedAt?: string,
+  ): IntegrationConnection | undefined {
     this.database
-      .prepare('UPDATE integration_connections SET status = ?, updated_at = ? WHERE id = ?')
-      .run(status, now, id);
+      .prepare(
+        'UPDATE integration_connections SET status = ?, updated_at = ?, validated_at = COALESCE(?, validated_at) WHERE id = ?',
+      )
+      .run(status, now, validatedAt ?? null, id);
     return this.findById(id);
   }
 

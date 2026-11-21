@@ -41,6 +41,7 @@ There is exactly **one connection per process** (`openStore()`), created after c
 `0006_operator_identity.sql` — operator tables (Phase 10.0).
 `0007_correlation.sql` — adds `activity_events.correlation_id` (Phase 11).
 `0008_managed_integrations.sql` — adds `integration_connections`, `integration_credentials`, and `activity_events.connection_id` (Phase 12, ADR-052).
+`0009_connection_validation.sql` — adds nullable `integration_connections.validated_at` (Phase 13, ADR-053). Additive only; no table rebuilt, no row moved, no index (nothing filters on it). The upgrade is tested on real Phase 12 bytes: a genuine `0001`–`0008` database opens under `0009` with every row intact and `validated_at` honestly `NULL`.
 
 ### `backends`
 `id`, `name`, `description`, `transport` (`stdio` | `streamable-http`), `config_json`, `enabled`, `timeout_ms`, `concurrency_mode` (`parallel` | `serialized` | `limited`), `concurrency_limit`, `version`, `created_at`, `updated_at`, `deleted_at`.
@@ -142,12 +143,12 @@ There is one operator in practice. `role` stays `owner`; no RBAC engine exists (
 
 Both an idle window (`last_seen_at`) and an absolute ceiling (`expires_at`) are stored and **derived on read**, not trusted from a sweep, so a missed cleanup cannot extend access.
 
-### `integration_connections` (Phase 12)
-`id` (UUID, caller-supplied), `provider_id`, `name`, `status` (`pending` | `connecting` | `connected` | `disconnected` | `error` | `reauthorization_required` | `disabled`, with a DB `CHECK`), `credential_id` (nullable reference), `metadata_json` (validated non-secret JSON), `created_at`, `updated_at`.
+### `integration_connections` (Phases 12–13)
+`id` (UUID, caller-supplied), `provider_id`, `name`, `status` (`pending` | `connecting` | `connected` | `disconnected` | `error` | `reauthorization_required` | `disabled`, with a DB `CHECK`), `credential_id` (nullable reference), `metadata_json` (validated non-secret JSON), `validated_at` (nullable `TEXT`, migration `0009`), `created_at`, `updated_at`.
 
-Created in `0008` along with the credential table and `activity_events.connection_id`. A provider id is a registry concept, not a foreign key: a connection row survives its provider being unregistered, and the API view says so instead of pretending the provider never existed.
+Created in `0008` along with the credential table and `activity_events.connection_id`; `0009` added the validation timestamp. A provider id is a registry concept, not a foreign key: a connection row survives its provider being unregistered, and the API view says so instead of pretending the provider never existed.
 
-`status` transitions are declared as data in `src/integrations/connection.ts` (`CONNECTION_TRANSITIONS`): every non-terminal status can reach `disabled`, `disabled` is the only terminal, and `error`/`reauthorization_required` exit only through an explicit operator connect. The DB `CHECK` and the zod schema agree; anything else fails at the boundary.
+`status` transitions are declared as data in `src/integrations/connection.ts` (`CONNECTION_TRANSITIONS`): every non-terminal status can reach `disabled`, `disabled` is the only terminal, and `error`/`reauthorization_required` exit only through an explicit operator connect. Phase 13 added the `disabled → connecting` edge (operator re-enable, ADR-053) — the DB `CHECK` enumerates statuses, not transitions, so the edge landed in code with no schema change. Anything else fails at the boundary.
 
 `credential_id` is a vault reference only — the schema rejects anything that is not a UUID, so a pasted token string is a validation error, not a stored secret.
 
@@ -171,7 +172,7 @@ Two triggers enforce the state machine: a revoked row must carry a `revocation_r
 - `audit_events`: `created_at`, `(actor_id, created_at)`, `(action, created_at)`, `(target_id, created_at)`.
 - `admin_users`: unique `username` (`0001`; `0006` re-creates it with `IF NOT EXISTS` so a database that predates it is repaired rather than assumed).
 - `operator_sessions`: unique `token_hash` (the digest lookup is the only read path, so this index *is* verification); `(operator_id, last_seen_at)` for sweeping one operator; `expires_at` for cleanup.
-- `integration_connections` / `integration_credentials` (Phase 12): **none, deliberately.** The listing is a full-table scan over a table that is empty in production and small in every honest deployment; `findById` is the primary key. `activity_events.connection_id` gets no index either — nothing queries by connection id yet, and a write-path index with no reader is amplification. Add each when a consumer exists (the same rule `0007` set for `correlation_id`).
+- `integration_connections` / `integration_credentials` (Phase 12): **none, deliberately.** The listing is a full-table scan over a table that holds one row per operator-created connection (Phase 13 registered the first provider, but no honest deployment grows this table without an operator choosing to); `findById` is the primary key. `activity_events.connection_id` gets no index either — nothing queries by connection id yet, and a write-path index with no reader is amplification. Add each when a consumer exists (the same rule `0007` set for `correlation_id`).
 
 Partial unique indexes (`WHERE deleted_at IS NULL`) allow a name to be reused after a tombstone while keeping the old row.
 

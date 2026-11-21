@@ -169,4 +169,41 @@ describe('isAllowedWrite', () => {
       expect(isAllowedWrite('POST', target), target).toBe(false);
     }
   });
+
+  it('accepts the managed-integration writes the screens make', () => {
+    const CONNECTION = '44444444-4444-4444-8444-444444444444';
+
+    // Create is the only collection write.
+    expect(isAllowedWrite('POST', '/api/v1/integrations/connections')).toBe(true);
+
+    // The five item actions, including the credential write itself.
+    for (const action of ['credential', 'test', 'enable', 'disable', 'disconnect']) {
+      expect(isAllowedWrite('POST', `/api/v1/integrations/connections/${CONNECTION}/${action}`), action).toBe(true);
+    }
+
+    expect(isAllowedWrite('DELETE', `/api/v1/integrations/connections/${CONNECTION}`)).toBe(true);
+  });
+
+  it('refuses every other managed-integration shape, especially the read-looking ones', () => {
+    const CONNECTION = '44444444-4444-4444-8444-444444444444';
+
+    // Reads are the read proxy's business, not the write proxy's.
+    expect(isAllowedWrite('GET', '/api/v1/integrations/providers')).toBe(false);
+    expect(isAllowedWrite('GET', `/api/v1/integrations/connections/${CONNECTION}/tools`)).toBe(false);
+    // A GET-shaped verb on the credential path must not be expressible.
+    expect(isAllowedWrite('GET', `/api/v1/integrations/connections/${CONNECTION}/credential`)).toBe(false);
+
+    // The surface has no PATCH at all.
+    expect(isAllowedWrite('PATCH', `/api/v1/integrations/connections/${CONNECTION}`)).toBe(false);
+
+    // No arbitrary action, no provider writes, no collection delete.
+    expect(isAllowedWrite('POST', `/api/v1/integrations/connections/${CONNECTION}/sync`)).toBe(false);
+    expect(isAllowedWrite('POST', '/api/v1/integrations/providers')).toBe(false);
+    expect(isAllowedWrite('DELETE', '/api/v1/integrations/connections')).toBe(false);
+
+    // Traversal and non-UUID, same as every other module.
+    expect(isAllowedWrite('POST', `/api/v1/integrations/connections/${CONNECTION}/../../agents`)).toBe(false);
+    expect(isAllowedWrite('POST', `/api/v1/integrations/connections/not-a-uuid/enable`)).toBe(false);
+    expect(isAllowedWrite('DELETE', '/api/v1/integrations/connections/not-a-uuid')).toBe(false);
+  });
 });

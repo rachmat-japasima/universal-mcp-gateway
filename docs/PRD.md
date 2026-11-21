@@ -414,7 +414,7 @@ The decision is not “Astryx-inspired shadcn”. The decision is to use Astryx 
 **FR-INT-02 — Code-registered providers**
 - Providers are registered in code, validated at registration, duplicate-safe.
 - No dynamic loading, marketplace, or plugin surface.
-- Zero production providers ship.
+- Phase 13 ships the first: GitHub, read-only, fine-grained PAT (ADR-053). The registry is not empty, but it is still code — no runtime widening exists.
 
 **FR-INT-03 — Bounded connectors**
 - Discovery separated from execution; timeout and cancellation enforced by the gateway.
@@ -434,8 +434,12 @@ The decision is not “Astryx-inspired shadcn”. The decision is to use Astryx 
 - Explicit statuses with validated transitions; withdrawal of tools is synchronous with the state change; deletion cascades credential cleanup.
 - Multiple connections per provider without cross-talk.
 
-**FR-INT-07 — Operator visibility**
-- Read-only provider and connection listings behind operator authentication, with honest empty states.
+**FR-INT-07 — Operator visibility and control**
+- Provider and connection listings behind operator authentication, with honest empty states.
+- The write lifecycle is explicit and audited: create, write-only credential
+  seal, `test` (data either way, moves nothing), `enable` (the only path to
+  `connected`), `disable`, `disconnect`, `delete` — each behind session + CSRF
+  + origin, each stating its real consequence in the dashboard before the click.
 - Managed calls appear in the existing activity log, metrics, and audit trail — no forked observability.
 - Rate limits for authentication and sensitive endpoints.
 - Validate Origin/Host according to MCP transport guidance.
@@ -450,13 +454,14 @@ Primary navigation:
 1. Overview
 2. Backends
 3. Tools
-4. Agents
-5. Access Policies
-6. Sessions
-7. Activity / Logs
-8. Monitoring
-9. Audit Trail
-10. Settings
+4. Integrations
+5. Agents
+6. Access Policies
+7. Sessions
+8. Activity / Logs
+9. Monitoring
+10. Audit Trail
+11. Settings
 
 Suggested page routes:
 - `/dashboard`
@@ -465,6 +470,9 @@ Suggested page routes:
 - `/dashboard/backends/[backendId]`
 - `/dashboard/tools`
 - `/dashboard/tools/[toolId]`
+- `/dashboard/integrations`
+- `/dashboard/integrations/new`
+- `/dashboard/integrations/[connectionId]`
 - `/dashboard/agents`
 - `/dashboard/agents/[agentId]`
 - `/dashboard/policies`

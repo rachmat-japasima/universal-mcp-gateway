@@ -619,8 +619,9 @@ gateway.
 ## Phase 12 — Integration-ready architecture
 
 **Implemented** (executed ahead of the previously planned agent-compatibility
-phase, which renumbers to Phase 13; the first-real-backend phase becomes
-Phase 14). ADR-048–052. The goal was the shape, not a provider: two tool source
+phase, which was in turn leapfrogged: Phase 13 became the first real provider —
+GitHub — and agent compatibility renumbers to Phase 14). ADR-048–052. The goal
+was the shape, not a provider: two tool source
 types — MCP backends and managed integrations — sharing catalog, authorization,
 execution, observability, and audit, with **zero production providers**.
 
@@ -695,20 +696,48 @@ files; dashboard 432 unchanged; both typechecks; both production builds.
 dashboard integrations page. **Not verified:** nothing claims provider behavior
 beyond fixture connectors, because no provider exists.
 
-## Phase 13 — Agent compatibility
+## Phase 13 — First real provider integration (GitHub)
+**Implemented.** ADR-053. The Phase 12 machinery got its first live occupant:
+GitHub, code-registered, fine-grained PAT, **read-only**.
+
+- **Provider and connector.** `githubRegistration` is the registry's first
+  entry (still code — ADR-050 holds). `createGitHubConnector({ fetchImpl?,
+  sleep? })` owns its HTTP client: fixed origin `https://api.github.com`,
+  HTTPS only, closed header set (`Authorization: Bearer`,
+  `X-GitHub-Api-Version: 2026-03-10`, `Accept: application/vnd.github+json`,
+  `User-Agent: universal-mcp-gateway`), one bounded retry only on
+  `Retry-After ≤ 5s`, and a closed failure vocabulary — GitHub prose never
+  crosses the connector boundary.
+- **Six read-only tools.** `list_repositories`, `get_repository`,
+  `list_issues`, `get_issue`, `list_pull_requests`, `get_pull_request`:
+  strict zod inputs, bounded pagination, timeouts with cancellation, and
+  normalizers that refuse (never pad) malformed provider shapes.
+- **Operator write API.** Create (`pending`), write-only credential seal,
+  `test` (data either way, moves nothing), `enable` (the only door to
+  `connected`; stamps `validatedAt`, migration `0009`; publishes tools),
+  `disable`/`disconnect`/`DELETE`, every write behind session + CSRF +
+  origin and audited through the Phase 12 closed enum.
+- **Dashboard.** Three routes — list, create (the step that takes no secret),
+  detail — with the PAT living in one password field that is cleared when the
+  request answers, never rendered back, never persisted; destructive steps
+  confirm with their real consequence stated.
+- **Testing discipline.** Zero calls to `api.github.com` from the repository:
+  the client's injectable `fetch` carries every suite. Gateway 697 tests
+  across 38 files; dashboard 470 across 45; both typechecks; both
+  production builds. **Not built:** OAuth, GitHub Apps, webhooks, enterprise
+  hosts, write tools, any second provider. **Not verified:** a live GitHub
+  round trip with a real PAT — deliberately; the first one happens when an
+  operator runs `test` or `enable` with their own token.
+
+## Phase 14 — Agent compatibility
 - Verify Claude Code, Codex CLI, OpenCode, and DeepSeek client compatibility.
 - Connect one client at a time.
 - Direct HTTP where supported.
 - Local stdio bridge only where necessary.
 - Do not alter agent configs without user approval.
-
-## Phase 14 — First real provider integration
-- Select one pilot provider with user approval; a code-registered connector,
-  not a config file, is the integration mechanism (ADR-050).
-- Start with read-only/safe tools.
-- Validate permissions and concurrency through the Phase 12 seam.
-- Add further providers only after pilot is stable.
-- FigCraft is a candidate, not a required first integration.
+- Further providers (FigCraft is a candidate, not a requirement) follow the
+  Phase 13 pattern: read-only first, code-registered, through the same seam;
+  add each only after the pilot is stable.
 
 ## Phase 15 — Hardening and release
 - Security review.

@@ -150,9 +150,11 @@ export function createManagementApi(options: ManagementApiOptions): Hono {
   api.route('/activity', activityRoutes({ store }));
   api.route('/audit', auditRoutes({ store }));
   // Read-only: providers and connections with honest empty states (ADR-052).
+  // Phase 13 mounts the operator write API on the same service (ADR-053):
+  // create, credential, test/enable/disable/disconnect, and the tool listing.
   api.route(
     '/integrations',
-    integrationsRoutes({ registry: options.registry, integrations: options.integrations }),
+    integrationsRoutes({ registry: options.registry, integrations: options.integrations, catalog: options.catalog }),
   );
   // Overview, monitoring, readiness, diagnostics, settings and the OpenAPI
   // document share one snapshot reader, so their numbers cannot disagree.

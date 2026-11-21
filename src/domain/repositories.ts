@@ -365,8 +365,17 @@ export interface IntegrationConnectionRepository {
   create(input: IntegrationConnection): IntegrationConnection;
   findById(id: string): IntegrationConnection | undefined;
   list(): IntegrationConnection[];
-  /** Status-only write; the service owns transition legality. */
-  updateStatus(id: string, status: ConnectionStatus, now: string): IntegrationConnection | undefined;
+  /**
+   * Status-only write; the service owns transition legality. `validatedAt`
+   * records when the status became `connected` (a proved credential, Phase 13);
+   * `undefined` leaves the column alone.
+   */
+  updateStatus(
+    id: string,
+    status: ConnectionStatus,
+    now: string,
+    validatedAt?: string,
+  ): IntegrationConnection | undefined;
   /** Links (or unlinks with `null`) the vault reference. Value writes go to `IntegrationCredentialRepository`. */
   updateCredential(id: string, credentialId: string | null, now: string): IntegrationConnection | undefined;
   /** Update of operator-facing fields. Status is untouched: use `updateStatus`. */

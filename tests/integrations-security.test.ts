@@ -37,7 +37,7 @@ const config = loadConfig({ ENVIRONMENT: 'test', LOG_LEVEL: 'silent' });
 const logger = createLogger(config);
 const NOW = '2026-11-22T00:00:00.000Z';
 const HOST = { host: '127.0.0.1:8787' };
-const PROVIDER_ID = '66666666-6666-4666-8666-666666666666';
+const PROVIDER_ID = 'fixture-sec';
 
 let directory: string;
 let store: Database;
@@ -156,7 +156,7 @@ describe('secrets at rest', () => {
     const connection = await connectFixture(gateway.integrations!);
     gateway.integrations!.storeCredential(connection.id, secret);
     const credentialId = gateway.integrations!.list()[0]!.credentialId!;
-    await gateway.integrations!.resolveCredential(credentialId);
+    await gateway.integrations!.resolveCredentialFor(connection)(credentialId);
 
     const audit = store.audit.list(50);
     const relevant = audit.filter((event) => event.action.startsWith('integration.credential.'));
@@ -218,17 +218,26 @@ describe('operator API boundary', () => {
     }
   });
 
-  it('reports the true empty state to an operator: no provider, no connection, no padding', async () => {
+  it('reports the honest fresh state: the code-registered providers, and no connections', async () => {
     gateway = buildGateway();
     const session = createTestOperator(store, testKeys());
 
-    for (const path of ['/providers', '/connections']) {
-      const response = await gateway.app.request(`/api/v1/integrations${path}`, {
-        headers: { ...HOST, ...session.headers },
-      });
-      expect(response.status, path).toBe(200);
-      expect(await response.json()).toEqual({ data: [] });
-    }
+    const providers = await gateway.app.request('/api/v1/integrations/providers', {
+      headers: { ...HOST, ...session.headers },
+    });
+    expect(providers.status).toBe(200);
+    // Providers are code (ADR-050): GitHub ships registered (ADR-053), and
+    // the listing is the whole truth — the gateway adds nothing, hides nothing.
+    const listed = (await providers.json()) as { data: Array<{ id: string }> };
+    expect(listed.data.map((provider) => provider.id)).toEqual(['github']);
+
+    // A fresh deployment still has zero connections and zero credentials:
+    // registering a provider connects nobody.
+    const connections = await gateway.app.request('/api/v1/integrations/connections', {
+      headers: { ...HOST, ...session.headers },
+    });
+    expect(connections.status).toBe(200);
+    expect(await connections.json()).toEqual({ data: [] });
   });
 
   it('exposes a credential reference, never a value, through the authenticated listing', async () => {
@@ -249,15 +258,19 @@ describe('operator API boundary', () => {
     expect(body).not.toContain(secret);
   });
 
-  it('documents the two read endpoints and no credential-value endpoint', () => {
+  it('documents the read endpoints and a credential route that is POST-only: no read surface exists', () => {
     const document = buildOpenApi(config);
-    const paths = Object.keys(document['paths'] as Record<string, unknown>);
+    const paths = document['paths'] as Record<string, Record<string, unknown>>;
 
-    expect(paths).toContain('/api/v1/integrations/providers');
-    expect(paths).toContain('/api/v1/integrations/connections');
-    // The integrations surface has no credential endpoint: agent API-key
-    // routes elsewhere in the API are a different, pre-existing surface.
-    expect(paths.filter((path) => path.startsWith('/api/v1/integrations') && path.includes('credential'))).toEqual([]);
+    expect(Object.keys(paths)).toContain('/api/v1/integrations/providers');
+    expect(Object.keys(paths)).toContain('/api/v1/integrations/connections');
+
+    // The one credential route is the write (ADR-053): the token goes in and
+    // only a vault reference comes back. A GET on it would be a read surface
+    // for a secret this gateway refuses to store in any readable form.
+    const credentialPaths = Object.keys(paths).filter((path) => path.startsWith('/api/v1/integrations') && path.includes('credential'));
+    expect(credentialPaths).toEqual(['/api/v1/integrations/connections/{connectionId}/credential']);
+    expect(Object.keys(paths[credentialPaths[0]!]!)).toEqual(['post']);
   });
 });
 
@@ -311,17 +324,21 @@ describe('authorization precedes dispatch through the production wiring', () => 
 
     expect(executions).toHaveLength(1);
     const context = executions[0]!.context;
+    // The six-key whitelist: no store, no logger, no credential value — a
+    // reference the connector may hand back to the scoped resolver.
     expect(Object.keys(context).sort()).toEqual([
       'connectionId',
+      'credentialId',
       'metadata',
       'resolveCredential',
       'signal',
       'timeoutMs',
     ]);
+    const credentialId = gateway.integrations!.list()[0]!.credentialId!;
+    expect(context.credentialId).toBe(credentialId);
     // A connector may pull the credential through the resolver, but the
     // context never carries the value eagerly.
     expect(JSON.stringify(context)).not.toContain('fixture-live-token-known');
-    const credentialId = gateway.integrations!.list()[0]!.credentialId!;
     await expect(context.resolveCredential(credentialId)).resolves.toBe('fixture-live-token-known');
   });
 });

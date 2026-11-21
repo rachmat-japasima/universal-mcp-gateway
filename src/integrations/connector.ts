@@ -31,9 +31,20 @@ export type CredentialResolver = (credentialId: string) => Promise<string>;
 export interface ConnectorContext {
   /** Connection id — for logging and provider-side scoping only. */
   connectionId: string;
+  /**
+   * The connection's stored credential reference, or `null` when it has
+   * none. A *reference*, not a value: the connector passes it to
+   * `resolveCredential`, which is the only way the value is ever handed out
+   * (and which refuses a reference that belongs to another connection).
+   */
+  credentialId: string | null;
   /** Non-secret connection settings, already validated at the connection boundary. */
   metadata: Record<string, unknown>;
-  /** Resolves the connection's stored credential reference to its value. */
+  /**
+   * Resolves the connection's stored credential reference to its value.
+   * Scoped to this connection: a reference owned by any other connection is
+   * refused, so connectors cannot read each other's secrets even by id.
+   */
   resolveCredential: CredentialResolver;
   /** Upper bound for one connector operation. The gateway enforces it with the signal. */
   timeoutMs: number;

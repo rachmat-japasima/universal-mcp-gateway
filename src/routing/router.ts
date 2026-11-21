@@ -264,6 +264,7 @@ export class ToolRouter {
     const { dispatch } = reachable;
     const connectorContext: ConnectorContext = {
       connectionId: tool.sourceId,
+      credentialId: dispatch.connection.credentialId,
       metadata: dispatch.connection.metadata,
       resolveCredential: dispatch.resolveCredential,
       timeoutMs: dispatch.timeoutMs,

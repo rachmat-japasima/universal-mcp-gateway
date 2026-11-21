@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { idSchema, timestampSchema } from '../domain/primitives.js';
-import { providerMetadataSchema } from './provider.js';
+import { providerIdSchema, providerMetadataSchema } from './provider.js';
 
 /**
  * A user-facing instance of a provider (ADR-051).
@@ -49,18 +49,24 @@ export type ConnectionStatus = z.infer<typeof connectionStatusSchema>;
  *
  * Notable choices:
  *  * Every non-terminal status has a `→ disabled` edge: an operator can always
- *    turn a connection off, whatever state it is in. `disabled` itself has no
- *    outgoing edge — re-enabling is Phase 13 operator work, not an automatic
- *    path.
+ *    turn a connection off, whatever state it is in.
+ *  * `disabled` exits only through `connecting` — the explicit operator
+ *    re-enable added in Phase 13 (ADR-053), never an automatic path. Before
+ *    Phase 13 it was fully terminal; "turn it back on" is the same explicit
+ *    action `connect` already is for every other status.
  *  * `error` and `reauthorization_required` exit only through `connecting` —
  *    the same explicit operator action (`connect`, after re-storing a
  *    credential), never an automatic one. The router never triggers either.
+ *  * `connecting` may land in `reauthorization_required`: the verification
+ *    handshake refused the credential (Phase 13). The fix is a new token, not
+ *    a retry, so the row says exactly that instead of "error".
  */
 export const CONNECTION_TRANSITIONS: ReadonlyArray<readonly [ConnectionStatus, ConnectionStatus]> = [
   ['pending', 'connecting'],
   ['pending', 'disabled'],
   ['connecting', 'connected'],
   ['connecting', 'error'],
+  ['connecting', 'reauthorization_required'],
   ['connecting', 'disconnected'],
   ['connecting', 'disabled'],
   ['connected', 'disconnected'],
@@ -73,6 +79,7 @@ export const CONNECTION_TRANSITIONS: ReadonlyArray<readonly [ConnectionStatus, C
   ['error', 'disabled'],
   ['reauthorization_required', 'connecting'],
   ['reauthorization_required', 'disabled'],
+  ['disabled', 'connecting'],
 ];
 
 /** Deterministic: `(from, to) => legal`. Pure so tests enumerate every pair. */
@@ -93,7 +100,7 @@ export const connectionMetadataSchema = providerMetadataSchema;
 export const integrationConnectionSchema = z.object({
   id: idSchema,
   /** Registry key of the provider this connection instantiates. */
-  providerId: idSchema,
+  providerId: providerIdSchema,
   /** Operator-facing label. */
   name: z.string().trim().min(1).max(100),
   status: connectionStatusSchema,
@@ -104,6 +111,12 @@ export const integrationConnectionSchema = z.object({
   credentialId: idSchema.nullable(),
   /** Non-secret settings. */
   metadata: connectionMetadataSchema.default({}),
+  /**
+   * When the connection last proved its credential against the provider
+   * (migration 0009, Phase 13). `null` until the first successful validation:
+   * a `pending` or `error` row has never validated anything.
+   */
+  validatedAt: timestampSchema.nullable().default(null),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
 });
@@ -111,7 +124,7 @@ export type IntegrationConnection = z.infer<typeof integrationConnectionSchema>;
 
 export const createConnectionSchema = z.object({
   id: idSchema,
-  providerId: idSchema,
+  providerId: providerIdSchema,
   name: z.string().trim().min(1).max(100),
   metadata: connectionMetadataSchema.default({}),
 });

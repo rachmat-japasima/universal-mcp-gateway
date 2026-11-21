@@ -37,7 +37,8 @@ const def = (name: string): ToolDefinition => ({ name, inputSchema: { type: 'obj
 /** Minimal legal registration; every test mutates what it cares about. */
 function registration(overrides: Record<string, unknown> = {}): ProviderRegistration {
   return {
-    id: randomUUID(),
+    // Provider ids are slugs (`providerIdSchema`), so fixture ids must be too.
+    id: `fixture-${randomUUID()}`,
     name: 'Fixture Provider',
     description: 'A throwaway provider used by tests only.',
     capabilities: ['discovery', 'execution'],
@@ -75,12 +76,14 @@ describe('connection domain', () => {
     }
   });
 
-  it('keeps `disabled` the only terminal status: an operator can always turn a connection off', () => {
-    expect(CONNECTION_TRANSITIONS.filter(([from]) => from === 'disabled')).toEqual([]);
+  it('lets an operator turn any connection off, and turn a disabled one back on explicitly', () => {
     for (const status of CONNECTION_STATUSES) {
       if (status === 'disabled') continue;
       expect(canTransition(status, 'disabled'), `${status} → disabled`).toBe(true);
     }
+    // `disabled` exits only through the explicit re-enable (Phase 13): the
+    // same operator `connect` every other status uses, never an automatic path.
+    expect(CONNECTION_TRANSITIONS.filter(([from]) => from === 'disabled')).toEqual([['disabled', 'connecting']]);
   });
 
   it('exits `error` and `reauthorization_required` only through an explicit connect, never automatically', () => {
@@ -99,7 +102,7 @@ describe('connection domain', () => {
     expect(() =>
       integrationConnectionSchema.parse({
         id: 'not-a-uuid',
-        providerId: UUID,
+        providerId: 'fixture',
         name: 'x',
         status: 'pending',
         credentialId: null,
@@ -114,7 +117,7 @@ describe('connection domain', () => {
     expect(() =>
       integrationConnectionSchema.parse({
         id: UUID,
-        providerId: UUID,
+        providerId: 'fixture',
         name: '  x  ',
         status: 'pending',
         credentialId: null,
@@ -128,7 +131,7 @@ describe('connection domain', () => {
     expect(() =>
       integrationConnectionSchema.parse({
         id: UUID,
-        providerId: UUID,
+        providerId: 'fixture',
         name: 'x',
         status: 'pending',
         credentialId: 'sk-live-pasted-by-mistake',
@@ -140,7 +143,7 @@ describe('connection domain', () => {
   });
 
   it('accepts a nullable credential reference, never an absent field', () => {
-    expect(() => createConnectionSchema.parse({ id: UUID, providerId: UUID, name: 'x', metadata: {} })).toBeTruthy();
+    expect(() => createConnectionSchema.parse({ id: UUID, providerId: 'fixture', name: 'x', metadata: {} })).toBeTruthy();
   });
 
   it('stores credentials as envelope strings only, and rejects any extra column-shaped field', () => {
@@ -171,8 +174,8 @@ describe('provider registration', () => {
 describe('provider registry', () => {
   it('registers, validates, and lists definitions sorted by id', () => {
     const registry = new ProviderRegistry();
-    const later = registry.register(registration({ name: 'Zeta', id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }), fullConnector);
-    const first = registry.register(registration({ name: 'Alpha', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }), fullConnector);
+    const later = registry.register(registration({ name: 'Zeta', id: 'fixture-beta' }), fullConnector);
+    const first = registry.register(registration({ name: 'Alpha', id: 'fixture-alpha' }), fullConnector);
 
     expect(registry.list().map((definition) => definition.id)).toEqual([first.id, later.id]);
     expect(registry.get(first.id)?.definition.name).toBe('Alpha');
@@ -202,8 +205,15 @@ describe('provider registry', () => {
     ).toBeTruthy();
   });
 
-  it('ships EMPTY in production: no provider is registered by the gateway itself', () => {
-    expect(providerRegistry.list()).toEqual([]);
+  it('ships exactly the real providers: GitHub, registered read-only', () => {
+    const registered = providerRegistry.list();
+    expect(registered.map((definition) => definition.id)).toEqual(['github']);
+    expect(registered[0]).toMatchObject({ name: 'GitHub', capabilities: ['discovery', 'execution'] });
+    // The auth method is metadata, never a capability: the closed capability
+    // set stays `['discovery', 'execution']` for every future provider too.
+    expect(providerRegistry.get('github')?.definition.metadata).toMatchObject({
+      authMethod: 'fine-grained personal access token',
+    });
   });
 });
 

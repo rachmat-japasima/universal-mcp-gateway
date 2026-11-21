@@ -40,7 +40,7 @@ const config = loadConfig({ ENVIRONMENT: 'test', LOG_LEVEL: 'silent' });
 const logger = createLogger(config);
 const NOW = '2026-11-22T00:00:00.000Z';
 
-const PROVIDER_ID = '44444444-4444-4444-8444-444444444444';
+const PROVIDER_ID = 'fixture-exec';
 
 const reconnectOff: ReconnectPolicy = {
   enabled: false,
@@ -209,8 +209,10 @@ describe('connection lifecycle', () => {
   it('refuses a connection for a provider that is not registered', () => {
     const { integrations } = harness();
 
+    // A well-formed but unregistered slug: the refusal is the registry's, not
+    // the schema's.
     expect(() =>
-      integrations.create({ id: randomUUID(), providerId: randomUUID(), name: 'ghost', metadata: {} }),
+      integrations.create({ id: randomUUID(), providerId: 'ghost-provider', name: 'ghost', metadata: {} }),
     ).toThrow(AppError);
   });
 
@@ -221,6 +223,8 @@ describe('connection lifecycle', () => {
     const { connection: connected } = await integrations.connect(connection.id);
 
     expect(connected.status).toBe('connected');
+    // Connect is the credential's proof: the moment is recorded, once.
+    expect(connected.validatedAt).toBe(NOW);
     const names = catalog.listAll().map((tool) => tool.publicName);
     expect(names).toEqual([
       `${connection.id}__get_status`,
@@ -245,6 +249,46 @@ describe('connection lifecycle', () => {
 
     expect(integrations.list()[0]?.status).toBe('error');
     expect(catalog.listAll()).toEqual([]);
+  });
+
+  it('records a refused credential as `reauthorization_required`, not an outage', async () => {
+    // A real provider refuses an invalid token during the verification
+    // handshake; the operator's fix is a new credential, so the row must say
+    // exactly that rather than "error".
+    const refused: Connector = {
+      discoverTools: async () => ({
+        ok: false,
+        error: { kind: 'reauthorization_required', message: 'fixture: token rejected' },
+      }),
+      executeTool: async () => ({ ok: true, value: { content: [] } }),
+    };
+    const registry = new ProviderRegistry();
+    registry.register(
+      {
+        id: PROVIDER_ID,
+        name: 'Refusing Fixture',
+        description: 'Refuses the handshake so the status mapping can be pinned.',
+        capabilities: ['discovery', 'execution'],
+        metadata: {},
+      },
+      refused,
+    );
+
+    const integrations = new IntegrationService({
+      store,
+      registry,
+      vault: new EnvelopeVault(),
+      catalog: new ToolCatalog(),
+      logger,
+      now: () => NOW,
+    });
+
+    const connection = integrations.create({ id: randomUUID(), providerId: PROVIDER_ID, name: 'x', metadata: {} });
+    await expect(integrations.connect(connection.id)).rejects.toMatchObject({ code: 'BACKEND_CONNECTION_ERROR' });
+
+    expect(integrations.list()[0]?.status).toBe('reauthorization_required');
+    // A refused credential validated nothing.
+    expect(integrations.list()[0]?.validatedAt).toBeNull();
   });
 
   it('refuses to connect a provider that declares no discovery', async () => {
@@ -291,8 +335,12 @@ describe('connection lifecycle', () => {
     const disabled = integrations.disable(connection.id);
     expect(disabled.status).toBe('disabled');
     expect(catalog.listAll()).toEqual([]);
-    // And `disabled` is terminal: no re-enable edge exists in Phase 12.
-    await expect(integrations.connect(connection.id)).rejects.toMatchObject({ code: 'RESOURCE_CONFLICT' });
+    // `disabled` exits only through the explicit re-enable (Phase 13): the
+    // same operator connect, never an automatic path.
+    const reenabled = await integrations.connect(connection.id);
+    expect(reenabled.connection.status).toBe('connected');
+    expect(reenabled.connection.validatedAt).toBe(NOW);
+    expect(catalog.listAll().length).toBe(2);
   });
 
   it('deletes a connection, its tools, and its cascaded credential rows together', async () => {
@@ -359,7 +407,7 @@ describe('credentials', () => {
     integrations.storeCredential(connection.id, 'fixture-secret-value');
     const credentialId = integrations.list()[0]!.credentialId!;
 
-    const resolved = await integrations.resolveCredential(credentialId);
+    const resolved = await integrations.resolveCredentialFor(connection)(credentialId);
     expect(resolved).toBe('fixture-secret-value');
 
     const rows = store.audit.list(10).filter((event) => event.action === 'integration.credential.resolved');
@@ -371,7 +419,7 @@ describe('credentials', () => {
   it('fails closed on a dangling credential reference', async () => {
     const { integrations } = harness();
 
-    await expect(integrations.resolveCredential(randomUUID())).rejects.toMatchObject({
+    await expect(integrations.resolveCredentialFor({ id: randomUUID() })(randomUUID())).rejects.toMatchObject({
       code: 'RESOURCE_NOT_FOUND',
     });
   });
@@ -415,6 +463,7 @@ describe('the router seam', () => {
     // part of the contract (ADR-049), so it is not part of the object.
     expect(Object.keys(connector.executions[0]!.context).sort()).toEqual([
       'connectionId',
+      'credentialId',
       'metadata',
       'resolveCredential',
       'signal',

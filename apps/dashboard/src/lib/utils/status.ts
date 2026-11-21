@@ -1,4 +1,4 @@
-import type { BackendRuntimeStatus } from '@/lib/api/types';
+import type { BackendRuntimeStatus, IntegrationStatus } from '@/lib/api/types';
 
 /**
  * One status vocabulary for the dashboard.
@@ -40,6 +40,25 @@ const RUNTIME_LABELS: Record<BackendRuntimeStatus, StatusLabel> = {
 
 export function runtimeStatus(status: BackendRuntimeStatus): StatusLabel {
   return RUNTIME_LABELS[status];
+}
+
+const CONNECTION_LABELS: Record<IntegrationStatus, StatusLabel> = {
+  connected: { label: 'Connected', tone: 'success' },
+  pending: { label: 'Pending', tone: 'neutral' },
+  connecting: { label: 'Connecting', tone: 'info' },
+  disconnected: { label: 'Disconnected', tone: 'neutral' },
+  error: { label: 'Error', tone: 'error' },
+  reauthorization_required: { label: 'Reauthorization required', tone: 'warning' },
+  disabled: { label: 'Disabled', tone: 'neutral' },
+};
+
+/**
+ * A managed-integration connection status. The same honesty rule as backends:
+ * these seven values are the whole state machine, so an unknown one is a
+ * contract break, not a state to guess at.
+ */
+export function connectionStatus(status: IntegrationStatus): StatusLabel {
+  return CONNECTION_LABELS[status];
 }
 
 export function availabilityStatus(value: 'available' | 'unavailable' | 'conflict'): StatusLabel {

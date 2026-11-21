@@ -34,6 +34,16 @@ const POLICY_ASSIGNMENTS = new RegExp(`^/api/v1/policies/${UUID}/assignments$`);
 const POLICY_ASSIGNMENT = new RegExp(`^/api/v1/policies/${UUID}/assignments/${UUID}$`);
 
 /**
+ * Managed integrations (ADR-053). `credential` is in the action list because it
+ * is the only way a token enters the vault; there is deliberately no rule that
+ * could ever forward a `GET` for one. No PATCH exists on this surface at all.
+ */
+const CONNECTION_ITEM = new RegExp(`^/api/v1/integrations/connections/${UUID}$`);
+const CONNECTION_ACTION = new RegExp(
+  `^/api/v1/integrations/connections/${UUID}/(credential|test|enable|disable|disconnect)$`,
+);
+
+/**
  * Ending an MCP session is the only session write the dashboard makes.
  *
  * `POST /sessions/cleanup` exists on the gateway but is deliberately absent:
@@ -54,6 +64,7 @@ const COLLECTION = new Set([
   '/api/v1/tools/refresh',
   '/api/v1/agents',
   '/api/v1/policies',
+  '/api/v1/integrations/connections',
 ]);
 
 export type WriteMethod = 'POST' | 'PATCH' | 'DELETE';
@@ -65,13 +76,16 @@ export function isAllowedWrite(method: string, target: string): boolean {
       BACKEND_ITEM.test(target) ||
       AGENT_ITEM.test(target) ||
       POLICY_ITEM.test(target) ||
-      POLICY_ASSIGNMENT.test(target)
+      POLICY_ASSIGNMENT.test(target) ||
+      CONNECTION_ITEM.test(target)
     );
   }
 
   if (method === 'PATCH') {
     // Only item paths accept these: `POST /backends` is create, and
     // `DELETE /backends` does not exist. An assignment pair is not an item.
+    // Integrations are absent: the surface has no PATCH route, and a rule
+    // here would be a permission no screen uses.
     return BACKEND_ITEM.test(target) || AGENT_ITEM.test(target) || POLICY_ITEM.test(target);
   }
 
@@ -88,6 +102,7 @@ export function isAllowedWrite(method: string, target: string): boolean {
     AGENT_CREDENTIALS.test(target) ||
     AGENT_CREDENTIAL_ACTION.test(target) ||
     POLICY_ASSIGNMENTS.test(target) ||
-    SESSION_TERMINATE.test(target)
+    SESSION_TERMINATE.test(target) ||
+    CONNECTION_ACTION.test(target)
   );
 }

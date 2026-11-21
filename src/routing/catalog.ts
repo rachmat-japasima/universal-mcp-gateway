@@ -274,6 +274,13 @@ export class ToolCatalog {
     );
   }
 
+  /** The managed twin of `listByBackend`: every tool one connection published. */
+  listByConnection(connectionId: string): CatalogTool[] {
+    return [...(this.snapshots.get(sourceKey('managed_integration', connectionId))?.tools.values() ?? [])].sort(
+      (a, b) => a.publicName.localeCompare(b.publicName),
+    );
+  }
+
   reportFor(backendId: string): DiscoveryReport | undefined {
     const report = this.snapshots.get(sourceKey('mcp_backend', backendId))?.report;
     if (report === undefined) return undefined;

@@ -40,6 +40,10 @@ export const credentialIdParamSchema = z.object({
   credentialId: z.uuid(),
 });
 
+export const connectionIdParamSchema = z.object({
+  connectionId: z.uuid(),
+});
+
 export const policyIdParamSchema = z.object({
   policyId: z.uuid(),
 });

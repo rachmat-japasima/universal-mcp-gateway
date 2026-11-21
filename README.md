@@ -35,10 +35,13 @@ and observability foundation) is **implemented**: structured correlated logging
 and a metrics registry, exported at `GET /metrics` (operator-authenticated) and
 `GET /api/v1/monitoring/metrics`. Phase 12 (integration-ready architecture) is
 **implemented**: two tool source types — MCP backends and managed integrations —
-share one catalog, one authorization model, and one audit trail. No real
-provider exists; the registry ships empty by design.
+share one catalog, one authorization model, and one audit trail. Phase 13
+(First real provider integration — GitHub) is **implemented**: a code-registered,
+read-only, fine-grained-PAT GitHub connector, the operator write API
+(`test` answers as data; `enable` is the only path to `connected`), and three
+dashboard routes; no test dials GitHub.
 - Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`,
-  658 gateway tests; `pnpm test:dashboard`, 432 tests).
+  697 gateway tests; `pnpm test:dashboard`, 470 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
 - `tools/list` serves the live catalog, filtered per agent; no backend is
@@ -192,6 +195,36 @@ production deployment.
   vault, database migration, security regression) → 658; dashboard unchanged at
   432. **Not built:** the operator write API, any dashboard page, and any real
   provider — none exists to point them at.
+
+**Phase 13 — first real provider integration (GitHub).** ADR-053. The registry's
+first code entry: GitHub, **read-only**, fine-grained PAT.
+
+- The provider-owned HTTP client (`src/integrations/github/`): fixed origin
+  `https://api.github.com` (HTTPS only, nothing caller-suppliable can redirect
+  it), closed header set (`Bearer`, `X-GitHub-Api-Version: 2026-03-10`,
+  `Accept: application/vnd.github+json`, UA `universal-mcp-gateway`), one retry
+  only on `Retry-After ≤ 5s`, and a closed failure vocabulary — GitHub prose
+  never crosses the connector boundary.
+- Six read-only tools (`list_repositories`, `get_repository`, `list_issues`,
+  `get_issue`, `list_pull_requests`, `get_pull_request`): strict zod inputs,
+  bounded pagination, timeouts with cancellation, normalizers that refuse
+  malformed provider shapes rather than padding them.
+- The operator write API on the same `IntegrationService`: create is `pending`;
+  `credential` is write-only (a replacement deletes the previous envelope
+  in-transaction); `test` is data either way and moves nothing; `enable` is the
+  only path to `connected`, the only exit from `disabled`, the only reconnect —
+  it stamps `validatedAt` (migration `0009`, nullable until first proof) and
+  publishes the tools. Every write sits behind session + CSRF + origin and
+  audits through the Phase 12 closed enum; the OpenAPI document keeps path
+  parity by test.
+- Three dashboard routes — `/dashboard/integrations` (list), `/new` (create,
+  the step that takes no secret), `/[connectionId]` (credential panel,
+  lifecycle actions, published tools). The PAT lives in one
+  `type="password"`/`autoComplete="off"` field, is cleared when the request
+  answers success or failure, and is never rendered back or persisted.
+- 39 new gateway tests; the dashboard grows to 470 across 45 files. **Zero calls
+  to `api.github.com` from the repository** — the client's injectable `fetch`
+  carries every suite; the first live call is an operator's `test` or `enable`.
 
 **Phase 9 — Astryx dashboard foundation.** A Next.js 16 / React 19 dashboard
 lives in `apps/dashboard` (pnpm workspace) and uses Astryx directly as its design

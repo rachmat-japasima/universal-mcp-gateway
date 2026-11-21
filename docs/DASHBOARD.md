@@ -1599,9 +1599,11 @@ longer overview-specific.
   unauthenticated operator to `/login` with `next` preserved (the layout's
   `requireOperator`), so no protected page is reachable without a session.
 - Navigation matches the route table exactly: verified by diffing
-  `NAV_SECTIONS` hrefs against the on-disk `page.tsx` paths — ten module roots in
-  the nav, ten in the tree, no orphans either direction (nested detail routes are
-  not nav entries by design).
+  `NAV_SECTIONS` hrefs against the on-disk `page.tsx` paths — ten module roots
+  in the nav, ten in the tree, no orphans either direction (nested detail
+  routes are not nav entries by design). *Phase 13 update:* the count is now
+  eleven — `Integrations` joined between Tools and Agents; §55's acceptance
+  checklist re-runs the same diff.
 
 ## 49. Phase 10.8 files
 
@@ -1724,3 +1726,89 @@ omission.
   (never values — none exist to show), and the write actions mounted on the
   gateway API that Phase 13/14 must add first. The dashboard never grows a
   write path the gateway does not already own.
+
+## 55. Phase 13 — the integrations module
+
+Phase 12 recorded an absence as a decision; Phase 13 removes it for cause:
+GitHub is registered (ADR-053), the gateway owns the write API, and the
+dashboard now builds exactly the surface §54 named — no more. Three routes,
+one nav entry, one proxy prefix.
+
+- **`/dashboard/integrations`** — the list. Two reads, deliberately
+  independent: connections (the subject) and providers (only the empty state
+  names the registered provider, so a failed registry read cannot hide
+  existing connections). Empty is honest: "No connections yet … GitHub is
+  registered and ready."
+- **`/dashboard/integrations/new`** — create, **the step that takes no
+  secret**. The form offers `providerId` and `name` and nothing else — the
+  only text field is the name, so a pasted token has nowhere to land but a
+  name field. With exactly one registered provider it starts selected (there
+  is nothing else to choose); with two or more it starts empty and validation
+  asks. Success lands on the detail page, whose status is `pending`.
+- **`/dashboard/integrations/[connectionId]`** — the detail: identity rows,
+  the credential panel, the lifecycle actions, the published tools. The
+  profile read decides existence (404 → `notFound()`); the tools read degrades
+  on its own — a tools failure must not hide the credential panel the
+  operator came to replace.
+
+**The PAT surface is one input, and it does not outlive the submit.** The
+credential panel holds the token in `type="password"`, `autoComplete="off"`
+state; the field is cleared when the request answers, success or failure; it
+is never rendered back, never written to storage, cookie, or URL (asserted in
+the component test, same assertions as the agent credential suite). No
+response can carry it — the row's only credential fact is the vault
+reference, shown as "Sealed in the vault". `test` renders as data either way
+(a refused token is a warning banner naming the next step, never an error),
+and the panel says plainly that storing proves nothing.
+
+**Destructive steps ask first, and the copy states the real consequence.**
+Disable and disconnect say the tools are withdrawn immediately; delete says
+hard delete, credential destroyed, no undo, and returns to the list; replace
+token says the previous envelope dies in the same transaction. `enable` is
+labelled by the state it serves (Connect / Reconnect / Enable) and announces
+what published — including "No tools published", which is a fact an operator
+would otherwise check by hand.
+
+| File | Purpose |
+| --- | --- |
+| `src/lib/api/integrations.ts` | Four reads; connections are a plain array, not a page — the client refuses to invent pagination |
+| `src/lib/api/types.ts` | `IntegrationProvider`, `IntegrationConnection` (`validatedAt: string \| null`), `IntegrationTool` (source-typed, distinct from the backend `Tool`), `IntegrationVerifyResult`, `IntegrationEnableResult` |
+| `src/lib/api/write-policy.ts` | `CONNECTION_ITEM` / `CONNECTION_ACTION` (anchored UUID regexes) + the create collection entry; no PATCH rule exists on this surface |
+| `src/app/api/integrations/[...path]/route.ts` | POST + DELETE only — the fourth proxy mount, same `forwardWrite` |
+| `src/lib/navigation.ts` | The eleventh nav entry, `Integrations` under Registry |
+| `src/lib/utils/status.ts` | `connectionStatus` — the seven-value label map |
+| `src/features/integrations/connections-table.tsx` | List rows: name link, provider, status indicator, "Sealed/None", validated, updated |
+| `src/features/integrations/connection-form.tsx` | Create; single-provider preselection; token-shaped fields structurally absent |
+| `src/features/integrations/credential-panel.tsx` | The PAT surface; store/replace behind a confirm; test as data; GitHub scope copy |
+| `src/features/integrations/connection-actions.tsx` | Enable/disable/disconnect/delete with consequence-stating confirms |
+| `src/features/integrations/tools-table.tsx` | Published tools; "Not connected" vs "No tools published" as distinct empty states |
+| `src/app/(dashboard)/dashboard/integrations/page.tsx` | The list page; independent reads |
+| `src/app/(dashboard)/dashboard/integrations/new/page.tsx` | Create page; empty registry is an honest state, not a form over nothing |
+| `src/app/(dashboard)/dashboard/integrations/[connectionId]/page.tsx` | Detail; 404 → notFound, tools degrade independently |
+| `tests/write-proxy.test.ts` | Integrations acceptances and refusals, including GET-shaped and PATCH shapes (2 new tests) |
+| `tests/integrations-client.test.ts` | Reads against a stubbed fetch; pagination-free array; 404 as error (8 tests) |
+| `tests/integrations-form-component.test.tsx` | Create body shape, preselection, local validation, refusal (6 tests) |
+| `tests/integrations-actions-component.test.tsx` | State-honest buttons, enable announcements, consequence copy, confirms (12 tests) |
+| `tests/integrations-credential-component.test.tsx` | PAT cleared after submit either way, never in storage/DOM, test-as-data, replace confirm (10 tests) |
+
+## 56. Phase 13 acceptance checklist
+
+- [x] Three routes built and in the production build; the eleventh nav entry
+      matches the route tree, no orphans either direction.
+- [x] The create flow offers nowhere to paste a token; the credential body
+      keys are asserted to be exactly `token` at the API and `providerId` +
+      `name` at the form.
+- [x] The PAT never outlives the submit: cleared on success and on failure,
+      never in storage, cookie, URL, or rendered back (component suite).
+- [x] Every destructive action confirms with its real consequence stated;
+      `enable` announces the published-tool count, including zero.
+- [x] `test` renders as data both ways; nothing moves on the row.
+- [x] The write proxy allowlist gained the integrations shapes as anchored
+      UUID expressions, with the refusals enumerated: no GET, no PATCH, no
+      arbitrary action, no traversal, no non-UUID.
+- [x] 470 dashboard tests (up from 432) across 45 files; typecheck; the
+      production build clean; the full gateway regression green (697/697).
+- [ ] A real browser pass against a live GitHub token — **not verified**
+      here, and deliberately so: no test or page in this phase dials
+      `api.github.com`. The connector is exercised against fixture `fetch`
+      only.

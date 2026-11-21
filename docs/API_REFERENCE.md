@@ -314,35 +314,63 @@ disclosure boundary.
 Activity and audit are distinct on purpose: operational volume must not dilute
 the security record.
 
-### 3.10 Integrations (Phase 12)
+### 3.10 Integrations (Phases 12–13)
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/api/v1/integrations/providers` | Registered providers, sorted by id. Every entry is code-registered (ADR-050); production answers `{ "data": [] }` because the registry ships empty — that is the truth, not a stub. |
+| `GET` | `/api/v1/integrations/providers` | Registered providers, sorted by id. Every entry is code-registered (ADR-050); GitHub ships registered and read-only (ADR-053). The listing is the whole truth — there is no marketplace and no way to widen it at runtime. |
 | `GET` | `/api/v1/integrations/connections` | Connections, newest first, with `providerName` present when the provider is still registered and omitted when it is not (the row outliving its registration is reported, not hidden). |
+| `POST` | `/api/v1/integrations/connections` | Create. Body: `providerId` (a registered slug), `name`, optional `metadata`. Answers `201` with the row at `pending` — it exists, nothing is verified, nothing is callable. |
+| `GET` | `/api/v1/integrations/connections/{connectionId}` | One connection. |
+| `DELETE` | `/api/v1/integrations/connections/{connectionId}` | Hard delete: tools withdrawn, then the row, then the sealed credential (FK cascade). Answers with the removed row. No tombstone. |
+| `POST` | `/api/v1/integrations/connections/{connectionId}/credential` | **Write-only** (ADR-051). Body: `{ "token": "…" }`. Seals the token; a replacement deletes the previous envelope in the same transaction. Does not connect — `test` or `enable` follows. The only credential route on the surface, and it is POST-only. |
+| `POST` | `/api/v1/integrations/connections/{connectionId}/test` | Non-mutating handshake (GitHub: one authenticated `GET /user`). **Data either way, never an error envelope** — see below. Moves no row, stamps nothing, publishes nothing. |
+| `POST` | `/api/v1/integrations/connections/{connectionId}/enable` | Connect — the only path to `connected`, the only exit from `disabled`, the only reconnect. Runs the handshake, stamps `validatedAt`, publishes tools. Answers `{ connection, tools }`; a refused handshake is `502` with the row at `reauthorization_required`. |
+| `POST` | `/api/v1/integrations/connections/{connectionId}/disable` | Withdraws tools in the same instant; the row survives. `enable` is the only way back. |
+| `POST` | `/api/v1/integrations/connections/{connectionId}/disconnect` | Tools withdrawn, row at rest; the token stays sealed. Reconnect is `enable`, which re-proves it. |
+| `GET` | `/api/v1/integrations/connections/{connectionId}/tools` | The tools this connection publishes. Public names are namespaced `<connectionId>__<tool>` (ADR-048); empty until connected, and a typo'd id is a `404`, not `[]`. |
 
 ```json
 {
   "data": [
     {
-      "id": "c0a8…", "providerId": "4444…", "providerName": "Fixture Provider",
+      "id": "c0a8…", "providerId": "github", "providerName": "GitHub",
       "name": "ops-org", "status": "connected", "credentialId": "9af1…",
-      "metadata": { "org": "acme" },
+      "metadata": {},
+      "validatedAt": "2026-11-22T00:00:00.000Z",
       "createdAt": "2026-11-22T00:00:00.000Z", "updatedAt": "2026-11-22T00:00:00.000Z"
     }
   ]
 }
 ```
 
-Both routes sit behind the operator session like every `/api/v1` route — an
-unauthenticated call is `401` on both, and an honest deployment with no
-providers answers `200 { "data": [] }` rather than an error.
+`providerId` is the registry slug (a lowercase string, not a uuid). `credentialId`
+is a vault **reference**; no route on this surface returns a credential value,
+and the OpenAPI document contains exactly the paths above (pinned by the parity
+and security suites). `validatedAt` is `null` until the first successful
+`enable` — storing a token proves nothing, and the field says so.
 
-`credentialId` is a vault **reference**; no route on this surface returns a
-credential value, and the OpenAPI document contains no other integrations path
-(pinned by the security suite). There are no write endpoints and no per-connection
-tool listing: with zero registered providers both would be surfaces over nothing,
-and Phase 13 mounts the write API on the same `IntegrationService`.
+**`test` answers as data.** A working token answers `200 { "data": { "ok": true } }`.
+A refused one answers `200` with the connector's own vocabulary —
+`{ "data": { "ok": false, "kind": "reauthorization_required", "message": "GitHub rejected the token." } }`
+— never an error envelope, because a rejected token is a fact about the token,
+not a failure of the request. `kind` is one of `invalid_request`,
+`reauthorization_required`, `unreachable`, `provider_error`; `message` is the
+connector vocabulary, never provider prose.
+
+**Enable is the only door.** The status machine is explicit at every edge:
+`pending` (created, unproved) → `connecting` → `connected` (stamped
+`validatedAt`) → `disabled`/`disconnected` → back through `enable`;
+a refused handshake leaves `reauthorization_required`, which only a new
+credential plus `enable` clears. Illegal transitions are `409
+RESOURCE_CONFLICT`; unknown ids are `404` on every per-connection route;
+a failed provider handshake is `502 BACKEND_CONNECTION_ERROR` with the row
+telling the truth about itself.
+
+Every write sits behind the same operator session, CSRF check and origin
+discipline as every other management write; the dashboard reaches them only
+through its same-origin proxy, whose allowlist for this surface is anchored
+UUID expressions, refusal-tested like every other module's.
 
 ## 4. Operations payloads
 

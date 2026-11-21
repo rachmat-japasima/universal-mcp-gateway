@@ -65,6 +65,11 @@ export const AUDIT_ACTIONS = [
   'integration.connection.deleted',
   'integration.credential.sealed',
   'integration.credential.resolved',
+  /**
+   * Phase 13: one credential replaced another on a connection. Metadata names
+   * both references (old and new); neither is a value.
+   */
+  'integration.credential.replaced',
 ] as const;
 
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);

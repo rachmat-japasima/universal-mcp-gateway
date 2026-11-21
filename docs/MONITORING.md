@@ -362,9 +362,9 @@ Shutdown policy: `gateway.close()` terminates every active session (`gateway_shu
 closing transports and the store. The alternative — leaving `active` rows behind — would make
 the next process believe sessions are live that nothing can serve.
 
-### 6.5 Integration audit (Phase 12)
+### 6.5 Integration audit (Phases 12–13)
 
-Five new closed-enum actions, `target_type` gains `'connection'`; no DB `CHECK`
+Five closed-enum actions, `target_type` gains `'connection'`; no DB `CHECK`
 changed — the enum lives in zod at the boundary, consistent with every prior
 phase (ADR-052).
 
@@ -379,8 +379,14 @@ phase (ADR-052).
 - No credential value, envelope, or key material is ever a metadata field. The
   security suite asserts the sealed and resolved rows do not contain the
   plaintext of what they describe.
-- Lifecycle status changes (connect/disconnect/disable) write **activity**, not
-  audit: they are operational, and the row already names the connection.
+- Lifecycle transitions are **audited, not just logged as activity** (corrected
+  in Phase 13): `enable`, `disable` and `disconnect` each write
+  `integration.connection.updated` with a `status` detail — `disable` already
+  did in Phase 12, and Phase 13 extended the same shape to `connect` (with the
+  published tool count) and `disconnect`, because the operator write API made
+  them operator actions rather than internal state moves. `test` writes
+  nothing: it moves no row, publishes nothing, and its answer is data on the
+  response, so a row would claim a decision that was never made.
 
 **Managed calls in the operational log (same phase).** A routed managed call is
 one `tools.call` activity row with `connectionId` set and no `backendId` — the

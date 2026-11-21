@@ -541,20 +541,28 @@ Two behaviour changes, both documented rather than silent:
 A `backendId` or `agentId` policy filter that names nothing is a `404`, not an
 empty page: a typo must not look like "no policies".
 
-## 7.7 Integrations endpoints (Phase 12)
+## 7.7 Integrations endpoints (Phases 12–13)
 
-Read-only, operator-session-gated like every `/api/v1` route (ADR-052; payload
-detail in `docs/API_REFERENCE.md` §3.10).
+Operator-session-gated like every `/api/v1` route, with session + CSRF + origin
+on every write (ADR-052/053; payload detail in `docs/API_REFERENCE.md` §3.10).
 
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `GET` | `/api/v1/integrations/providers` | Registered providers. **Empty in production** — the registry is code and ships zero entries (ADR-050). |
+| `GET` | `/api/v1/integrations/providers` | Registered providers. GitHub ships registered and read-only (ADR-053); the registry is code and cannot be widened at runtime. |
 | `GET` | `/api/v1/integrations/connections` | Connections, newest first; `providerName` present iff the provider is still registered. |
+| `POST` | `/api/v1/integrations/connections` | Create; the row answers `201` at `pending`. |
+| `GET`/`DELETE` | `/api/v1/integrations/connections/{connectionId}` | Read one; hard delete answering with the removed row. |
+| `POST` | `…/credential` | Write-only token seal (ADR-051); replacement deletes the previous envelope in-transaction. The only credential route, POST-only. |
+| `POST` | `…/test` | Non-mutating handshake; **data either way**, no row change, no audit, no publication. |
+| `POST` | `…/enable` | Connect: the only path to `connected`, the only exit from `disabled`, the only reconnect; stamps `validatedAt`, publishes tools, answers `{ connection, tools }`. |
+| `POST` | `…/disable` / `…/disconnect` | Explicit rest states; tools withdrawn in the same instant. |
+| `GET` | `…/tools` | The connection's published tools; a stranger id is `404`, not `[]`. |
 
-No write endpoint exists, deliberately: the domain service implements create/
-connect/disconnect/disable/remove, but with zero registered providers an
-operator write surface would be a form over nothing. Phase 13 mounts the write
-API on the same `IntegrationService` when a provider exists to connect to.
+The writes audit through the Phase 12 closed enum (`integration.connection.*`):
+create, delete, and every lifecycle transition — enable, disable, disconnect —
+write `integration.connection.updated`/`.created`/`.deleted` with a status
+detail. `test` writes nothing, because it decides nothing. Every mutation is
+attributed to the requesting operator (`{ type: 'admin', id: … }`).
 
 This section also records the domain distinction the endpoints sit on
 (ADR-048): a **backend** is an MCP peer configured by an operator; a
