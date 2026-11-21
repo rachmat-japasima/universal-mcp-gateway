@@ -134,6 +134,12 @@ export interface PolicyRepository {
   assign(agentId: string, policyId: string, now: string): void;
   unassign(agentId: string, policyId: string): void;
   listPoliciesForAgent(agentId: string): Policy[];
+  /**
+   * The reverse of `listPoliciesForAgent`: which agents hold one policy.
+   * Excludes tombstoned agents — an assignment to a deleted agent is not a
+   * grant anyone can use.
+   */
+  listAgentsForPolicy(policyId: string): Agent[];
   /** Removes every assignment of one agent. Used when an agent is deleted. */
   unassignAll(agentId: string): number;
 }

@@ -17,7 +17,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
 import type { Backend } from '@/lib/api/types';
-import { send } from '@/lib/backends/browser';
+import { send } from '@/lib/api/write-client';
 import {
   EMPTY_FORM,
   buildCreateInput,

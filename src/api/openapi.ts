@@ -1068,6 +1068,13 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
         },
       },
       '/api/v1/policies/{policyId}/assignments': {
+        get: {
+          tags: ['policies'],
+          summary: 'List the agents assigned to a policy',
+          description: 'The reverse of the per-agent access view. Excludes tombstoned agents.',
+          parameters: [POLICY_ID],
+          responses: { 200: listBody(ref('Agent')), ...errorResponses(['404', 'Not found']) },
+        },
         post: {
           tags: ['policies'],
           summary: 'Assign a policy to an agent',

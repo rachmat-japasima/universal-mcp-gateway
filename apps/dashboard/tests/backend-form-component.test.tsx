@@ -21,7 +21,7 @@ const send = vi.fn();
 const push = vi.fn();
 const refresh = vi.fn();
 
-vi.mock('@/lib/backends/browser', () => ({ send: (...args: unknown[]) => send(...args) }));
+vi.mock('@/lib/api/write-client', () => ({ send: (...args: unknown[]) => send(...args) }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push, refresh }) }));
 
 const { BackendForm } = await import('@/features/backends/backend-form');

@@ -1,10 +1,10 @@
 /**
  * The dashboard's route table, in navigation order.
  *
- * One list feeds the sidebar, the breadcrumbs, and each page's title, so a new
- * destination cannot exist in the sidebar but not in the heading. `phase` says
- * which routes are real today: Phase 9 implements Overview; the rest render an
- * explicit "not implemented yet" placeholder rather than a fabricated screen.
+ * One list feeds the sidebar and the active-route highlight, so a destination
+ * cannot exist in the sidebar but not as a page. Every route below is built: as
+ * of Phase 10.8 there is no placeholder module left, and a route that is not in
+ * this table has no page.
  */
 
 export interface NavItem {
@@ -13,10 +13,6 @@ export interface NavItem {
   label: string;
   /** Semantic Astryx icon name, verified against `astryx docs icons`. */
   icon: string;
-  /** `false` renders as a real placeholder, never as fake content. */
-  implemented: boolean;
-  /** One sentence used by the placeholder page. */
-  summary: string;
 }
 
 export interface NavSection {
@@ -27,93 +23,29 @@ export interface NavSection {
 export const NAV_SECTIONS: NavSection[] = [
   {
     title: 'Overview',
-    items: [
-      {
-        href: '/dashboard',
-        label: 'Overview',
-        icon: 'info',
-        implemented: true,
-        summary: 'Gateway status and the counts the management API reports.',
-      },
-    ],
+    items: [{ href: '/dashboard', label: 'Overview', icon: 'info' }],
   },
   {
     title: 'Registry',
     items: [
-      {
-        href: '/dashboard/backends',
-        label: 'Backends',
-        icon: 'externalLink',
-        implemented: true,
-        summary: 'Registered MCP backends, their transport, and runtime state.',
-      },
-      {
-        href: '/dashboard/tools',
-        label: 'Tools',
-        icon: 'wrench',
-        implemented: false,
-        summary: 'The discovered tool catalog, including withheld name conflicts.',
-      },
-      {
-        href: '/dashboard/agents',
-        label: 'Agents',
-        icon: 'info',
-        implemented: false,
-        summary: 'Agent profiles and the credentials they authenticate with.',
-      },
-      {
-        href: '/dashboard/policies',
-        label: 'Access Policies',
-        icon: 'check',
-        implemented: false,
-        summary: 'Allow/deny rules and their assignment to agents.',
-      },
+      { href: '/dashboard/backends', label: 'Backends', icon: 'externalLink' },
+      { href: '/dashboard/tools', label: 'Tools', icon: 'wrench' },
+      { href: '/dashboard/agents', label: 'Agents', icon: 'info' },
+      { href: '/dashboard/policies', label: 'Access Policies', icon: 'check' },
     ],
   },
   {
     title: 'Operations',
     items: [
-      {
-        href: '/dashboard/sessions',
-        label: 'Sessions',
-        icon: 'clock',
-        implemented: false,
-        summary: 'Live MCP sessions, their binding, and lifecycle controls.',
-      },
-      {
-        href: '/dashboard/activity',
-        label: 'Activity',
-        icon: 'funnel',
-        implemented: false,
-        summary: 'Operational history: calls, connections, and failures.',
-      },
-      {
-        href: '/dashboard/monitoring',
-        label: 'Monitoring',
-        icon: 'viewColumns',
-        implemented: false,
-        summary: 'Runtime, storage, and backend health in one view.',
-      },
-      {
-        href: '/dashboard/audit',
-        label: 'Audit Trail',
-        icon: 'eyeSlash',
-        implemented: false,
-        summary: 'Administrative history of every change the gateway recorded.',
-      },
+      { href: '/dashboard/sessions', label: 'Sessions', icon: 'clock' },
+      { href: '/dashboard/activity', label: 'Activity', icon: 'funnel' },
+      { href: '/dashboard/monitoring', label: 'Monitoring', icon: 'viewColumns' },
+      { href: '/dashboard/audit', label: 'Audit Trail', icon: 'eyeSlash' },
     ],
   },
   {
     title: 'Configuration',
-    items: [
-      {
-        href: '/dashboard/settings',
-        label: 'Settings',
-        icon: 'wrench',
-        implemented: false,
-        summary: 'Effective, non-secret gateway configuration. Read-only.',
-      },
-    ],
+    items: [{ href: '/dashboard/settings', label: 'Settings', icon: 'wrench' }],
   },
 ];
 

@@ -10,7 +10,7 @@ import { useState } from 'react';
 
 import type { Backend } from '@/lib/api/types';
 import { actionAvailability, type BackendAction } from '@/lib/backends/actions';
-import { send } from '@/lib/backends/browser';
+import { send } from '@/lib/api/write-client';
 
 /**
  * Lifecycle controls for one backend.

@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
+import type { Agent } from '../../../domain/agent.js';
 import type { CreatePolicyInput, Policy, UpdatePolicyInput } from '../../../domain/policy.js';
 import { createPolicySchema, policySchema, updatePolicySchema } from '../../../domain/policy.js';
 import type { PolicyPage, PolicyQuery, PolicyRepository } from '../../../domain/repositories.js';
 import { AppError } from '../../../shared/errors.js';
 import type { SqliteDatabase } from '../connection.js';
+import { toAgent, type AgentRow } from './agents.js';
 import { parseStored, wrapDatabaseError } from './helpers.js';
 
 interface PolicyRow {
@@ -227,6 +229,19 @@ export class SqlitePolicyRepository implements PolicyRepository {
       .all(agentId) as PolicyRow[];
 
     return rows.map(toPolicy);
+  }
+
+  listAgentsForPolicy(policyId: string): Agent[] {
+    const rows = this.database
+      .prepare(
+        `SELECT ag.* FROM agents ag
+           JOIN agent_policy_assignments a ON a.agent_id = ag.id
+          WHERE a.policy_id = ? AND ag.deleted_at IS NULL
+          ORDER BY ag.name`,
+      )
+      .all(policyId) as AgentRow[];
+
+    return rows.map(toAgent);
   }
 }
 

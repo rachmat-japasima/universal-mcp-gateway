@@ -1,7 +1,9 @@
 import { operatorCookieHeader, operatorCredentials } from '@/lib/auth/guard';
 import { config } from '@/lib/config';
+import { isGatewayHealth } from '@/lib/validation/liveness';
+import { isReadiness } from '@/lib/validation/readiness';
 import { ApiError, fromFetchError, parseErrorBody } from './errors';
-import type { Page, Pagination, Readiness } from './types';
+import type { GatewayHealth, Page, Pagination, Readiness } from './types';
 
 /**
  * The one place the dashboard speaks HTTP to the gateway.
@@ -145,9 +147,35 @@ export async function request<T>(
   return body.data as T;
 }
 
-/** Readiness answers `503` with its own documented body, so it is read raw. */
+/**
+ * Liveness answers its own body, not a `{data}` envelope, so it is read raw too.
+ * The shape is checked here rather than at each call site: a proxy error page
+ * parsed as JSON would otherwise become a live-looking gateway with `undefined`
+ * fields.
+ */
+export async function fetchLiveness(options: RequestOptions = {}): Promise<GatewayHealth> {
+  const body = await request<unknown>('/health', {}, { ...options, rawBody: true });
+
+  if (!isGatewayHealth(body)) {
+    throw new ApiError('invalid-response', 'The liveness probe did not return the documented payload.');
+  }
+
+  return body;
+}
+
+/**
+ * Readiness answers `503` with its own documented body, so it is read raw — and
+ * validated, because the dashboard's own proxy answers a missing gateway with
+ * `503` and an *error envelope*. Both are 503; only the payload tells them apart.
+ */
 export async function fetchReadiness(options: RequestOptions = {}): Promise<Readiness> {
-  return request<Readiness>('/ready', {}, { ...options, rawBody: true, acceptStatus: [200, 503] });
+  const body = await request<unknown>('/ready', {}, { ...options, rawBody: true, acceptStatus: [200, 503] });
+
+  if (!isReadiness(body)) {
+    throw new ApiError('invalid-response', 'The readiness probe did not return the documented payload.');
+  }
+
+  return body;
 }
 
 /**

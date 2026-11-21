@@ -3,8 +3,9 @@
  *
  * A client component cannot call `127.0.0.1:8787` — the gateway is loopback-only
  * and sends no CORS headers — and must not hold the operator cookie or the CSRF
- * token. `app/api/backends/[...path]/route.ts` carries both, so this module only
- * ever names a dashboard-local path.
+ * token. `app/api/*\/[...path]/route.ts` carry both, so this module only ever
+ * names a dashboard-local path (`/api/backends`, `/api/agents`,
+ * `/api/policies`).
  *
  * `message` is always safe to render: it is either the gateway's own documented
  * `error.message` or a fixed sentence. Nothing here reads a stack or a URL.

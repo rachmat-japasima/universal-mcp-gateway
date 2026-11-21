@@ -194,3 +194,56 @@ describe('policy CRUD', () => {
     expect((await json<{ error: { message: string } }>(response)).error.message).toMatch(/backend that does not exist/i);
   });
 });
+
+describe('policy assignments (reverse lookup)', () => {
+  it('lists exactly the agents assigned, with the same shape as the agent list', async () => {
+    const policyId = await createPolicy('shared', [{ resource: 'tool', target: 'x__y', effect: 'allow' }]);
+    const assigned = createTestAgent(store, testKeys(), { name: 'assigned-agent' });
+    createTestAgent(store, testKeys(), { name: 'unassigned-agent' });
+
+    const empty = await json<{ data: unknown[] }>(await call('GET', `/policies/${policyId}/assignments`));
+    expect(empty.data).toEqual([]);
+
+    await call('POST', `/policies/${policyId}/assignments`, { agentId: assigned.id });
+
+    const listed = await json<{ data: Array<Record<string, unknown>> }>(
+      await call('GET', `/policies/${policyId}/assignments`),
+    );
+    expect(listed.data).toHaveLength(1);
+    expect(listed.data[0]).toMatchObject({ id: assigned.id, name: 'assigned-agent', status: 'active' });
+    // No credential material can appear here, even by accident.
+    expect(listed.data[0]).not.toHaveProperty('token');
+    expect(listed.data[0]).not.toHaveProperty('tokenPrefix');
+  });
+
+  it('answers 404 for a policy that does not exist', async () => {
+    const response = await call('GET', '/policies/00000000-0000-4000-8000-000000000000/assignments');
+    expect(response.status).toBe(404);
+    expect((await json<{ error: { code: string } }>(response)).error.code).toBe('RESOURCE_NOT_FOUND');
+  });
+
+  it('drops the assignment when the agent is deleted, so the reverse lookup stays honest', async () => {
+    const policyId = await createPolicy('cascades', []);
+    const agent = createTestAgent(store, testKeys(), { name: 'doomed-agent' });
+    await call('POST', `/policies/${policyId}/assignments`, { agentId: agent.id });
+
+    expect((await call('DELETE', `/agents/${agent.id}`)).status).toBe(200);
+
+    const listed = await json<{ data: unknown[] }>(await call('GET', `/policies/${policyId}/assignments`));
+    expect(listed.data).toEqual([]);
+  });
+
+  it('agrees with the per-agent view in both directions', async () => {
+    const policyId = await createPolicy('bidirectional', []);
+    const agent = createTestAgent(store, testKeys(), { name: 'two-way-agent' });
+    await call('POST', `/policies/${policyId}/assignments`, { agentId: agent.id });
+
+    const forward = await json<{ data: Array<{ id: string }> }>(await call('GET', `/policies?agentId=${agent.id}`));
+    const reverse = await json<{ data: Array<{ id: string }> }>(
+      await call('GET', `/policies/${policyId}/assignments`),
+    );
+
+    expect(forward.data.map((policy) => policy.id)).toEqual([policyId]);
+    expect(reverse.data.map(entry => entry.id)).toEqual([agent.id]);
+  });
+});

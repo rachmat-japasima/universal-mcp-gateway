@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import type { Agent } from '../domain/agent.js';
 import type { AuditAction } from '../domain/audit-event.js';
 import type { CreatePolicyInput, Policy, PolicyRule, UpdatePolicyInput } from '../domain/policy.js';
 import { createPolicySchema, policyRuleSchema, updatePolicySchema, WILDCARD } from '../domain/policy.js';
@@ -129,6 +130,19 @@ export class PolicyService {
 
       return policy;
     });
+  }
+
+  /**
+   * Read-only: which agents currently hold this policy.
+   *
+   * The counterpart of `listPoliciesForAgent`, which the agent model already
+   * exposed. Without it the policy detail screen can show *that* a policy grants
+   * access but not *to whom*, and an operator editing an allow rule would have
+   * no way to see the blast radius before saving.
+   */
+  listAssignments(policyId: string): Agent[] {
+    this.requirePolicy(policyId);
+    return this.store.policies.listAgentsForPolicy(policyId);
   }
 
   unassign(agentId: string, policyId: string): Policy {

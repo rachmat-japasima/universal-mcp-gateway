@@ -16,7 +16,8 @@ const SORT_COLUMNS = {
   updatedAt: 'updated_at',
 } as const;
 
-interface AgentRow {
+/** Shared with the policy repository, which joins agents to read assignments. */
+export interface AgentRow {
   id: string;
   name: string;
   description: string | null;
@@ -29,7 +30,8 @@ interface AgentRow {
   deleted_at: string | null;
 }
 
-function toAgent(row: AgentRow): Agent {
+/** Shared with the policy repository: both read the same columns. */
+export function toAgent(row: AgentRow): Agent {
   return parseStored(
     () =>
       agentSchema.parse({

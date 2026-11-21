@@ -1,10 +1,13 @@
 import { request, requestPage } from './client';
 import type {
   ActivityEvent,
+  ActivityQuery,
   AuditEvent,
+  AuditQuery,
   Diagnostics,
   Monitoring,
   MonitoringBackends,
+  MonitoringHealth,
   MonitoringRuntime,
   MonitoringSessions,
   Overview,
@@ -34,44 +37,18 @@ export const getMonitoringSessions = (): Promise<MonitoringSessions> =>
 export const getMonitoringRuntime = (): Promise<MonitoringRuntime> =>
   request<MonitoringRuntime>('/api/v1/monitoring/runtime');
 
+export const getMonitoringHealth = (): Promise<MonitoringHealth> =>
+  request<MonitoringHealth>('/api/v1/monitoring/health');
+
 export const getDiagnostics = (): Promise<Diagnostics> => request<Diagnostics>('/api/v1/diagnostics');
 
 export const getSettings = (): Promise<Settings> => request<Settings>('/api/v1/settings');
-
-export interface ActivityQuery {
-  page?: number;
-  limit?: number;
-  type?: string;
-  outcome?: string;
-  agentId?: string;
-  backendId?: string;
-  toolName?: string;
-  search?: string;
-  after?: string;
-  before?: string;
-  order?: 'asc' | 'desc';
-}
 
 export const getActivity = (query: ActivityQuery = {}): Promise<Page<ActivityEvent>> =>
   requestPage<ActivityEvent>('/api/v1/activity', { ...query });
 
 export const getActivityEvent = (eventId: string): Promise<ActivityEvent> =>
   request<ActivityEvent>(`/api/v1/activity/${encodeURIComponent(eventId)}`);
-
-export interface AuditQuery {
-  page?: number;
-  limit?: number;
-  action?: string;
-  actorType?: string;
-  actorId?: string;
-  targetType?: string;
-  targetId?: string;
-  result?: string;
-  search?: string;
-  after?: string;
-  before?: string;
-  order?: 'asc' | 'desc';
-}
 
 /** The list omits `metadata`; only the detail read renders it. */
 export const getAudit = (query: AuditQuery = {}): Promise<Page<AuditEvent>> =>

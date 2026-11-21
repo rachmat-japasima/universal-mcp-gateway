@@ -4,12 +4,15 @@ import { VStack } from '@astryxdesign/core/VStack';
 
 /**
  * Skeleton placeholders shaped like the content they replace, so the layout does
- * not jump when data arrives. `Skeleton` has no accessible name; the wrapper
- * carries a `status` region with a text label for screen readers instead.
+ * not jump when data arrives.
+ *
+ * `Skeleton` has no accessible name, so the wrapper is a labelled `status` region
+ * instead: a screen reader hears "Loading page" once rather than a pile of
+ * anonymous boxes.
  */
-export function OverviewSkeleton(): React.ReactElement {
+export function PageSkeleton({ label = 'Loading page' }: { label?: string }): React.ReactElement {
   return (
-    <div role="status" aria-label="Loading overview">
+    <div role="status" aria-label={label}>
       <VStack gap={4}>
         <Grid columns={{ minWidth: 220, max: 4 }} gap={3}>
           {[0, 1, 2, 3].map((index) => (

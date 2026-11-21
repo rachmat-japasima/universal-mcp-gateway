@@ -8,31 +8,37 @@ import { config } from '@/lib/config';
  * Same-origin read proxy.
  *
  * Why it exists: the gateway is loopback-only and sends no CORS headers, so the
- * browser cannot call it. Server components call the gateway directly; this
- * route covers client-side refresh, which needs a URL the browser may fetch.
+ * browser cannot call it. Server components call the gateway directly; this route
+ * covers client-side refresh, which needs a URL the browser may fetch.
  *
  * Why it is an allowlist rather than a passthrough: a proxy that forwarded any
  * path would turn the dashboard into an open door to the management API for
- * anything that can load a page. Only the read endpoints the dashboard renders
- * are reachable, only `GET`, and the query string is forwarded unchanged so the
+ * anything that can load a page. Only the read endpoints the dashboard renders are
+ * reachable, only `GET`, and the query string is forwarded unchanged so the
  * gateway — the single source of truth for validation — still answers a bad
  * parameter with its own `400`.
+ *
+ * **The list is empty on purpose.** Every data page is a server component, so the
+ * gateway is read from the Node process and never through this route; the one
+ * client-side read in the dashboard is the readiness probe in
+ * `components/feedback/gateway-status.tsx`, which is the `ready` path below. An
+ * entry here is surface area with no caller, so overview/monitoring/settings/
+ * diagnostics are deliberately not listed. Add one back only with a client that
+ * actually fetches it.
  */
 
-const ALLOWED_API_PATHS = [
-  /^\/api\/v1\/overview$/,
-  /^\/api\/v1\/monitoring(\/(health|backends|sessions|runtime))?$/,
-  /^\/api\/v1\/diagnostics$/,
-  /^\/api\/v1\/settings$/,
-];
-
+/**
+ * The only path this route forwards: the readiness probe.
+ *
+ * `undefined` means "not proxied", and the handler answers its own `404`. Keeping
+ * a list of regexes here while it holds one entry would be an extension point
+ * nobody asked for — the comment above says what to do when a second client-side
+ * read appears.
+ */
 const READY_PATH = '/ready';
 
 function resolveTarget(segments: string[]): string | undefined {
-  if (segments.length === 1 && segments[0] === 'ready') return READY_PATH;
-
-  const target = `/api/v1/${segments.join('/')}`;
-  return ALLOWED_API_PATHS.some((pattern) => pattern.test(target)) ? target : undefined;
+  return segments.length === 1 && segments[0] === 'ready' ? READY_PATH : undefined;
 }
 
 export const dynamic = 'force-dynamic';

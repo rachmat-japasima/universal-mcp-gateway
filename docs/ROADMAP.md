@@ -301,24 +301,263 @@ and the proxy handler. Gateway suite unchanged at 528 tests; gateway build clean
 **Not verified:** a real browser click-path and a real connect — no backend was
 registered or connected, and the running gateway was not restarted.
 
-**Module workstreams (after 10.1):**
+**Workstream 10.2 — Tool Explorer: implemented.**
 
-Implement:
-1. ~~Overview~~ — shipped in Phase 9; Phase 10 only extends it if new aggregates appear.
-2. ~~Backend list/create/detail~~ — shipped in 10.1 (above).
-3. Tool Explorer.
-4. Agents and credential lifecycle.
-5. Access Policies.
-6. Sessions.
-7. Activity.
-8. Monitoring.
-9. Audit Trail.
-10. Settings and diagnostics.
+Scope: the catalog only — list, filter, detail, discovery state, name conflicts,
+and the two refresh routes. No invocation and no per-agent access matrix, both by
+design (see below).
 
-Every page must use real API data and complete loading/empty/error/success states.
+What shipped, against the verified gateway contract (`src/api/routes/tools.routes.ts`):
 
-**Status: workstreams 10.0 and 10.1 are complete; the remaining module pages are
-not started.** Every other module route is a placeholder that says so.
+- `/dashboard/tools` — the catalog table with the gateway's own `search`,
+  `backendId` and `availability` filters and pagination. Counts read
+  `GET /api/v1/monitoring`, the same payload `/overview` uses, so a filtered page
+  cannot understate the catalog. Discovery reports and name conflicts are read
+  separately and degrade on their own when they fail.
+- `/dashboard/tools/[toolId]` — one tool addressed by **public name**
+  (`<backend_id>__<original>`), which is what `GET /api/v1/tools/:publicName`
+  keys on. Shows identity, availability, the owning backend, and the input,
+  output and annotation schemas.
+- Schemas are inert: Astryx `CodeBlock` from `JSON.stringify`, with copy. No
+  HTML injection, no evaluation — an `inputSchema` is attacker-influenced data
+  from a remote backend.
+- Refresh uses the two real routes (`POST /tools/refresh`,
+  `POST /backends/:id/tools/refresh`). Global refresh answers `200` with
+  per-backend failures, so the summary reports refreshed *and* failed counts
+  instead of assuming success from the status code. One run at a time.
+
+**Documented contract corrections and limitations:**
+
+- `DiscoveryReport` in the dashboard said `status: success|failed|pending` with
+  `errorCode`/`errorMessage`; the wire shape is `never|ok|failed` with
+  `toolCount`, `conflictCount`, `rejectedCount`, `lastError`
+  (`discoveryReportSchema`). Fixed.
+- `conflictCount` in a discovery report is a baseline `0` by design — the catalog
+  computes the live number at read time. The UI reads `/tools/conflicts` for the
+  real conflict list rather than printing a reassuring zero.
+- **Admin test invocation is not implemented.** There is no REST invocation
+  route, deliberately: a call goes through `/mcp` under an agent's credential and
+  policy. The detail page states this rather than rendering a button with nothing
+  behind it.
+- **No availability-by-agent filter.** Agent access is a policy question
+  answered per agent (10.4), not a property of a catalog row.
+
+**Verification:** 187 dashboard tests (was 148) across 17 files, adding the tool
+client contract, list states, detail (inert schema, conflict/disabled wording,
+404), refresh (pending guard, partial failure), and the extended write allowlist.
+Dashboard typecheck and production build green; gateway suite unchanged at 528;
+gateway typecheck and build clean. **Not verified:** a real browser click-path
+and a real discovery run against a connected backend.
+
+**Workstream 10.3 — Agents and credentials: implemented.**
+
+Scope: agent CRUD, enable/disable, credential issue/rotate/revoke, and a
+read-only effective-access preview. Sessions, usage and activity on the detail
+page are deferred to their own phases.
+
+- `/dashboard/agents` — the registry table with the gateway's `search`, `status`
+  and `clientType` filters. Counts read `GET /api/v1/overview`, because
+  `/monitoring` does not report agents; the list is filtered and paginated, so
+  counting its rows would understate the registry.
+- `/dashboard/agents/[agentId]` — identity, credentials, effective access. The
+  three reads are independent: a failed access evaluation does not hide the
+  revoke controls.
+- `/dashboard/agents/new` and `/edit` — one form. No `version` field exists on an
+  agent, so there is no compare-and-set to promise; the form re-reads after
+  saving. `null` clears a nullable field rather than storing an empty string.
+- Credential panel: the raw token is rendered once, in memory, with explicit
+  copy, and discarded on close. It is never written to browser storage, the URL,
+  a log, or audit metadata, and the gateway stores only an HMAC digest, so it
+  cannot be shown again.
+- Rotation copy states the real semantics: replace, **no grace period**, previous
+  credential revoked in the same transaction, sessions bound to it invalidated.
+  A revoked credential is not offered Rotate (the gateway answers `409`).
+- Disabling states that live sessions end, not just new ones. Delete states that
+  credentials are revoked and assignments dropped, and that the record is
+  tombstoned rather than erased.
+
+**Deliberately not in 10.3:** creating a credential as part of "create agent"
+(a token needs a panel built to show it once), a `metadata` editor (the map is
+replaced wholesale; a JSON textarea would be a worse editor than none),
+per-client connection instructions (no endpoint derives them), and sessions /
+usage / activity sections (their own phases).
+
+**Verification:** 253 dashboard tests (was 187) across 23 files. Dashboard
+typecheck and production build green (four agent routes emitted); gateway suite
+unchanged at 528; gateway typecheck clean. **Not verified:** a real browser
+click-path and a real credential handshake against a live client.
+
+**Workstream 10.4 — Access policies: implemented.**
+
+Scope: policy CRUD, the rule editor, agent assignment, and an effective-access
+preview that is the gateway's evaluator rendered verbatim.
+
+- `/dashboard/policies` — the registry with the gateway's `search` and `effect`
+  filters. The API exposes no registry-wide policy counts, so the tiles are
+  computed from the visible page and labelled "on this page of N".
+- `/dashboard/policies/[policyId]` — rules (ALLOW/DENY as words, not colour), the
+  agents holding the policy, and a preview of one agent's access.
+- `/dashboard/policies/new` and `/edit` — one form. Rules are a field of the
+  policy, replaced wholesale, so the form always sends the full array; a partial
+  send would keep rules that were just deleted.
+- **Widening is confirmed, and enumerated:** a new ALLOW, a DENY flipped to ALLOW,
+  a removed DENY (which restores access under deny-overrides-allow), and any `*`
+  allow. A narrowing edit saves without a prompt. Nothing rewrites an effect on
+  the operator's behalf.
+- **Effective access is not recomputed in the browser.** The preview calls
+  `GET /agents/:agentId/access` for an assigned agent selected by a plain GET form,
+  so the URL reproduces it. A second rule engine would be a second answer.
+- Assignment removal and policy deletion both state their real consequence
+  (immediate withdrawal, cascade) before they happen.
+
+**One gateway addition:** `GET /api/v1/policies/:policyId/assignments`. The
+assignments sub-resource had `POST` and `DELETE` but no read, so the detail page
+could say what a policy grants and not who receives it. It is the reverse of the
+existing `listPoliciesForAgent`, backed by `listAgentsForPolicy` and the existing
+`idx_assignments_policy` index, excludes tombstoned agents, returns the same
+`Agent` shape as the agent list, and is covered by four new gateway tests.
+Documented in `docs/API_REFERENCE.md` §3.6.
+
+**Verification:** 339 dashboard tests (was 253) across 30 files; gateway 532 (was
+528) across 27 files; both typechecks clean; dashboard production build emits all
+four policy routes plus `/api/policies/[...path]`. **Not verified:** a real browser
+click-path and a live agent handshake.
+
+**Workstream 10.5 — Sessions: implemented.**
+
+Scope: the MCP session registry, one session's binding and timing, and
+termination.
+
+- `/dashboard/sessions` — list with the gateway's own `agentId`, `status`
+  (effective), `sort`, `order` and pagination. There is no `search` parameter in
+  the contract, so there is no search box: an id lookup redirects to the real
+  detail read, and a malformed id explains itself without asking the gateway.
+- `/dashboard/sessions/[sessionId]` — identity, immutable agent/credential
+  binding, both lifetimes, client metadata, and the terminate control.
+- Counts come from `/api/v1/overview`, not from the visible page.
+- **These are MCP agent sessions, not dashboard sign-ins.** `operator_sessions`
+  is a different table with its own endpoints and is never read here (ADR-045).
+- **Termination is a server operation.** `POST /sessions/:id/terminate` writes
+  the row, releases the transport, writes one audit record, and refuses later
+  requests with that protocol id. The dialog states the client impact and what is
+  unaffected; the button is disabled in flight and the gateway's idempotency
+  covers a double click.
+- **No cleanup sweep and no `invalidate` UI.** Neither is in the write allowlist,
+  so the browser cannot reach them even by hand.
+- No token, hash, cookie, or transport state appears anywhere; `mcpSessionId` is
+  displayed as the routing handle it is.
+
+**One pre-existing test fixture bug fixed:** `tests/sessions.test.ts` pinned its
+clock to a date that has now passed while the repository derives a lapsed
+lifetime from the real `Date.now()`, so thirteen tests began failing
+independently of this batch. Both files matched `HEAD`; the fixture now starts at
+real now.
+
+**Verification:** 366 dashboard tests (was 339) across 34 files; gateway 532
+across 27 files; both typechecks clean; dashboard production build emits
+`/dashboard/sessions`, `/dashboard/sessions/[sessionId]` and
+`/api/sessions/[...path]`. **Not verified:** a real browser click-path and a live
+MCP client termination.
+
+**Workstream 10.6 — Activity and Audit Trail: implemented.**
+
+Scope: two separate views over two separate gateway tables, with CSV export of the
+audit trail.
+
+- `/dashboard/activity` — operational history: what the gateway *did*, with the
+  gateway's own `type`, `outcome`, `agentId`, `backendId`, `search` (tool or
+  request id) and `order`.
+  Tiles come from `/overview.activity` and report the recorded totals only — no
+  rate, no average, no graph, because none are collected.
+- `/dashboard/activity/[eventId]` — one event. Tool arguments and results are
+  never stored, so there is nothing to reveal or redact.
+- `/dashboard/audit` — administrative history ("who changed what") with `action`,
+  `actorType`, `actorId`, `targetType`, `targetId`, `result`, `search`, `order`.
+- `/dashboard/audit/[eventId]` — one audit record, including `metadata`.
+- `GET /api/audit-export` — CSV of the filtered trail, capped at 1000 rows across
+  at most 10 pages, quoted unconditionally, with a leading `=`, `+`, `-`, `@`, tab
+  or CR neutralised. Failure returns `AUDIT_EXPORT_FAILED`, never an empty file.
+- **The two are never one table.** Different types, filters, tables, detail pages
+  and status vocabularies; the two near-identical table modules are the deliberate
+  cost of keeping activity from diluting the security record.
+- **`metadata` is disclosed only by the detail read.** `toAuditListItem` omits it,
+  so neither the list nor the CSV (built from the list shape) can contain it.
+- **Audit immutability is structural.** No update or delete route exists, and the
+  repository has no method for either; there is therefore no mutation control.
+- `lib/events/query.ts` is the single URL→filter allowlist shared by the page,
+  pagination links and the export. Values outside a closed enum are dropped rather
+  than forwarded as a `400`. The `targetType` filter omits `operator`, which the
+  event schema allows but the list schema does not.
+
+**Verification:** 406 dashboard tests (was 366) across 38 files; gateway 532
+across 27 files; both typechecks clean; dashboard production build emits
+`/dashboard/activity`, `/dashboard/activity/[eventId]`, `/dashboard/audit`,
+`/dashboard/audit/[eventId]` and `/api/audit-export`. **Not verified:** a real
+browser click-path and opening a downloaded CSV in a real spreadsheet.
+
+**Workstream 10.7 — Monitoring and diagnostics: implemented.**
+
+Scope: runtime and dependency health, plus the safe facts a bug report needs.
+
+- `/dashboard/monitoring` — four sections that are deliberately not one status:
+  **liveness** (`/health`, never consults storage), **readiness** (`/ready`,
+  storage plus the migration ledger, optional backends excluded), **dependency
+  health** (`/monitoring/health`), and **backend runtime**
+  (`/monitoring/backends`, per-connection state).
+- `/ready` answers `503` with a real document, so the page trusts the validated
+  body rather than `response.ok`; a proxy `503` error envelope is rejected instead
+  of being mistaken for "not ready". `/health` is raw and validated by
+  `isGatewayHealth`.
+- Seven reads run concurrently and settle independently, so one failing endpoint
+  degrades one card. A failed count renders `Unavailable`, never `0`.
+- **No invented metric.** No uptime percentage, request rate, latency percentile,
+  CPU or memory figure, and no chart: `/settings` reports `features.metrics:
+  false` and the gateway keeps no history. Historical metrics are **deferred**,
+  not faked.
+- Diagnostics renders only the documented safe payload — identity, storage and
+  migration state, environment, log level, counts, two limits. No env values,
+  secrets, hashes, headers, paths, or stack traces; the page never falls back to
+  its own process configuration.
+- Manual refresh only, with a pending state and duplicate-transition protection.
+  No polling, WebSocket, or Redis.
+
+**Verification:** 421 dashboard tests (was 406) across 40 files; both typechecks
+clean; the production build emits `/dashboard/monitoring`. **Not verified:** a
+real browser click-path against a gateway in each of the four states.
+
+**Workstream 10.8 — Settings and final regression: implemented.**
+
+Scope: the last placeholder becomes a real screen, the placeholder mechanism is
+deleted, and every route gets a final review.
+
+- `/dashboard/settings` — the effective configuration, read-only. `/settings`
+  answers `readOnly: true` and `features.settingsMutation: false`, and there is
+  no write route, so the page shows values and says where they come from instead
+  of drawing dead inputs. A test asserts no `form`, `input`, `select`, or submit
+  control is rendered at all.
+- Values are separated by governance: where the gateway listens; limits and
+  sessions; backend connections (with `allowPrivateNetwork` flagged as
+  security-relevant); capabilities as availability flags; logging.
+- **No generic environment editor.** One would need write access the gateway does
+  not expose and would make `settings.updated` a lie. Changes are made in the
+  gateway's environment, followed by a restart.
+- **Operator account deferred with a procedure, not a fake form:** no
+  password-change API exists, so the page documents the real recovery (stop the
+  gateway, delete the operator row, `pnpm operator:create`, restart).
+- `features/placeholder/` deleted; `NavItem` lost its dead `implemented` and
+  `summary` fields. The navigation table was diffed against the route tree:
+  ten module roots in each, no orphans either direction.
+- One `dashboard/loading.tsx` now streams a skeleton for all 23 routes.
+- **Read proxy narrowed.** The browser-side allowlist previously forwarded six
+  read paths that only server components use; it now forwards `/ready` alone, the
+  one client-side gateway read. Unused proxy surface is removed, not retained.
+
+**Verification:** 427 dashboard tests (was 421) across 41 files; gateway 532
+across 27 files; both typechecks clean; both production builds clean. **Not
+verified:** a real browser pass over all routes.
+
+**Status: workstreams 10.0–10.8 are complete. Phase 10 is complete: every
+dashboard route renders real API data, and no placeholder remains.**
 
 ## Phase 11 — Observability and operations
 - Structured request logs.

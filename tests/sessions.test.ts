@@ -36,7 +36,12 @@ let service: SessionService;
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'gw-session-service-'));
   store = openStore({ path: join(directory, 'gateway.db') });
-  clock = new Date('2026-11-19T10:00:00.000Z');
+  // Anchored to the real clock, because the repository derives a lapsed
+  // lifetime from `Date.now()` when it reads a row (`toSession`). A fixed past
+  // date would make every freshly created session read back as `expired` once
+  // that date is behind us — the assertions below are all relative, so this
+  // stays stable.
+  clock = new Date();
   service = Service();
 });
 

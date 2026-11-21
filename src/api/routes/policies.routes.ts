@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 
 import { createPolicySchema, updatePolicySchema } from '../../domain/policy.js';
+import { toPublicAgent } from '../../registry/agent-service.js';
 import { toPublicPolicy, type PolicyService } from '../../registry/policy-service.js';
 import { AppError, formatZodIssues } from '../../shared/errors.js';
 import { getRequestId, ok, parseQuery, readJson } from '../http.js';
@@ -64,6 +65,16 @@ export function policiesRoutes(service: PolicyService): Hono {
   routes.delete('/:policyId', (c) => {
     const { policyId } = parseParam(policyIdParamSchema, c.req.param(), getRequestId(c));
     return ok(c, toPublicPolicy(service.remove(policyId)));
+  });
+
+  /**
+   * The reverse direction of `GET /agents/:agentId/access`: which agents hold
+   * this policy. Read-only, and the assignments sub-resource already carried
+   * POST and DELETE, so this completes it rather than inventing a new shape.
+   */
+  routes.get('/:policyId/assignments', (c) => {
+    const { policyId } = parseParam(policyIdParamSchema, c.req.param(), getRequestId(c));
+    return ok(c, service.listAssignments(policyId).map(toPublicAgent));
   });
 
   routes.post('/:policyId/assignments', async (c) => {

@@ -23,6 +23,7 @@ export interface GatewayHealth {
   status: 'ok';
   service: string;
   version: string;
+  timestamp: string;
   mcp: {
     endpoint: string;
     backendCount: number;
@@ -208,13 +209,63 @@ export interface BackendQuery {
   order?: 'asc' | 'desc';
 }
 
+/**
+ * `GET /api/v1/tools/discovery` and `monitoring/backends.discovery`.
+ *
+ * Mirrors `discoveryReportSchema` in `src/domain/tool.ts`. `status: 'never'` is
+ * a backend no discovery has run for, which is not the same as a failure.
+ */
 export interface DiscoveryReport {
   backendId: string;
-  status: 'success' | 'failed' | 'pending';
-  toolCount?: number;
-  errorCode?: string;
-  errorMessage?: string;
-  discoveredAt?: string;
+  status: 'never' | 'ok' | 'failed';
+  toolCount: number;
+  conflictCount: number;
+  rejectedCount: number;
+  discoveredAt: string;
+  /** Sanitized failure summary; never a payload or a credential. */
+  lastError?: string;
+}
+
+export const TOOL_AVAILABILITIES = ['available', 'unavailable', 'conflict'] as const;
+export type ToolAvailability = (typeof TOOL_AVAILABILITIES)[number];
+
+/** `GET /api/v1/tools` and `GET /api/v1/tools/:publicName` — `catalogToolViewSchema`. */
+export interface Tool {
+  publicName: string;
+  originalName: string;
+  backendId: string;
+  title?: string;
+  description?: string;
+  /** Opaque JSON Schema, forwarded verbatim from the backend. Never executed here. */
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+  availability: ToolAvailability;
+  unavailableReason?: string;
+  discoveredAt: string;
+  updatedAt: string;
+}
+
+export interface ToolQuery {
+  page?: number;
+  limit?: number;
+  search?: string;
+  backendId?: string;
+  availability?: ToolAvailability;
+  sort?: 'publicName' | 'backendId' | 'discoveredAt';
+  order?: 'asc' | 'desc';
+}
+
+/** `POST /api/v1/tools/refresh`. Failures are per backend, in the body. */
+export interface ToolRefreshResult {
+  refreshed: number;
+  failed: number;
+  results: Array<{
+    backendId: string;
+    ok: boolean;
+    report?: DiscoveryReport;
+    error?: { code: string; message: string };
+  }>;
 }
 
 export interface ToolConflict {
@@ -234,6 +285,18 @@ export interface MonitoringSessions {
   counts: SessionCounts | Unavailable;
   total?: number;
   reason?: string;
+}
+
+/**
+ * `GET /api/v1/monitoring/health` — dependency health as the management API
+ * reports it. A different question from `/health` (liveness) and `/ready`
+ * (can this process serve): storage answering, and how the backends are doing.
+ */
+export interface MonitoringHealth {
+  status: 'ok' | 'degraded';
+  database: 'ok' | 'unavailable';
+  backends: BackendCounts | Unavailable;
+  timestamp: string;
 }
 
 export interface MonitoringRuntime {
@@ -294,30 +357,153 @@ export interface ActivityTypeCounts {
   [type: string]: number;
 }
 
+/**
+ * `ACTIVITY_TYPES` in `src/domain/activity-event.ts`. Operational history:
+ * "what did the gateway do?". Deliberately a different vocabulary from audit —
+ * a filter value from one is a `400` on the other.
+ */
+export const ACTIVITY_TYPES = [
+  'mcp.initialize',
+  'tools.list',
+  'tools.call',
+  'backend.connected',
+  'backend.disconnected',
+  'backend.error',
+  'request.failed',
+] as const;
+export type ActivityType = (typeof ACTIVITY_TYPES)[number];
+
+export const ACTIVITY_OUTCOMES = ['success', 'failure', 'denied'] as const;
+export type ActivityOutcome = (typeof ACTIVITY_OUTCOMES)[number];
+
+/** `GET /api/v1/activity` — every field is stored, none derived. */
 export interface ActivityEvent {
   id: string;
-  type: string;
+  type: ActivityType;
   requestId?: string;
   agentId?: string;
   backendId?: string;
   toolName?: string;
-  outcome: 'success' | 'failure' | 'denied';
+  outcome: ActivityOutcome;
+  /** A stable `ErrorCode`, never a free-form message. */
   errorCode?: string;
   durationMs?: number;
   createdAt: string;
 }
 
+/** `AUDIT_ACTIONS` in `src/domain/audit-event.ts`. */
+export const AUDIT_ACTIONS = [
+  'backend.created',
+  'backend.updated',
+  'backend.deleted',
+  'backend.enabled',
+  'backend.disabled',
+  'backend.validation_failed',
+  'agent.created',
+  'agent.updated',
+  'agent.enabled',
+  'agent.disabled',
+  'agent.deleted',
+  'credential.created',
+  'credential.rotated',
+  'credential.revoked',
+  'policy.created',
+  'policy.updated',
+  'policy.deleted',
+  'policy.assigned',
+  'policy.unassigned',
+  'session.revoked',
+  'session.created',
+  'session.authenticated',
+  'session.access.denied',
+  'session.expired',
+  'session.terminated',
+  'session.invalidated',
+  'session.cleanup.completed',
+  'settings.updated',
+  'auth.succeeded',
+  'auth.failed',
+  'access.denied',
+  'operator.login.succeeded',
+  'operator.login.failed',
+  'operator.logout',
+  'operator.session.revoked',
+  'operator.session.expired',
+  'operator.created',
+  'operator.disabled',
+  'operator.password_changed',
+] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+export const AUDIT_ACTORS = ['admin', 'agent', 'system'] as const;
+export type AuditActorType = (typeof AUDIT_ACTORS)[number];
+
+export const AUDIT_RESULTS = ['success', 'failure', 'denied'] as const;
+export type AuditResult = (typeof AUDIT_RESULTS)[number];
+
+/**
+ * `targetType` is narrowed to the values `listAuditQuerySchema` accepts — note it
+ * omits `operator`, which the event schema allows but the list filter does not.
+ * Offering it in a filter menu would earn a `400`.
+ */
+export const AUDIT_TARGET_TYPES = ['backend', 'agent', 'credential', 'policy', 'session', 'settings'] as const;
+export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
+
+/**
+ * A row from `GET /api/v1/audit`. The list **omits `metadata`** on purpose
+ * (`toAuditListItem`), so metadata is only reachable from the detail read — the
+ * deliberate disclosure boundary. `targetType` is optional here: the schema
+ * allows an event with no target.
+ */
 export interface AuditEvent {
   id: string;
-  actorType: 'admin' | 'agent' | 'system';
+  actorType: AuditActorType;
   actorId?: string;
-  action: string;
-  targetType: string;
+  action: AuditAction;
+  targetType?: AuditTargetType | 'operator';
   targetId?: string;
-  result: 'success' | 'failure' | 'denied';
+  result: AuditResult;
   requestId?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, string | number | boolean>;
   createdAt: string;
+}
+
+/**
+ * `GET /api/v1/activity` filters, exactly as `listActivityQuerySchema` defines
+ * them. `type` and `outcome` are closed enums, so a free-form value could only
+ * produce a `400`.
+ */
+export interface ActivityQuery {
+  page?: number;
+  limit?: number;
+  type?: ActivityType;
+  outcome?: ActivityOutcome;
+  agentId?: string;
+  backendId?: string;
+  toolName?: string;
+  search?: string;
+  after?: string;
+  before?: string;
+  order?: 'asc' | 'desc';
+}
+
+/**
+ * `GET /api/v1/audit` filters. Note `targetType` is the *list* enum, which omits
+ * `operator` even though an event may carry it.
+ */
+export interface AuditQuery {
+  page?: number;
+  limit?: number;
+  action?: AuditAction;
+  actorType?: AuditActorType;
+  actorId?: string;
+  targetType?: AuditTargetType;
+  targetId?: string;
+  result?: AuditResult;
+  search?: string;
+  after?: string;
+  before?: string;
+  order?: 'asc' | 'desc';
 }
 
 /** Every list response carries this. `total` is measured over the filtered set. */
@@ -356,4 +542,234 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
 
 export interface ApiErrorBody {
   error: { code: ErrorCode; message: string; requestId: string };
+}
+
+// --- Agents and credentials (Phase 10.3) ---------------------------------
+
+/** `CLIENT_TYPES` in `src/domain/agent.ts`. Display metadata only, never an authz input. */
+export const CLIENT_TYPES = [
+  'claude-code',
+  'codex-cli',
+  'opencode',
+  'deepseek',
+  'deepseek-desktop',
+  'other',
+] as const;
+export type ClientType = (typeof CLIENT_TYPES)[number];
+
+/**
+ * `toPublicAgent()` in `src/registry/agent-service.ts`.
+ *
+ * `status` is derived from `enabled` on the server; both are present so the UI
+ * never has to compute one from the other and risk disagreeing.
+ */
+export interface Agent {
+  id: string;
+  name: string;
+  description?: string;
+  clientType?: ClientType;
+  enabled: boolean;
+  status: 'active' | 'disabled';
+  metadata?: Record<string, string | number | boolean>;
+  createdAt: string;
+  updatedAt: string;
+  /** Set the first time a credential of this agent authenticates. */
+  lastAuthenticatedAt?: string;
+}
+
+export interface AgentQuery {
+  page?: number;
+  limit?: number;
+  search?: string;
+  enabled?: boolean;
+  status?: 'active' | 'disabled';
+  clientType?: string;
+  sort?: 'name' | 'createdAt' | 'updatedAt';
+  order?: 'asc' | 'desc';
+}
+
+/** `createAgentSchema` / `updateAgentSchema`. */
+export interface AgentCreateInput {
+  name: string;
+  description?: string;
+  clientType?: ClientType;
+  metadata?: Record<string, string | number | boolean>;
+  enabled?: boolean;
+}
+
+export interface AgentUpdateInput {
+  name?: string;
+  /** `null` clears it; `undefined` leaves it. */
+  description?: string | null;
+  clientType?: ClientType | null;
+  /** Replaces the whole map; there is no partial merge. */
+  metadata?: Record<string, string | number | boolean> | null;
+  enabled?: boolean;
+}
+
+/**
+ * `toPublicCredential()` — public metadata only.
+ *
+ * No token, no digest, and nothing derived from one beyond the display prefix
+ * and the key id. `status` is derived server-side from `revokedAt`/`expiresAt`.
+ */
+export interface AgentCredential {
+  id: string;
+  agentId: string;
+  name?: string;
+  tokenPrefix?: string;
+  hashKeyId?: string;
+  status: 'active' | 'expired' | 'revoked';
+  createdAt: string;
+  expiresAt?: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+}
+
+/**
+ * The one response that carries a raw token, from `POST …/credentials` and
+ * `POST …/credentials/:id/rotate`.
+ *
+ * Held in component state only, for as long as the panel is open. It is never
+ * written to storage, a URL, a log, or an audit field — and the gateway cannot
+ * return it again.
+ */
+export interface IssuedCredential extends AgentCredential {
+  token: string;
+}
+
+/** `GET /agents/:agentId/access` — computed by `AuthorizationService.describeAccess`. */
+export interface AgentAccess {
+  agentId: string;
+  policies: Array<{ id: string; name: string; priority: number }>;
+  visibleTools: Array<{ publicName: string; backendId: string; allowed: boolean; reason: string }>;
+}
+
+/**
+ * Policy contracts (Phase 10.4) — mirrored from `src/domain/policy.ts`.
+ *
+ * `rules` is the whole policy: there is no separate rule resource, so a rule is
+ * edited by sending the full array back. Both fields are closed enums on the
+ * gateway (`.strict()`), so a typo cannot become a silently ignored rule.
+ */
+export const POLICY_EFFECTS = ['allow', 'deny'] as const;
+export type PolicyEffect = (typeof POLICY_EFFECTS)[number];
+
+export const POLICY_RESOURCES = ['backend', 'tool'] as const;
+export type PolicyResource = (typeof POLICY_RESOURCES)[number];
+
+/**
+ * `target` is `*` (matches everything at that level) or an exact identifier:
+ * a backend uuid for `resource: 'backend'`, a public tool name for `'tool'`.
+ */
+export interface PolicyRule {
+  resource: PolicyResource;
+  target: string;
+  effect: PolicyEffect;
+}
+
+export interface Policy {
+  id: string;
+  name: string;
+  description?: string;
+  /** Evaluation order across an agent's policies. Higher wins; ties go to deny. */
+  priority: number;
+  rules: PolicyRule[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PolicyQuery {
+  page?: number;
+  limit?: number;
+  search?: string;
+  /** Matters at least one rule with this effect. */
+  effect?: PolicyEffect;
+  agentId?: string;
+  backendId?: string;
+  sort?: 'name' | 'createdAt' | 'updatedAt' | 'priority';
+  order?: 'asc' | 'desc';
+}
+
+export interface PolicyCreateInput {
+  name: string;
+  description?: string;
+  priority?: number;
+  rules?: PolicyRule[];
+}
+
+/** `undefined` keeps a field; `description: null` clears it. */
+export interface PolicyUpdateInput {
+  name?: string;
+  description?: string | null;
+  priority?: number;
+  rules?: PolicyRule[];
+}
+
+// --- MCP sessions (Phase 10.5) -------------------------------------------
+
+/**
+ * `SESSION_STATUSES` in `src/domain/session.ts`.
+ *
+ * These are **MCP agent sessions**, not dashboard operator sessions. The two are
+ * separate tables and separate domains; nothing on this screen reads
+ * `operator_sessions`.
+ */
+export const SESSION_STATUSES = ['active', 'expired', 'terminated', 'invalidated'] as const;
+
+/** `SESSION_TERMINATION_REASONS` in `src/domain/session.ts`. */
+export const SESSION_TERMINATION_REASONS = [
+  'operator_terminated',
+  'client_deleted',
+  'idle_timeout',
+  'max_lifetime',
+  'agent_disabled',
+  'agent_deleted',
+  'credential_revoked',
+  'credential_rotated',
+  'gateway_shutdown',
+  'transport_lost',
+  'cleanup',
+] as const;
+export type SessionTerminationReason = (typeof SESSION_TERMINATION_REASONS)[number];
+
+/** `toPublicSession()` in `src/registry/session-service.ts` — no token, ever. */
+export interface Session {
+  id: string;
+  /** Protocol session id: a routing handle that proves nothing on its own. */
+  mcpSessionId?: string;
+  agentId: string;
+  /** The credential that authenticated initialization. An id, never a token. */
+  credentialId?: string;
+  status: SessionStatus;
+  createdAt: string;
+  lastActivityAt: string;
+  /** Hard cap: `createdAt` + the configured maximum lifetime. */
+  expiresAt?: string;
+  terminatedAt?: string;
+  terminationReason?: SessionTerminationReason;
+  /** Non-secret client facts recorded at initialization. */
+  metadata?: {
+    clientType?: string;
+    clientVersion?: string;
+    protocolVersion?: string;
+    remoteAddress?: string;
+  };
+}
+
+/**
+ * `listSessionsQuerySchema`. Deliberately no `search` and no session-id filter:
+ * the gateway answers by id at `GET /sessions/:sessionId`, so an id lookup is a
+ * detail read rather than an invented list parameter.
+ */
+export interface SessionQuery {
+  page?: number;
+  limit?: number;
+  agentId?: string;
+  status?: SessionStatus;
+  createdAfter?: string;
+  createdBefore?: string;
+  lastActivityAfter?: string;
+  sort?: 'createdAt' | 'lastActivityAt';
+  order?: 'asc' | 'desc';
 }

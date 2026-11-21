@@ -245,7 +245,15 @@ operation.
 | `PATCH` | `/api/v1/policies/:policyId` | Update name/description/priority/rules. |
 | `DELETE` | `/api/v1/policies/:policyId` | Hard delete; assignments cascade. |
 | `POST` | `/api/v1/policies/:policyId/assignments` | Assign to an agent (idempotent). |
+| `GET` | `/api/v1/policies/:policyId/assignments` | Which agents hold the policy. Excludes tombstoned agents. |
 | `DELETE` | `/api/v1/policies/:policyId/assignments/:agentId` | Remove an assignment; `404` if not assigned. |
+
+`GET …/assignments` is the reverse of `GET /api/v1/agents/:agentId/access` and was
+added in Phase 10.4: the assignments sub-resource already carried `POST` and
+`DELETE`, so the dashboard could state what a policy grants but not who receives
+it. It returns `Agent` objects (the same shape as the agent list), never
+credential material, and takes no filters or pagination — an assignment set is
+bounded by the agent registry and is not meant to be paged.
 
 `backendId` matches a policy with a `backend` rule targeting that id **or** `*`.
 `agentId` and `backendId` that name nothing are `404`, not an empty page — a typo
