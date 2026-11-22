@@ -1,6 +1,5 @@
 import { Card } from '@astryxdesign/core/Card';
 import { HStack } from '@astryxdesign/core/HStack';
-import { Table, proportional, type TableColumn } from '@astryxdesign/core/Table';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import Link from 'next/link';
@@ -15,8 +14,8 @@ import type { Agent, AgentAccess, Policy, PolicyRule } from '@/lib/api/types';
 import { formatTimestamp } from '@/lib/utils/status';
 
 import { PolicyActions } from './policy-actions';
+import { RulesTable, type RuleRow } from './rules-table';
 import { PolicyAssignments } from './policy-assignments';
-import { EffectBadge, ResourceLabel, TargetLabel } from './policy-status';
 
 /**
  * One policy: its rules, who holds it, and what it actually produces.
@@ -32,47 +31,6 @@ import { EffectBadge, ResourceLabel, TargetLabel } from './policy-status';
  * be the one on screen. The agent picker is a `GET` form, so the preview is
  * reproducible and needs no client state or proxy allowlist entry.
  */
-
-type Row = {
-  resource: PolicyRule['resource'];
-  target: string;
-  effect: PolicyRule['effect'];
-};
-
-function ruleColumns(backendNames: Map<string, string>): TableColumn<Row>[] {
-  return [
-    {
-      key: 'effect',
-      header: 'Effect',
-      width: proportional(1, { minWidth: 100 }),
-      renderCell: (row) => <EffectBadge effect={row.effect} />,
-    },
-    {
-      key: 'resource',
-      header: 'Applies to',
-      width: proportional(1, { minWidth: 110 }),
-      renderCell: (row) => <ResourceLabel resource={row.resource} />,
-    },
-    {
-      key: 'target',
-      header: 'Target',
-      width: proportional(5, { minWidth: 260 }),
-      renderCell: (row) =>
-        row.target === '*' ? (
-          <TargetLabel target={row.target} />
-        ) : (
-          <VStack gap={0}>
-            <TargetLabel target={row.target} />
-            {row.resource === 'backend' ? (
-              <Text type="supporting">
-                {backendNames.get(row.target) ?? 'Not in the current registry — rules survive a removed backend.'}
-              </Text>
-            ) : null}
-          </VStack>
-        ),
-    },
-  ];
-}
 
 function failureMessage(error: unknown): string {
   return isApiError(error) ? error.userMessage : 'This section could not be read.';
@@ -123,7 +81,7 @@ export async function PolicyDetail({
 
   const backendNames = new Map(backends.map((backend) => [backend.id, backend.name]));
 
-  const rows: Row[] = policy.rules.map((rule) => ({
+  const rows: RuleRow[] = policy.rules.map((rule) => ({
     resource: rule.resource,
     target: rule.target,
     effect: rule.effect,
@@ -178,7 +136,7 @@ export async function PolicyDetail({
               </Text>
             </div>
           ) : (
-            <Table<Row> data={rows} columns={ruleColumns(backendNames)} idKey="target" density="compact" dividers="rows" textOverflow="truncate" />
+            <RulesTable rows={rows} backendNames={Array.from(backendNames)} />
           )}
         </Card>
       </SectionBlock>
