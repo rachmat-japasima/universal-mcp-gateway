@@ -57,7 +57,9 @@ describe('buildCreateInput', () => {
     expect(input).toMatchObject({
       name: 'filesystem',
       connection: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'], env: {} },
-      enabled: true,
+      // The form defaults to creating a disabled backend: creation stores
+      // configuration only, and enabling is an explicit operator decision.
+      enabled: false,
       timeoutMs: 30000,
       concurrencyMode: 'serialized',
     });

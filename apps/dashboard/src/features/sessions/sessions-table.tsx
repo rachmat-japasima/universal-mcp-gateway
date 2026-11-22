@@ -223,6 +223,7 @@ export function SessionsTable({
                 name="sessionId"
                 placeholder="Session id (a UUID)"
                 maxLength={36}
+                required
                 className="rounded-md border border-solid px-3 py-2 font-mono text-sm"
               />
             </label>

@@ -58,7 +58,7 @@ export const EMPTY_FORM: BackendFormState = {
   name: '',
   description: '',
   transport: 'stdio',
-  enabled: true,
+  enabled: false,
   timeoutMs: '30000',
   concurrencyMode: 'serialized',
   concurrencyLimit: '',
