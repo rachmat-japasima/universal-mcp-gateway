@@ -52,16 +52,25 @@ export const NAV_SECTIONS: NavSection[] = [
 
 export const ALL_NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap((section) => section.items);
 
+/** Sorted once: the same ordering answers both the header breadcrumb and the sidebar. */
+const MOST_SPECIFIC: readonly NavItem[] = [...ALL_NAV_ITEMS].sort((a, b) => b.href.length - a.href.length);
+
 /**
  * Longest matching prefix wins, so `/dashboard/backends/new` highlights
  * "Backends" rather than falling back to "Overview".
  */
 export function findActiveItem(pathname: string): NavItem | undefined {
-  return [...ALL_NAV_ITEMS]
-    .sort((a, b) => b.href.length - a.href.length)
-    .find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
+  return MOST_SPECIFIC.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
 }
 
+/**
+ * Whether one sidebar item is the current destination.
+ *
+ * Derived from `findActiveItem` rather than re-tested per item: "Overview" sits
+ * at `/dashboard`, which prefixes every other page, so a plain prefix test
+ * marked it current *alongside* the real destination — two `aria-current="page"`
+ * values in one nav.
+ */
 export function isActive(pathname: string, href: string): boolean {
-  return pathname === href || pathname.startsWith(`${href}/`);
+  return findActiveItem(pathname)?.href === href;
 }
