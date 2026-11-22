@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 
-import { Button } from '@astryxdesign/core/Button';
-import Link from 'next/link';
+import { LinkButton } from '@/components/ui/link-button';
 
 import { ErrorState } from '@/components/feedback/states';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
@@ -83,7 +82,7 @@ export default async function Page({
         <PageHeader
           title="Access policies"
           description="Named groups of ALLOW and DENY rules. Agents are default-denied until an assigned policy allows a tool."
-          actions={<Button label="Create policy" href="/dashboard/policies/new" as={Link} variant="primary" />}
+          actions={<LinkButton label="Create policy" href="/dashboard/policies/new" variant="primary" />}
         />
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

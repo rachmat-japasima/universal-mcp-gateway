@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 
-import { Button } from '@astryxdesign/core/Button';
-import Link from 'next/link';
+import { LinkButton } from '@/components/ui/link-button';
 
 import { EmptyStateCard, ErrorState } from '@/components/feedback/states';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
@@ -55,7 +54,7 @@ export default async function Page(): Promise<React.ReactElement> {
         title="Integrations"
         description="Code-registered providers, connected with credentials the gateway seals and never shows again."
         actions={
-          <Button label="Connect provider" href="/dashboard/integrations/new" as={Link} variant="primary" />
+          <LinkButton label="Connect provider" href="/dashboard/integrations/new" variant="primary" />
         }
       />
 
@@ -65,7 +64,7 @@ export default async function Page(): Promise<React.ReactElement> {
         <EmptyStateCard
           title="No connections yet"
           description={emptyDescription}
-          actions={<Button label="Connect provider" href="/dashboard/integrations/new" as={Link} variant="secondary" />}
+          actions={<LinkButton label="Connect provider" href="/dashboard/integrations/new" variant="secondary" />}
         />
       ) : (
         <ConnectionsTable connections={connections} />

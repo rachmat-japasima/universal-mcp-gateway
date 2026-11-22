@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 
-import { Button } from '@astryxdesign/core/Button';
-import Link from 'next/link';
+import { LinkButton } from '@/components/ui/link-button';
 
 import { ErrorState } from '@/components/feedback/states';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
@@ -79,7 +78,7 @@ export default async function Page({
     <PageHeader
       title="Backends"
       description="MCP servers registered with this gateway. Each one is a configuration record; connecting it is a separate action."
-      actions={<Button label="Add Backend" href="/dashboard/backends/new" as={Link} variant="primary" />}
+      actions={<LinkButton label="Add Backend" href="/dashboard/backends/new" variant="primary" />}
     />
   );
 

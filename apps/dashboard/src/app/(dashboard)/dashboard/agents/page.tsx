@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 
-import { Button } from '@astryxdesign/core/Button';
-import Link from 'next/link';
+import { LinkButton } from '@/components/ui/link-button';
 
 import { ErrorState } from '@/components/feedback/states';
 import { PageContainer, PageHeader } from '@/components/layout/page-container';
@@ -76,7 +75,7 @@ export default async function Page({
         <PageHeader
           title="Agents"
           description="Identities that authenticate to the gateway with a credential. What each one may call is decided by its assigned policies."
-          actions={<Button label="Add agent" href="/dashboard/agents/new" as={Link} variant="primary" />}
+          actions={<LinkButton label="Add agent" href="/dashboard/agents/new" variant="primary" />}
         />
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
