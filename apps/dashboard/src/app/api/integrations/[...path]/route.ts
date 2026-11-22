@@ -15,9 +15,9 @@ import { forwardWrite } from '@/lib/api/write-proxy';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest, context: { params: Promise<{ path: string[] }> }): Promise<Response> {
-  return forwardWrite(request, context, 'POST');
+  return forwardWrite(request, context, 'POST', 'integrations');
 }
 
 export async function DELETE(request: NextRequest, context: { params: Promise<{ path: string[] }> }): Promise<Response> {
-  return forwardWrite(request, context, 'DELETE');
+  return forwardWrite(request, context, 'DELETE', 'integrations');
 }

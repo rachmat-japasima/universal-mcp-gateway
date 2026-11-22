@@ -69,6 +69,20 @@ const COLLECTION = new Set([
 
 export type WriteMethod = 'POST' | 'PATCH' | 'DELETE';
 
+/**
+ * The gateway path a dashboard proxy URL forwards to.
+ *
+ * The route's catch-all `params.path` is only the tail: for
+ * `/api/backends/validate` it is `['validate']`. The collection segment must be
+ * supplied by the route file, or the target loses `/api/v1/backends` and every
+ * write is refused here — the bug this helper exists to make untestable-again
+ * impossible. It lives in this dependency-free module so the seam is unit
+ * tested without a Next.js request.
+ */
+export function writeTarget(collection: string, path: readonly string[] = []): string {
+  return `/api/v1/${[collection, ...path].join('/')}`;
+}
+
 export function isAllowedWrite(method: string, target: string): boolean {
   // The one path that is DELETE-only: unassigning a single agent from a policy.
   if (method === 'DELETE') {

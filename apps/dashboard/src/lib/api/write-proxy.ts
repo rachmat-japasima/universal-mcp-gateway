@@ -21,7 +21,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { isApiError } from '@/lib/api/errors';
 import { operatorCredentials } from '@/lib/auth/guard';
 import { config } from '@/lib/config';
-import { isAllowedWrite, type WriteMethod } from '@/lib/api/write-policy';
+import { isAllowedWrite, writeTarget, type WriteMethod } from '@/lib/api/write-policy';
 
 /**
  * Writes are not reads. `POST /backends/:id/connect` dials the backend and
@@ -40,13 +40,21 @@ function errorBody(code: string, message: string, status: number): Response {
   return NextResponse.json({ error: { code, message, requestId: 'dashboard-proxy' } }, { status });
 }
 
+/**
+ * Forwards a dashboard write to the gateway.
+ *
+ * `collection` is the first gateway segment (`backends`, `agents`, …); the
+ * route's catch-all tail is appended to it by `writeTarget` in
+ * `lib/api/write-policy.ts`, which is where the seam is unit-tested.
+ */
 export async function forwardWrite(
   request: NextRequest,
-  context: { params: Promise<{ path: string[] }> },
+  context: { params: Promise<{ path?: string[] }> },
   method: WriteMethod,
+  collection: string,
 ): Promise<Response> {
-  const { path } = await context.params;
-  const target = `/api/v1/${path.join('/')}`;
+  const { path = [] } = await context.params;
+  const target = writeTarget(collection, path);
 
   if (!isAllowedWrite(method, target)) {
     return errorBody('RESOURCE_NOT_FOUND', 'The requested resource does not exist.', 404);

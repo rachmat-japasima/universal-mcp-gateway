@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isAllowedWrite } from '@/lib/api/write-policy';
+import { isAllowedWrite, writeTarget } from '@/lib/api/write-policy';
 
 /**
  * The write proxy's perimeter.
@@ -205,5 +205,48 @@ describe('isAllowedWrite', () => {
     expect(isAllowedWrite('POST', `/api/v1/integrations/connections/${CONNECTION}/../../agents`)).toBe(false);
     expect(isAllowedWrite('POST', `/api/v1/integrations/connections/not-a-uuid/enable`)).toBe(false);
     expect(isAllowedWrite('DELETE', '/api/v1/integrations/connections/not-a-uuid')).toBe(false);
+  });
+});
+
+/**
+ * The route-to-gateway seam. `forwardWrite` used to build the target from the
+ * catch-all tail alone, producing `/api/v1/validate` from `/api/backends/
+ * validate`; the allowlist then refused every write with a 404 envelope. These
+ * cases use the exact dashboard-local URLs the browser sends, so the seam
+ * cannot regress silently again.
+ */
+describe('writeTarget', () => {
+  it('restores the collection segment the catch-all route strips', () => {
+    expect(writeTarget('backends', ['validate'])).toBe('/api/v1/backends/validate');
+    expect(writeTarget('backends')).toBe('/api/v1/backends');
+    expect(writeTarget('agents', [ID, 'credentials'])).toBe(`/api/v1/agents/${ID}/credentials`);
+    expect(writeTarget('sessions', [ID, 'terminate'])).toBe(`/api/v1/sessions/${ID}/terminate`);
+    expect(writeTarget('integrations', ['connections'])).toBe('/api/v1/integrations/connections');
+  });
+
+  it('maps every browser write URL the screens use to an allowed target', () => {
+    const cases: Array<[string, string[], string, string]> = [
+      ['backends', [], 'POST', '/api/backends'],
+      ['backends', ['validate'], 'POST', '/api/backends/validate'],
+      ['backends', [ID], 'PATCH', `/api/backends/${ID}`],
+      ['backends', [ID], 'DELETE', `/api/backends/${ID}`],
+      ['backends', [ID, 'disable'], 'POST', `/api/backends/${ID}/disable`],
+      ['backends', [ID, 'reconnect'], 'POST', `/api/backends/${ID}/reconnect`],
+      ['agents', [], 'POST', '/api/agents'],
+      ['agents', [ID], 'PATCH', `/api/agents/${ID}`],
+      ['agents', [ID, 'credentials'], 'POST', `/api/agents/${ID}/credentials`],
+      ['agents', [ID, 'credentials', ID, 'rotate'], 'POST', `/api/agents/${ID}/credentials/${ID}/rotate`],
+      ['policies', [], 'POST', '/api/policies'],
+      ['policies', [ID], 'PATCH', `/api/policies/${ID}`],
+      ['policies', [ID, 'assignments'], 'POST', `/api/policies/${ID}/assignments`],
+      ['sessions', [ID, 'terminate'], 'POST', `/api/sessions/${ID}/terminate`],
+      ['integrations', ['connections'], 'POST', '/api/integrations/connections'],
+      ['integrations', ['connections', ID, 'enable'], 'POST', `/api/integrations/connections/${ID}/enable`],
+    ];
+
+    for (const [collection, path, method, browserURL] of cases) {
+      const target = writeTarget(collection, path);
+      expect(isAllowedWrite(method, target), `${method} ${browserURL} → ${target}`).toBe(true);
+    }
   });
 });
