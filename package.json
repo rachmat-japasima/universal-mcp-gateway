@@ -1,6 +1,6 @@
 {
   "name": "universal-mcp-gateway",
-  "version": "1.0.0",
+  "version": "0.18.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -17,7 +17,10 @@
     "typecheck:dashboard": "pnpm --filter @universal-mcp-gateway/dashboard typecheck",
     "test:dashboard": "pnpm --filter @universal-mcp-gateway/dashboard test",
     "verify": "pnpm run typecheck && pnpm run typecheck:dashboard && pnpm test && pnpm run test:dashboard",
-    "operator:create": "tsx src/cli/operator-create.ts"
+    "operator:create": "tsx src/cli/operator-create.ts",
+    "backup": "tsx src/cli/backup-main.ts",
+    "restore": "tsx src/cli/restore-main.ts",
+    "soak": "tsx tests/soak/soak.ts"
   },
   "keywords": [],
   "author": "",

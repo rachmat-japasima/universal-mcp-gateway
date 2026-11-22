@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +12,7 @@ import { openStore, type Database } from '../src/infrastructure/database/index.j
 import { createLogger } from '../src/monitoring/logger.js';
 import { Metrics, createGatewayMetrics } from '../src/monitoring/metrics.js';
 import type { ErrorEnvelope } from '../src/shared/errors.js';
+import { SERVICE_INFO } from '../src/shared/service.js';
 import { createTestAgent, testKeys, type TestAgent } from './fixtures/auth.js';
 import { createTestOperator, type TestOperatorSession } from './fixtures/operator.js';
 
@@ -232,13 +234,40 @@ describe('readiness', () => {
     expect((await gateway.app.request('/ready', { headers: HOST })).status).toBe(200);
     expect((await gateway.app.request('/health', { headers: HOST })).status).toBe(200);
   });
+
+  it('reports vault posture as a check that never gates readiness', async () => {
+    // Whatever the ambient environment holds, the vault posture appears as a
+    // check and an unconfigured vault must not stop a serving gateway from
+    // answering ready — the same optional-subsystem rule as backends.
+    const first = await json<Record<string, any>>(await gateway.app.request('/ready', { headers: HOST }));
+    expect(first.status).toBe('ready');
+    expect(['ok', 'unconfigured']).toContain(first.checks.vault);
+
+    // A configured vault flips the reported posture without changing the
+    // verdict — pinned against a controlled environment, never the ambient one.
+    const saved = process.env.INTEGRATION_MASTER_KEY;
+    process.env.INTEGRATION_MASTER_KEY = randomBytes(32).toString('base64');
+    let configured: Gateway | undefined;
+    let configuredStore: Database | undefined;
+    try {
+      configuredStore = openStore({ path: join(directory, 'vault-configured.db') });
+      configured = createGateway({ config, logger, store: configuredStore, credentialKeys: testKeys() });
+      const second = await json<Record<string, any>>(await configured.app.request('/ready', { headers: HOST }));
+      expect(second.status).toBe('ready');
+      expect(second.checks).toMatchObject({ database: 'ok', migrations: 'ok', vault: 'ok' });
+    } finally {
+      process.env.INTEGRATION_MASTER_KEY = saved;
+      await configured?.close();
+      configuredStore?.close();
+    }
+  });
 });
 
 describe('diagnostics', () => {
   it('reports version, runtime, migration and counts', async () => {
     const { data } = await json<{ data: Record<string, any> }>(await call('GET', '/diagnostics'));
 
-    expect(data.service).toMatchObject({ name: 'universal-mcp-gateway', version: '1.0.0' });
+    expect(data.service).toMatchObject(SERVICE_INFO);
     expect(data.runtime.node).toMatch(/^v\d+/);
     expect(data.database).toMatchObject({ status: 'ok', migrationVersion: '0009' });
     expect(data.configuration).toMatchObject({ status: 'ok', environment: 'test' });

@@ -2,7 +2,8 @@
 
 ## 1. Objectives
 
-Implemented through Phase 8. The questions the surface answers today:
+Implemented through Phase 10.0, with Phase 18 adding operational CLIs
+(`docs/OPERATIONS.md`). The questions the surface answers today:
 
 - Is the gateway running? — `/health`, `/ready`.
 - Is each backend connected and healthy? — `/api/v1/monitoring/backends`, `…/:id/runtime`.
@@ -10,6 +11,8 @@ Implemented through Phase 8. The questions the surface answers today:
 - Which tools are being called? — `/api/v1/activity?type=tools.call`.
 - What administrative/security changes occurred? — `/api/v1/audit`.
 - Are sessions accumulating or expiring? — `/api/v1/monitoring/sessions`.
+- Is the credential vault usable? — `/ready` reports `vault: ok` or
+  `vault: unconfigured` (Phase 18 Stage A: never a gate, always a fact).
 
 Still unanswerable, and therefore not shown: queue depth and saturation.
 Request and tool-call **duration distributions are now kept** (Phase 11
@@ -22,7 +25,7 @@ snapshot. See §4.3.
 Implemented:
 
 - `/health` — **liveness only**. Answers while the process can serve. Deliberately does not fail when a backend is disconnected or authentication is unconfigured; those are reported in the body, not as a status.
-- `/ready` — **readiness**. Checks that the database answers and the migration ledger is readable. `200` with `status: "ready"`, or `503` with `status: "not_ready"` and the failing check named. Optional backends are excluded by design: a gateway with every backend disconnected is still ready to accept work. It lives outside `/api/v1` (an infrastructure probe should not follow an API version) and is mounted only when a store exists — without one, the gateway has no evidence to report and a `503` would be a claim it cannot support.
+- `/ready` — **readiness**. Checks that the database answers and the migration ledger is readable, and reports the credential vault as `vault: ok` or `vault: unconfigured` (Phase 18 Stage A) — a fact for the operator, never a gate: a gateway without a vault is still ready to accept work that does not need it. `200` with `status: "ready"`, or `503` with `status: "not_ready"` and the failing check named. Optional backends are excluded by design: a gateway with every backend disconnected is still ready to accept work. It lives outside `/api/v1` (an infrastructure probe should not follow an API version) and is mounted only when a store exists — without one, the gateway has no evidence to report and a `503` would be a claim it cannot support.
 - `/api/v1/system/health` — management-plane liveness, distinct from both.
 - `/api/v1/diagnostics` — safe incident facts, read-only by construction.
 
@@ -439,8 +442,8 @@ Implemented as commands, with the real API surface:
 - **Check effective configuration.** `curl -s localhost:8787/api/v1/settings` — read-only, non-secret.
 - **Check backend state.** `curl -s localhost:8787/api/v1/monitoring/backends` for the status distribution; `GET /api/v1/backends/:id/runtime` for one backend's last error.
 - **Run tests.** `pnpm test`; `pnpm typecheck` and `pnpm build` before a commit.
-- **Backup.** SQLite-safe copy (`.backup` or `VACUUM INTO`), never a copy of a live WAL file.
-- **Restore.** Test on a copy first, then replace the file while the process is stopped. Migrations re-verify checksums on the next open.
+- **Backup.** `pnpm backup` — a verified `VACUUM INTO` snapshot of a running gateway; never copy a live WAL database by hand (`docs/OPERATIONS.md` §2).
+- **Restore.** `pnpm restore <file> --confirm` with the gateway stopped; the previous database is preserved and a failure rolls it back. Migrations re-verify checksums on the next open.
 - **Diagnose a disconnected backend.** Read `runtime.lastErrorCode`/`lastErrorMessage`, then the `backend.*` activity rows filtered by `backendId`, then the lifecycle log lines (`connect`, `failure`, `retry scheduled`, `retry exhausted`).
 - **Rotate an agent credential.** `POST /api/v1/agents/:agentId/credentials/:credentialId/rotate` — the old token dies immediately and sessions bound to it are invalidated.
 - **Recover after an unclean shutdown.** Start normally: `recover()` rewrites any persisted live state to `disconnected`/`disabled` and reconnects nothing. Then inspect `/ready` and `/api/v1/monitoring/backends`.

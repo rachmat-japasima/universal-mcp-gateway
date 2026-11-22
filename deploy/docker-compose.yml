@@ -1,0 +1,48 @@
+# Universal MCP Gateway (Phase 18, Stage C).
+#
+# NOT VERIFIED: not run in this environment. Verified facts it leans on:
+# `dist/index.js` boots and drains on SIGTERM locally, and production startup
+# exits 1 without a 32+ character CREDENTIAL_HASH_SECRET.
+#
+# `network_mode: host` is essential, not an optimization: the gateway is
+# loopback-only by design (configuration refuses a non-loopback HOST; the
+# management API re-checks per request). Host networking keeps the served
+# surface exactly what a bare-metal run would be: 127.0.0.1 on the host.
+
+services:
+  umg-gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    # Linux Docker Engine only — including Docker inside WSL2. Docker Desktop
+    # on macOS does not support host networking; see deploy/README.md.
+    network_mode: host
+    environment:
+      ENVIRONMENT: production
+      DATABASE_PATH: /app/data/gateway.db
+      # Production refuses to start without it (32+ characters). Export it in
+      # the shell that runs `docker compose up`, or switch to env_file below.
+      CREDENTIAL_HASH_SECRET: ${CREDENTIAL_HASH_SECRET:?export CREDENTIAL_HASH_SECRET first}
+      # INTEGRATION_MASTER_KEY: needed only to seal/unseal integration
+      # credentials; without it the gateway runs and integration credentials
+      # stay inert (docs/SECURITY.md §6.4).
+    # Optional: `cp config/.env.example .env`, fill it in, and uncomment.
+    # env_file:
+    #   - ../.env
+    volumes:
+      - gateway-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      # node is guaranteed present; nothing else needs installing in the image.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  gateway-data:

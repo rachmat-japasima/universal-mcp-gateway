@@ -280,6 +280,21 @@ Phase 3 writes audit rows for every administrative backend change and for failed
 
 ## 9. Backup and recovery
 
-- Back up with a SQLite-safe mechanism (`.backup` or `VACUUM INTO`), never by copying a live WAL database.
-- Test a restore on a copy before replacing the active file.
-- Backups must not contain unencrypted secrets; today no secret values are stored, only references.
+Implemented as a CLI in Phase 18, Stage B (`src/cli/backup.ts`,
+`src/cli/restore.ts`; runbook in `docs/OPERATIONS.md`):
+
+- **Backup:** `pnpm backup [destination]` — a `VACUUM INTO` snapshot through
+  the live connection, so a running gateway is safe to back up and WAL content
+  is included. The result is integrity-verified before it is called a backup,
+  written mode `0600`, never overwrites, and defaults to
+  `data/backups/gateway-<timestamp>.db`.
+- **Restore:** `pnpm restore <file> --confirm`, local CLI only (never an HTTP
+  surface), with the gateway stopped. Refuses without `--confirm`, refuses a
+  target with `-wal`/`-shm` present (a crashed or live process), refuses a
+  corrupt source, and refuses a backup from a newer gateway (unknown migration
+  version). The previous database is preserved as
+  `gateway.db.pre-restore-<timestamp>`; a failed restore rolls it back. The
+  next open re-verifies migration checksums.
+- Backups contain sealed integration credentials as inert ciphertext, not
+  plaintext secrets: without `INTEGRATION_MASTER_KEY` they cannot leak, and
+  cannot be restored either (`docs/SECURITY.md` §6.4).

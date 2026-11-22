@@ -850,7 +850,7 @@ spread-omits it exactly when migrations are unreadable. A correct
 - Outbound Streamable HTTP destinations pass a documented policy: `http`/`https` only, no embedded credentials, DNS-resolved address classification, per-request re-check, same-origin redirects. `ALLOW_PRIVATE_NETWORK` opens loopback/private/CGNAT for local fixtures and never metadata or link-local.
 - Registration, enable, and process start never connect; a connection requires an explicit `connect`, and a restart rewrites persisted live state to `disconnected` without reconnecting.
 - Origin/Host validation on both surfaces, each answering in its own protocol's error shape.
-- Redacted logs; secrets exist only as references, so there is nothing to redact in a payload.
+- Redacted logs. Secrets exist in two forms only: as references (credential rows point at tokens verified by HMAC, never stored), or — since Phase 12 — as **sealed ciphertext** (`integration_credentials` envelopes, `docs/SECURITY.md` §6.4) that is inert without `INTEGRATION_MASTER_KEY`. Neither form has anything to redact in a payload.
 - Safe stdio process launch with executable and argument arrays; no shell interpolation.
 - Controlled environment inheritance (SDK default set plus explicitly referenced variables).
 - No public exposure before security review.

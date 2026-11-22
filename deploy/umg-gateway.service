@@ -1,0 +1,35 @@
+# Universal MCP Gateway — systemd unit example (Phase 18, Stage C).
+#
+# Example only: the repository installs nothing. Copy to
+# /etc/systemd/system/umg-gateway.service (or ~/.config/systemd/user/ for a
+# user unit), edit the paths, then `systemctl daemon-reload`. NOT VERIFIED:
+# not installed or run in this environment.
+#
+# The gateway drains SIGTERM (systemd's default stop signal) in bounded
+# fashion: idle connections are reaped at once, in-flight requests get ~5s,
+# then remaining connections are force-closed and the ordered teardown
+# (sessions → transports → store) still completes. TimeoutStopSec matches that
+# bound so systemd never escalates to SIGKILL mid-teardown.
+
+[Unit]
+Description=Universal MCP Gateway (loopback-only)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/universal-mcp-gateway
+ExecStart=/usr/bin/node dist/index.js
+Environment=ENVIRONMENT=production
+Environment=DATABASE_PATH=/opt/universal-mcp-gateway/data/gateway.db
+# Optional file (the "-" prefix means "ok if missing"). Production refuses to
+# start without a 32+ character CREDENTIAL_HASH_SECRET; keep it here, chmod 600,
+# never in this unit file.
+#   CREDENTIAL_HASH_SECRET=<32+ characters>
+EnvironmentFile=-/opt/universal-mcp-gateway/umg.env
+Restart=on-failure
+RestartSec=2
+# Drain deadline (5s) plus teardown slack; see the note above.
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

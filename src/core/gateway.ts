@@ -39,7 +39,7 @@ import { SessionService } from '../registry/session-service.js';
 import { OperatorService } from '../registry/operator-service.js';
 import { IntegrationService } from '../integrations/service.js';
 import { ProviderRegistry, providerRegistry } from '../integrations/registry.js';
-import { EnvelopeVault } from '../integrations/vault.js';
+import { EnvelopeVault, loadVaultKeys } from '../integrations/vault.js';
 
 export interface GatewayOptions {
   config: Config;
@@ -198,15 +198,27 @@ export function createGateway(options: GatewayOptions): Gateway {
    * fails closed as `TOOL_UNAVAILABLE` because `dispatchable()` has no
    * registered provider to answer for. The vault is lazy fail-closed: a
    * missing master key never blocks startup, only the first credential
-   * operation (ADR-051).
+   * operation (ADR-051). A key that is *set but unusable* (wrong length, bad
+   * base64) is reported at startup rather than discovered on first use —
+   * names only, never values. The loaded keys are kept for `/ready`, which
+   * reports vault posture as a check without gating on it: a gateway with no
+   * integration credentials in use is still ready to serve.
    */
+  const vaultKeys = loadVaultKeys();
+  const vaultConfigured = vaultKeys.active !== undefined;
+  if (vaultKeys.invalid.length > 0) {
+    logger.warn(
+      { invalid: [...vaultKeys.invalid], expected: 'base64 encoding of exactly 32 bytes' },
+      'A vault master key variable is set but unusable; credential seal/unseal will fail closed until it is corrected',
+    );
+  }
   const integrations =
     store === undefined
       ? undefined
       : new IntegrationService({
           store,
           registry: options.providerRegistry ?? providerRegistry,
-          vault: new EnvelopeVault(),
+          vault: new EnvelopeVault(vaultKeys),
           catalog,
           logger,
           timeoutMs: config.toolCallTimeoutMs,
@@ -391,7 +403,7 @@ export function createGateway(options: GatewayOptions): Gateway {
    * no evidence either way, and a `503` would be a claim it cannot support.
    */
   if (store !== undefined) {
-    app.get('/ready', readyHandler(store));
+    app.get('/ready', readyHandler(store, vaultConfigured));
   }
   /**
    * Operator authentication is built whenever there is a store, and the

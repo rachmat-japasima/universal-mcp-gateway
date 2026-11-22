@@ -97,8 +97,12 @@ export interface OpsRouteDependencies {
  * Readiness is about *this process serving requests*: storage answers and the
  * migration ledger is readable. Optional backends are deliberately excluded — a
  * gateway with every backend disconnected is still ready to accept work.
+ * Vault posture follows the same principle as a *reported* check, never a
+ * gate: a gateway with no integration credentials in use is ready to serve
+ * without a master key, and `unconfigured` is the operator's warning that the
+ * first credential operation will refuse.
  */
-export function readyHandler(store: Database): (c: Context) => Response {
+export function readyHandler(store: Database, vaultConfigured: boolean): (c: Context) => Response {
   return (c) => {
     const database = databaseResponds(store);
     const migration = database ? migrationVersion(store) : undefined;
@@ -110,6 +114,7 @@ export function readyHandler(store: Database): (c: Context) => Response {
         checks: {
           database: database ? 'ok' : 'unavailable',
           migrations: migration === undefined ? 'unavailable' : 'ok',
+          vault: vaultConfigured ? 'ok' : 'unconfigured',
         },
         ...(migration === undefined ? {} : { migrationVersion: migration }),
         timestamp: new Date().toISOString(),

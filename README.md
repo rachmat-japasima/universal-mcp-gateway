@@ -376,6 +376,15 @@ above, kept so a script name states its target):
 pnpm dev:gateway         # same as pnpm dev
 pnpm build:gateway       # same as pnpm build
 pnpm verify              # both typechecks + both test suites
+pnpm soak --profile=ci   # 90 s steady-load measurement; CI-only, not in verify
+```
+
+Operational CLIs (Phase 18) — the runbook, including deployment artifacts and
+known accepted risks, is `docs/OPERATIONS.md`:
+```bash
+pnpm operator:create     # first operator, interactive
+pnpm backup              # verified snapshot of a running gateway
+pnpm restore <file> --confirm   # local CLI only, gateway stopped
 ```
 
 Run the gateway and the dashboard in two terminals. The dashboard shows

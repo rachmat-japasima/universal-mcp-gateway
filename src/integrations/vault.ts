@@ -76,13 +76,21 @@ export function keyIdFor(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex').slice(0, 16);
 }
 
-/** Parses a base64 master key from the environment. `undefined` when absent or unusable. */
-function parseMasterKey(value: string | undefined): MasterKey | undefined {
-  if (value === undefined || value === '') return undefined;
+/** Which environment variable a unusable key came from — names only, never values. */
+export type VaultKeyVariable = 'INTEGRATION_MASTER_KEY' | 'INTEGRATION_MASTER_KEY_PREVIOUS';
+
+/**
+ * Parses a base64 master key from the environment. `undefined` when absent;
+ * `invalid` distinguishes a present-but-unusable value from an unset one, so
+ * startup can warn about a misconfiguration instead of waiting for the first
+ * seal/unseal to discover it.
+ */
+function parseMasterKey(value: string | undefined): { key: MasterKey | undefined; invalid: boolean } {
+  if (value === undefined || value === '') return { key: undefined, invalid: false };
   const bytes = Buffer.from(value, 'base64');
   // `Buffer.from` never throws on bad base64; the length check catches it.
-  if (bytes.length !== KEY_BYTES) return undefined;
-  return { id: keyIdFor(bytes), bytes };
+  if (bytes.length !== KEY_BYTES) return { key: undefined, invalid: true };
+  return { key: { id: keyIdFor(bytes), bytes }, invalid: false };
 }
 
 /**
@@ -93,12 +101,23 @@ function parseMasterKey(value: string | undefined): MasterKey | undefined {
  * unwrapped while they are re-sealed under the new key. Separate from
  * `loadConfig()` for the same reason `CREDENTIAL_HASH_SECRET` is: this value
  * must never be reachable from `redactConfig`, an API response, or a log line.
+ * `invalid` names variables that were set but unusable — variable names only.
  */
 export function loadVaultKeys(env: NodeJS.ProcessEnv = process.env): {
   active: MasterKey | undefined;
   previous: MasterKey | undefined;
+  invalid: ReadonlyArray<VaultKeyVariable>;
 } {
-  return { active: parseMasterKey(env['INTEGRATION_MASTER_KEY']), previous: parseMasterKey(env['INTEGRATION_MASTER_KEY_PREVIOUS']) };
+  const active = parseMasterKey(env['INTEGRATION_MASTER_KEY']);
+  const previous = parseMasterKey(env['INTEGRATION_MASTER_KEY_PREVIOUS']);
+  return {
+    active: active.key,
+    previous: previous.key,
+    invalid: [
+      ...(active.invalid ? (['INTEGRATION_MASTER_KEY'] as const) : []),
+      ...(previous.invalid ? (['INTEGRATION_MASTER_KEY_PREVIOUS'] as const) : []),
+    ],
+  };
 }
 
 export class EnvelopeVault {

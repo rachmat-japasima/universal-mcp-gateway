@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config/config.js';
 import { createGateway, type Gateway } from '../src/core/gateway.js';
 import { createLogger } from '../src/monitoring/logger.js';
+import { SERVICE_INFO } from '../src/shared/service.js';
 
 const testConfig = loadConfig({ ENVIRONMENT: 'test', LOG_LEVEL: 'silent' });
 const testLogger = createLogger(testConfig);
@@ -71,7 +72,7 @@ describe('MCP handshake', () => {
     const { url } = await startGateway();
     const client = await connect(url, 'legacy-client');
 
-    expect(client.getServerVersion()).toEqual({ name: 'universal-mcp-gateway', version: '1.0.0' });
+    expect(client.getServerVersion()).toEqual(SERVICE_INFO);
     expect(Object.keys(client.getServerCapabilities() ?? {})).toEqual(['tools']);
 
     await client.close();

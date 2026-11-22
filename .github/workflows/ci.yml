@@ -1,0 +1,42 @@
+# Continuous integration (Phase 18, Stage E).
+#
+# NOT VERIFIED: never executed in this environment (no GitHub Actions run has
+# been observed). Every step is the repository's own verified gate:
+# `pnpm verify` is the same command that gates local development, and the soak
+# is the same `pnpm soak --profile=ci` that was run and measured locally. The
+# workflow adds nothing of its own — deliberately no lint step, per the
+# Phase 18 decision.
+
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The repository pins pnpm only via `devEngines` (no top-level
+      # `packageManager` field), so the version is stated here explicitly.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The existing gate, unchanged: typecheck + gateway tests + dashboard
+      # typecheck + dashboard tests.
+      - run: pnpm verify
+
+      # Soak runs in CI only — it is deliberately not part of `pnpm verify`.
+      # ~95s: 90s of steady load against a mock backend plus startup/drain.
+      - run: pnpm soak --profile=ci

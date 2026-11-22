@@ -41,6 +41,24 @@ describe('key loading', () => {
     expect(loadVaultKeys({ INTEGRATION_MASTER_KEY: '' }).active).toBeUndefined();
   });
 
+  it('reports a present-but-unusable key as invalid, by variable name, never value', () => {
+    // Absent and empty are unset, not invalid — no warning for a key nobody promised.
+    expect(loadVaultKeys({}).invalid).toEqual([]);
+    expect(loadVaultKeys({ INTEGRATION_MASTER_KEY: '' }).invalid).toEqual([]);
+    // Set but unusable is a misconfiguration: startup must be able to warn.
+    expect(loadVaultKeys({ INTEGRATION_MASTER_KEY: 'not!!base64??' }).invalid).toEqual(['INTEGRATION_MASTER_KEY']);
+    expect(loadVaultKeys({ INTEGRATION_MASTER_KEY: randomBytes(16).toString('base64') }).invalid).toEqual([
+      'INTEGRATION_MASTER_KEY',
+    ]);
+    // Both variables are reported independently, and the raw value never travels.
+    const both = loadVaultKeys({
+      INTEGRATION_MASTER_KEY: 'bad-input-value',
+      INTEGRATION_MASTER_KEY_PREVIOUS: randomBytes(8).toString('base64'),
+    });
+    expect(both.invalid).toEqual(['INTEGRATION_MASTER_KEY', 'INTEGRATION_MASTER_KEY_PREVIOUS']);
+    expect(JSON.stringify(both)).not.toContain('bad-input-value');
+  });
+
   it('loads an optional previous key independently of the active one', () => {
     const keys = loadVaultKeys({ INTEGRATION_MASTER_KEY: KEY_A, INTEGRATION_MASTER_KEY_PREVIOUS: KEY_B });
 
