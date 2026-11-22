@@ -60,6 +60,12 @@ export type ConnectionStatus = z.infer<typeof connectionStatusSchema>;
  *  * `connecting` may land in `reauthorization_required`: the verification
  *    handshake refused the credential (Phase 13). The fix is a new token, not
  *    a retry, so the row says exactly that instead of "error".
+ *  * `connected → connecting` is the refresh edge (Phase 15): re-running
+ *    `enable` on a live connection re-discovers in place instead of forcing
+ *    a disconnect/enable round trip that would withdraw tools in between.
+ *    The row stays fail-closed for the flight — `connecting` is not
+ *    dispatchable — and a failed refresh lands in `error`/`reauthorization_`
+ *    `required` with its tools withdrawn, exactly like a failed first connect.
  */
 export const CONNECTION_TRANSITIONS: ReadonlyArray<readonly [ConnectionStatus, ConnectionStatus]> = [
   ['pending', 'connecting'],
@@ -69,6 +75,7 @@ export const CONNECTION_TRANSITIONS: ReadonlyArray<readonly [ConnectionStatus, C
   ['connecting', 'reauthorization_required'],
   ['connecting', 'disconnected'],
   ['connecting', 'disabled'],
+  ['connected', 'connecting'],
   ['connected', 'disconnected'],
   ['connected', 'error'],
   ['connected', 'reauthorization_required'],

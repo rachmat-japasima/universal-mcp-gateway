@@ -150,17 +150,21 @@ describe('tool execution', () => {
   it('counts successful calls, failed calls with their code, and durations', async () => {
     const id = await startBackend('backend-b', 'b');
 
-    const successBefore = countOf('umg_tool_calls_total', { outcome: 'success' });
+    // The router writes the closed source_type label; the read is exact over
+    // the full label set, as it always was.
+    const successBefore = countOf('umg_tool_calls_total', { outcome: 'success', source_type: 'mcp_backend' });
     const durationBefore = observationsOf('umg_tool_call_duration_ms', {});
 
     const client = await connect(true);
     const result = await client.callTool({ name: `${id}__create_item`, arguments: { kind: 'b', name: 'widget' } });
     expect(result.isError).toBeFalsy();
 
-    expect(countOf('umg_tool_calls_total', { outcome: 'success' })).toBeGreaterThan(successBefore);
+    expect(countOf('umg_tool_calls_total', { outcome: 'success', source_type: 'mcp_backend' })).toBeGreaterThan(
+      successBefore,
+    );
     expect(observationsOf('umg_tool_call_duration_ms', {})).toBeGreaterThan(durationBefore);
 
-    const failureBefore = countOf('umg_tool_calls_total', { outcome: 'failure' });
+    const failureBefore = countOf('umg_tool_calls_total', { outcome: 'failure', source_type: 'mcp_backend' });
     const codeBefore = countOf('umg_tool_failures_total', { code: 'TOOL_UNAVAILABLE' });
 
     // The fixture answers isError: a successful round trip and a failed call,
@@ -168,7 +172,9 @@ describe('tool execution', () => {
     const failed = await client.callTool({ name: `${id}__fail`, arguments: {} });
     expect(failed.isError).toBe(true);
 
-    expect(countOf('umg_tool_calls_total', { outcome: 'failure' })).toBeGreaterThan(failureBefore);
+    expect(countOf('umg_tool_calls_total', { outcome: 'failure', source_type: 'mcp_backend' })).toBeGreaterThan(
+      failureBefore,
+    );
     expect(countOf('umg_tool_failures_total', { code: 'TOOL_UNAVAILABLE' })).toBeGreaterThan(codeBefore);
   });
 

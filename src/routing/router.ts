@@ -520,7 +520,7 @@ export class ToolRouter {
     // The aggregate twin of the row written below: the same call, counted
     // without the tool name. Names and identities stay in the activity trail,
     // where the request id can correlate them.
-    metrics.increment('umg_tool_calls_total', { outcome });
+    metrics.increment('umg_tool_calls_total', { outcome, source_type: fields.tool.sourceType });
     if (fields.errorCode !== undefined) metrics.increment('umg_tool_failures_total', { code: fields.errorCode });
     if (fields.durationMs !== undefined) metrics.observe('umg_tool_call_duration_ms', {}, fields.durationMs);
 

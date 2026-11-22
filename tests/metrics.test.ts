@@ -83,6 +83,24 @@ describe('registry', () => {
     expect(m.prometheus()).not.toContain('outcome="exploded"');
   });
 
+  it('splits tool calls by source type through a closed two-value enum', () => {
+    const m = createGatewayMetrics();
+    const droppedBefore = m.dropped();
+
+    m.increment('umg_tool_calls_total', { outcome: 'success', source_type: 'mcp_backend' });
+    m.increment('umg_tool_calls_total', { outcome: 'success', source_type: 'managed_integration' });
+    m.increment('umg_tool_calls_total', { outcome: 'failure', source_type: 'mcp_backend' });
+    // Not a source type: the registry is a closed enum, so this drops.
+    m.increment('umg_tool_calls_total', { outcome: 'success', source_type: 'github' });
+
+    const text = m.prometheus();
+    expect(text).toContain('umg_tool_calls_total{outcome="success",source_type="mcp_backend"} 1');
+    expect(text).toContain('umg_tool_calls_total{outcome="success",source_type="managed_integration"} 1');
+    expect(text).toContain('umg_tool_calls_total{outcome="failure",source_type="mcp_backend"} 1');
+    expect(text).not.toContain('source_type="github"');
+    expect(m.dropped()).toBe(droppedBefore + 1);
+  });
+
   it('caps the series a metric keeps and reports the overflow as dropped', () => {
     const m = new Metrics();
     m.define({

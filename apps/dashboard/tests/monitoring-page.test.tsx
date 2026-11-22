@@ -161,10 +161,14 @@ function metricsSnapshot(overrides: Partial<MonitoringMetrics> = {}): Monitoring
       {
         name: 'umg_tool_calls_total',
         type: 'counter',
-        help: 'Tool calls by outcome.',
+        help: 'Tool calls by outcome and source type.',
         samples: [
-          { labels: { outcome: 'success' }, value: 9 },
-          { labels: { outcome: 'failure' }, value: 2 },
+          { labels: { outcome: 'success', source_type: 'mcp_backend' }, value: 9 },
+          { labels: { outcome: 'success', source_type: 'managed_integration' }, value: 2 },
+          { labels: { outcome: 'failure', source_type: 'mcp_backend' }, value: 2 },
+          { labels: { outcome: 'failure', source_type: 'managed_integration' }, value: 1 },
+          // Denials are counted before the catalog read, so they carry no
+          // source type — the shape the card reads, not a sum.
           { labels: { outcome: 'denied' }, value: 1 },
         ],
       },
@@ -309,11 +313,16 @@ describe('monitoring page', () => {
     await renderPage();
 
     expect(screen.getByText('Telemetry')).toBeTruthy();
-    // Three exact lookups on umg_tool_calls_total: success, failure, denied.
-    const success = screen.getByText('Tool calls (success)').closest('div');
-    expect(success?.textContent).toContain('9');
-    const failure = screen.getByText('Tool calls (failure)').closest('div');
-    expect(failure?.textContent).toContain('2');
+    // Five exact lookups on umg_tool_calls_total: success and failure split by
+    // the closed source_type enum, denied without one (pre-resolution).
+    const backendSuccess = screen.getByText('Tool calls (success · backends)').closest('div');
+    expect(backendSuccess?.textContent).toContain('9');
+    const integrationSuccess = screen.getByText('Tool calls (success · integrations)').closest('div');
+    expect(integrationSuccess?.textContent).toContain('2');
+    const backendFailure = screen.getByText('Tool calls (failure · backends)').closest('div');
+    expect(backendFailure?.textContent).toContain('2');
+    const integrationFailure = screen.getByText('Tool calls (failure · integrations)').closest('div');
+    expect(integrationFailure?.textContent).toContain('1');
     const denied = screen.getByText('Tool calls (denied)').closest('div');
     expect(denied?.textContent).toContain('1');
 
@@ -334,7 +343,7 @@ describe('monitoring page', () => {
 
     await renderPage();
 
-    const success = screen.getByText('Tool calls (success)').closest('div');
+    const success = screen.getByText('Tool calls (success · backends)').closest('div');
     expect(success?.textContent).toContain('0');
     expect(screen.getByText(/reset on restart/i)).toBeTruthy();
   });

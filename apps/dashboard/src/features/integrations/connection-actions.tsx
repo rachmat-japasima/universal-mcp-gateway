@@ -18,8 +18,10 @@ import { send } from '@/lib/api/write-client';
  *
  *  * **One action at a time**, so enable and delete cannot race.
  *  * **`enable` is the only path to `connected`** — and the only exit from
- *    `disabled`, and the only reconnect from `disconnected`. The label says
- *    which of those three it is; nothing reconnects automatically.
+ *    `disabled`, and the only reconnect from `disconnected`. On a live
+ *    connection the same action is the refresh: it re-runs the handshake and
+ *    re-publishes tools in place. The label says which of those it is; nothing
+ *    reconnects automatically.
  *  * **Disable and disconnect state their real consequence before they
  *    happen:** the tools are withdrawn in the same instant, and any agent
  *    mid-call through this connection loses it.
@@ -31,6 +33,8 @@ type Action = 'enable' | 'disable' | 'disconnect' | 'delete';
 
 function enableLabel(status: IntegrationConnection['status']): string {
   switch (status) {
+    case 'connected':
+      return 'Refresh';
     case 'disabled':
       return 'Enable';
     case 'disconnected':
@@ -80,12 +84,17 @@ export function ConnectionActions({ connection }: { connection: IntegrationConne
     if (action === 'enable') {
       // The outcome is data: what the catalog learned is worth saying, and
       // "no tools published" is a fact an operator would otherwise have to
-      // check by hand.
+      // check by hand. A refresh reports the diff, not a false "published 0".
       const added = result.data?.tools.added.length;
+      const removed = result.data?.tools.removed.length;
       setAnnouncement(
-        added === undefined
-          ? 'Connected. The tool list was not in the response — re-open the page to see what published.'
-          : `Connected. ${added === 0 ? 'No tools published' : `${added} tool${added === 1 ? '' : 's'} published`}.`,
+        connection.status === 'connected'
+          ? added === undefined
+            ? 'Refreshed. The tool list was not in the response — re-open the page to see what published.'
+            : `Refreshed. ${added} new tool${added === 1 ? '' : 's'}, ${removed ?? 0} removed.`
+          : added === undefined
+            ? 'Connected. The tool list was not in the response — re-open the page to see what published.'
+            : `Connected. ${added === 0 ? 'No tools published' : `${added} tool${added === 1 ? '' : 's'} published`}.`,
       );
     } else {
       setConfirm(null);
@@ -99,7 +108,7 @@ export function ConnectionActions({ connection }: { connection: IntegrationConne
       <div className="flex flex-wrap items-center gap-2">
         {connection.status === 'connecting' ? (
           <Button label="Connecting…" size="sm" variant="secondary" isDisabled />
-        ) : isConnected ? null : (
+        ) : (
           <Button
             label={enableLabel(connection.status)}
             size="sm"

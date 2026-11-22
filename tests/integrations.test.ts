@@ -98,6 +98,20 @@ describe('connection domain', () => {
     ]);
   });
 
+  it('refreshes a live connection in place (Phase 15): `connected → connecting` and nothing else out of `connected` but rest or off', () => {
+    // `enable` on a connected row re-discovers without a disconnect round
+    // trip; the row stays undispatchable for the flight, and a failed
+    // refresh lands in `error`/`reauthorization_required` — never back in
+    // `connected` by repair.
+    expect(CONNECTION_TRANSITIONS.filter(([from]) => from === 'connected')).toEqual([
+      ['connected', 'connecting'],
+      ['connected', 'disconnected'],
+      ['connected', 'error'],
+      ['connected', 'reauthorization_required'],
+      ['connected', 'disabled'],
+    ]);
+  });
+
   it('rejects a connection row that is not a validated, non-secret payload with a uuid id', () => {
     expect(() =>
       integrationConnectionSchema.parse({

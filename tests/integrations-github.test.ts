@@ -51,7 +51,7 @@ function context(overrides: Partial<ConnectorContext> = {}): ConnectorContext {
   };
 }
 
-type RecordedCall = { url: string; headers: Record<string, string>; signal: AbortSignal };
+type RecordedCall = { url: string; headers: Record<string, string>; signal: AbortSignal; redirect: string };
 
 /** Records every request the client made, and answers from the handler. */
 function fixtureFetch(
@@ -59,7 +59,7 @@ function fixtureFetch(
 ): { fetch: FetchLike; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   const fetch: FetchLike = async (url, init) => {
-    const call = { url, headers: init.headers, signal: init.signal };
+    const call = { url, headers: init.headers, signal: init.signal, redirect: init.redirect };
     calls.push(call);
     return handler(call);
   };
@@ -99,6 +99,17 @@ describe('github client', () => {
     await client.get('/user/repos', { page: 2, per_page: 50, visibility: undefined });
 
     expect(calls[0]!.url).toBe('https://api.github.com/user/repos?page=2&per_page=50');
+  });
+
+  it('refuses redirects at the fetch level, so no hop can carry the token to another host', async () => {
+    const { fetch, calls } = fixtureFetch(() => jsonResponse({}));
+    const client = createGitHubClient({ token: TOKEN, signal: new AbortController().signal, fetchImpl: fetch });
+
+    await client.get('/user');
+
+    // The boundary is enforced by the request itself, not by undici's
+    // courtesy of stripping Authorization on cross-origin redirects.
+    expect(calls[0]!.redirect).toBe('error');
   });
 
   it('maps every plain failure status to the connector vocabulary without echoing the token', async () => {

@@ -7,10 +7,11 @@ import type { IntegrationConnection } from '@/lib/api/types';
  * Connection lifecycle actions.
  *
  * The assertions are about the honesty of the surface as much as the requests:
- * `enable` is the only path to connected (and the only exit from disabled and
- * the only reconnect), disable and disconnect state that tools are withdrawn
- * immediately, and delete names the hard-delete cascade. An operator told
- * otherwise makes a decision on false information.
+ * `enable` is the only path to connected (and the only exit from disabled, the
+ * only reconnect, and — on a live connection — the refresh, reported as a
+ * diff), disable and disconnect state that tools are withdrawn immediately,
+ * and delete names the hard-delete cascade. An operator told otherwise makes
+ * a decision on false information.
  */
 
 const send = vi.fn();
@@ -55,13 +56,17 @@ function connection(overrides: Partial<IntegrationConnection> = {}): Integration
   };
 }
 
-function enableOutcome(added: number): unknown {
+function enableOutcome(added: number, removed = 0): unknown {
   return {
     ok: true,
     status: 200,
     data: {
       connection: connection({ status: 'connected' }),
-      tools: { added: Array.from({ length: added }, (_, index) => `tool_${index}`), removed: [], changed: [] },
+      tools: {
+        added: Array.from({ length: added }, (_, index) => `tool_${index}`),
+        removed: Array.from({ length: removed }, (_, index) => `gone_${index}`),
+        changed: [],
+      },
     },
   };
 }
@@ -76,6 +81,7 @@ describe('ConnectionActions', () => {
   it('offers only the buttons the status makes honest', () => {
     const connected = render(<ConnectionActions connection={connection()} />);
     expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Disable' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeTruthy();
     connected.unmount();
@@ -116,6 +122,18 @@ describe('ConnectionActions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
 
     await waitFor(() => expect(screen.getByText('Connected. No tools published.')).toBeTruthy());
+  });
+
+  it('refreshes a connected connection through the same route and reports the diff', async () => {
+    send.mockResolvedValue(enableOutcome(1, 2));
+
+    render(<ConnectionActions connection={connection()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    await waitFor(() => expect(screen.getByText('Refreshed. 1 new tool, 2 removed.')).toBeTruthy());
+    expect(send).toHaveBeenCalledWith(`/api/integrations/connections/${CONNECTION}/enable`, { method: 'POST' });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(push).not.toHaveBeenCalled();
   });
 
   it('surfaces a refused enable instead of announcing success', async () => {

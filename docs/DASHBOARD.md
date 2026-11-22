@@ -1650,13 +1650,17 @@ metrics do not exist. Both read what the gateway actually keeps.
 
 `getMonitoringMetrics()` reads `GET /api/v1/monitoring/metrics` — the eighth
 concurrent `allSettled` read on the page. The card renders headline counters by
-**exact metric name and label set** (`umg_tool_calls_total{outcome="success"}`
-and friends): no summing over labels, no rates, no percentages, no chart,
-because the registry keeps counts since process start and nothing more. A
-family with no samples reads 0 — true for a counter nobody has incremented —
-while a failed read renders "Telemetry could not be read". Recent internal
-errors render as `code · component` pairs; request ids stay out of the card
-because a correlation handle is not content.
+**exact metric name and label set**: no summing over labels, no rates, no
+percentages, no chart, because the registry keeps counts since process start
+and nothing more. A family with no samples reads 0 — true for a counter nobody
+has incremented — while a failed read renders "Telemetry could not be read".
+Recent internal errors render as `code · component` pairs; request ids stay
+out of the card because a correlation handle is not content.
+
+*Phase 15 update:* the tool-call rows split by the new closed `source_type`
+label — backends and integrations each get their own exact read, and the card
+still sums nothing. Denials keep their single-label read because the gateway
+counts them before the catalog lookup, so no source type exists to read.
 
 The card says what it is: counts since process start, reset on restart, full
 snapshot available at the API path. That sentence is the whole honesty

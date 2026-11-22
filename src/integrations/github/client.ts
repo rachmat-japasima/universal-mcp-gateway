@@ -8,8 +8,8 @@ import type { ConnectorError, ConnectorResult } from '../connector.js';
  * Boundaries, all enforced here rather than by convention:
  *
  *  * One origin, fixed at build time: `https://api.github.com`. No enterprise
- *    hosts, no operator-supplied base URL, no redirects followed to a
- *    different host (the path is always relative to this origin).
+ *    hosts, no operator-supplied base URL, and redirects refused outright
+ *    (`redirect: 'error'`) so no hop can carry the token anywhere else.
  *  * The token rides in the `Authorization` header only. It never appears in
  *    a URL, a query string, an error message, or a log line — this module has
  *    no logger precisely so there is nothing to accidentally log into.
@@ -35,7 +35,7 @@ const RETRY_CEILING_MS = 5_000;
 
 export type FetchLike = (
   url: string,
-  init: { headers: Record<string, string>; signal: AbortSignal },
+  init: { headers: Record<string, string>; signal: AbortSignal; redirect: 'error' },
 ) => Response | Promise<Response>;
 export type SleepLike = (ms: number, signal: AbortSignal) => Promise<void>;
 
@@ -73,7 +73,10 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
     for (let attempt = 1; ; attempt++) {
       let response: Response;
       try {
-        response = await doFetch(url, { headers, signal: options.signal });
+        // `redirect: 'error'` makes the no-cross-host promise self-enforcing:
+        // undici strips Authorization on cross-origin redirects as a courtesy,
+        // but a boundary the code states is a boundary the code should hold.
+        response = await doFetch(url, { headers, signal: options.signal, redirect: 'error' });
       } catch {
         // A rejected fetch is a network failure (an abort surfaces through the
         // gateway's own cancellation handling; nothing here can do better).

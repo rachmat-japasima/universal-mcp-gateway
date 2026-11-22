@@ -461,9 +461,16 @@ export function createGatewayMetrics(): Metrics {
 
   m.define({
     name: 'umg_tool_calls_total',
-    help: 'Tool calls by outcome. Tool names are never a label; per-tool history is the activity table.',
+    help: 'Tool calls by outcome and source type. Tool names are never a label; per-tool history is the activity table.',
     type: 'counter',
-    labels: { outcome: { enum: ['success', 'failure', 'denied'] } },
+    labels: {
+      outcome: { enum: ['success', 'failure', 'denied'] },
+      // Closed two-value enum: distinguishes managed integrations from MCP
+      // backends at zero cardinality risk. Denials are counted before the
+      // catalog read (no extra work for a denied caller), so they carry
+      // `outcome` only by design.
+      source_type: { enum: ['mcp_backend', 'managed_integration'] },
+    },
   });
   m.define({ name: 'umg_tool_call_duration_ms', help: 'End-to-end tool call duration in milliseconds.', type: 'histogram' });
   m.define({

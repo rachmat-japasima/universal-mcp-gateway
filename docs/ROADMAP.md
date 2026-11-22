@@ -770,6 +770,17 @@ Phase 13 pattern: read-only first, code-registered, through the same seam;
 add each only after the pilot is stable.
 
 ## Phase 15 — Hardening and release
+*Integration-platform hardening (ADR-054) is **implemented** — see
+`docs/INTEGRATION_PLATFORM.md`.* Audit-first, no widening: `enable` on a live
+connection is the in-place refresh (`connected → connecting`), a failed refresh
+withdraws stale tools and audits the failure, a connect continuation re-reads
+the row so a racing delete/disconnect/disable wins (404/409, nothing
+published), the GitHub client refuses redirects outright, and
+`umg_tool_calls_total` gained a closed `source_type` label. Concurrency,
+refresh, and credential-isolation regressions pin all of it; the six GitHub
+tools and every prior suite stay green.
+
+Still open under this phase (the release half):
 - Security review.
 - Performance and soak tests.
 - Failure/recovery tests.

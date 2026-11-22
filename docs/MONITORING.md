@@ -393,7 +393,13 @@ one `tools.call` activity row with `connectionId` set and no `backendId` — the
 zod schema refuses a row carrying both, so one call names one source. It
 increments the same `umg_tool_calls_total` as an MCP call: there is no
 `managed_tool_calls_total`, because a second series would be a second place a
-dashboard could drift. The correlation context carries `connectionId` alongside
+dashboard could drift. Since Phase 15 the family carries a closed two-value
+`source_type` label (`mcp_backend`/`managed_integration`), so the one series
+answers "how many, of each kind" at zero cardinality cost; per-*provider*
+figures stay in the activity/audit rows, where `connectionId` names the
+connection and the connection names its provider. Denials keep `outcome` only:
+they are counted before the catalog read, and a denied caller costs no extra
+work. The correlation context carries `connectionId` alongside
 `backendId`, mutually exclusive the same way.
 
 ## 7. Alerts and notifications

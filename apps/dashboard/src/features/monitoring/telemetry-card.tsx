@@ -19,7 +19,9 @@ import type { Read } from './read';
  *
  *   * every number is read out of the snapshot by exact metric name and label
  *     set — nothing is summed, averaged, divided or charted here, and no
- *     percentile exists because none is stored;
+ *     percentile exists because none is stored. Tool calls split by source
+ *     type (Phase 15) because the counter does: each half is its own exact
+ *     read, and a total would be a sum this card refuses to perform;
  *   * a family with no samples reads 0, which is true for a counter that has
  *     never been incremented — a different claim from "unknown", which is
  *     what a failed read renders instead.
@@ -47,12 +49,34 @@ export function TelemetryCard({ telemetry }: { telemetry: Read<MonitoringMetrics
           <>
             <VStack gap={1}>
               <DetailRow
-                label="Tool calls (success)"
-                value={String(counterValue(telemetry.value, 'umg_tool_calls_total', { outcome: 'success' }))}
+                label="Tool calls (success · backends)"
+                value={String(
+                  counterValue(telemetry.value, 'umg_tool_calls_total', { outcome: 'success', source_type: 'mcp_backend' }),
+                )}
               />
               <DetailRow
-                label="Tool calls (failure)"
-                value={String(counterValue(telemetry.value, 'umg_tool_calls_total', { outcome: 'failure' }))}
+                label="Tool calls (success · integrations)"
+                value={String(
+                  counterValue(telemetry.value, 'umg_tool_calls_total', {
+                    outcome: 'success',
+                    source_type: 'managed_integration',
+                  }),
+                )}
+              />
+              <DetailRow
+                label="Tool calls (failure · backends)"
+                value={String(
+                  counterValue(telemetry.value, 'umg_tool_calls_total', { outcome: 'failure', source_type: 'mcp_backend' }),
+                )}
+              />
+              <DetailRow
+                label="Tool calls (failure · integrations)"
+                value={String(
+                  counterValue(telemetry.value, 'umg_tool_calls_total', {
+                    outcome: 'failure',
+                    source_type: 'managed_integration',
+                  }),
+                )}
               />
               <DetailRow
                 label="Tool calls (denied)"

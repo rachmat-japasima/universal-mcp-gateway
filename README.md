@@ -39,9 +39,15 @@ share one catalog, one authorization model, and one audit trail. Phase 13
 (First real provider integration — GitHub) is **implemented**: a code-registered,
 read-only, fine-grained-PAT GitHub connector, the operator write API
 (`test` answers as data; `enable` is the only path to `connected`), and three
-dashboard routes; no test dials GitHub.
+dashboard routes; no test dials GitHub. Phase 15 (integration-platform
+hardening) is **implemented**, audit-first (ADR-054): `enable` refreshes a live
+connection in place, a failed refresh withdraws its stale tools, a racing
+delete/disconnect/disable wins over an in-flight connect, the GitHub client
+refuses redirects outright, and tool-call metrics split by a closed
+`source_type` enum — the platform guide for the second provider is
+`docs/INTEGRATION_PLATFORM.md`.
 - Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`,
-  697 gateway tests; `pnpm test:dashboard`, 470 tests).
+  741 gateway tests; `pnpm test:dashboard`, 471 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
 - `tools/list` serves the live catalog, filtered per agent; no backend is
@@ -598,15 +604,22 @@ login to drive a turn), DeepSeek Desktop NOT VERIFIED (not installed), and
 the SDK harness (`tests/compatibility/`, scenarios A–F) carrying the
 protocol-level proof for every standards-compliant client.
 
-Next: **Phase 15 — hardening and release** (see `docs/ROADMAP.md`):
-security review, soak and failure/recovery tests, backup/restore
-verification, docs and versioning, local process supervision. Nothing
-non-loopback without the explicit security gate.
+The integration-platform half of Phase 15 is **implemented** (ADR-054): an
+audit-first hardening pass over the managed-integration platform — refresh in
+place, honest failed-refresh state, concurrency ownership at the lifecycle
+seam, redirect refusal in the GitHub client, and a source-typed tool-call
+counter — with `docs/INTEGRATION_PLATFORM.md` written for whoever adds the
+second provider.
+
+Next: **the release half of Phase 15** (see `docs/ROADMAP.md`): security
+review, soak and failure/recovery tests, backup/restore verification, docs
+and versioning, local process supervision. Nothing non-loopback without the
+explicit security gate.
 
 **Start with a decision, not code:** each step needs user approval before
 anything is registered or connected. Not to be added without approval: real
 backends, agent client config changes, OAuth or any third-party auth flow,
-non-loopback exposure. Still deferred from Phase 7–14: real-browser
+non-loopback exposure. Still deferred from Phase 7–15: real-browser
 click-path verification, per-backend `limited` queueing
 (`docs/ARCHITECTURE.md` §11.2), backup/restore APIs, audit retention, session
 cleanup sweep UI, operator password-change API.

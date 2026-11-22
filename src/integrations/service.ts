@@ -143,6 +143,15 @@ export class IntegrationService implements IntegrationRuntime {
    * `connected`, stamped `validatedAt`. A refused credential is a
    * reauthorization problem, not an outage, and lands the row in
    * `reauthorization_required` so the operator's fix is obvious.
+   *
+   * Since Phase 15 this is also the refresh path: `connected → connecting`
+   * is legal, so re-running `enable` re-discovers a live connection in place.
+   *
+   * Concurrency rule: discovery is a network flight, and another lifecycle
+   * action (delete, disconnect, disable) may run while it is in the air. After
+   * the flight the row must still exist and still be `connecting` — the state
+   * this attempt moved it to — or the racing action owns the row and this
+   * attempt publishes nothing.
    */
   async connect(
     connectionId: string,
@@ -155,11 +164,40 @@ export class IntegrationService implements IntegrationRuntime {
     const context = this.connectorContext(connecting);
     const result = await withCancellation(context, () => provider.connector.discoverTools!(context));
 
+    const current = this.store.integrationConnections.findById(connectionId);
+
     if (!result.ok) {
-      const to = result.error.kind === 'reauthorization_required' ? 'reauthorization_required' : 'error';
-      this.transition(connecting, to);
+      // Failed-refresh policy: whatever the row published before is
+      // withdrawn, so an `error`/`reauthorization_required` row never lists
+      // tools. The backend-side rule is the precedent: an unreachable source
+      // is unlisted, not listed-and-failing. For a first connect this is a
+      // no-op — nothing was published yet.
+      this.catalog.remove({ type: 'managed_integration', sourceId: connectionId });
+      if (current !== undefined && current.status === 'connecting') {
+        const to = result.error.kind === 'reauthorization_required' ? 'reauthorization_required' : 'error';
+        this.transition(current, to);
+        this.audit(
+          actor,
+          'integration.connection.updated',
+          'connection',
+          current.id,
+          { status: to, kind: result.error.kind },
+          'failure',
+        );
+      }
       throw new AppError('BACKEND_CONNECTION_ERROR', `Connecting "${connection.name}" failed.`, {
         details: { connectionId, connectorMessage: result.error.message, kind: result.error.kind },
+      });
+    }
+
+    if (current === undefined) {
+      // Deleted mid-flight: the delete wins and already withdrew the tools.
+      throw this.notFound(connectionId);
+    }
+    if (current.status !== 'connecting') {
+      // Disconnected or disabled mid-flight: that action owns the row now.
+      throw new AppError('RESOURCE_CONFLICT', `The connection moved to "${current.status}" while connecting.`, {
+        details: { connectionId, status: current.status },
       });
     }
 
@@ -176,7 +214,7 @@ export class IntegrationService implements IntegrationRuntime {
       tools,
     });
 
-    const connected = this.transition(connecting, 'connected', this.now());
+    const connected = this.transition(current, 'connected', this.now());
     this.audit(actor, 'integration.connection.updated', 'connection', connected.id, {
       status: 'connected',
       tools: tools.size,
@@ -403,13 +441,18 @@ export class IntegrationService implements IntegrationRuntime {
     return provider;
   }
 
-  /** One audit row per administrative action. Never a value, never an envelope. */
+  /**
+   * One audit row per administrative action. Never a value, never an envelope.
+   * A `failure` result records the attempt, not a change: the metadata says
+   * what the operator saw (status the row landed in, connector error kind).
+   */
   private audit(
     actor: Actor,
     action: AuditAction,
     targetType: 'connection',
     targetId: string,
     metadata: AuditMetadata,
+    result: 'success' | 'failure' = 'success',
   ): void {
     this.store.audit.append({
       id: randomUUID(),
@@ -418,7 +461,7 @@ export class IntegrationService implements IntegrationRuntime {
       action,
       targetType,
       targetId,
-      result: 'success',
+      result,
       createdAt: this.now(),
       ...(Object.keys(metadata).length === 0 ? {} : { metadata }),
     });

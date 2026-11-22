@@ -367,7 +367,7 @@ context and an in-memory aggregate registry, and both reset with the process.
   store as `unavailable` while the in-memory registry keeps reporting real
   numbers — neither side fabricates the other's answer.
 
-## 4.7 Managed integrations (Phases 12–13)
+## 4.7 Managed integrations (Phases 12–15)
 
 ADR-048–053. A second tool source type — `managed_integration` — enters through
 one seam and borrows everything else: catalog, authorization, metrics, audit.
@@ -414,6 +414,17 @@ runtime widening.
   Phase 13 is that the operator API and the dashboard can now create one,
   store a token, prove it (`test`, data either way), and publish its tools
   (`enable`, the only path to `connected`).
+- **Phase 15 hardened the lifecycle without widening anything (ADR-054).**
+  `connected → connecting` made `enable` the in-place refresh of a live
+  connection; a connect continuation re-reads the row after discovery, so a
+  racing delete/disconnect/disable wins and nothing is published for a row
+  that moved; a failed refresh withdraws the stale tool set (an
+  `error`/`reauthorization_required` row never lists tools); the GitHub
+  client refuses redirects outright; `umg_tool_calls_total` gained a closed
+  two-value `source_type` label; and failed connect/refresh attempts write an
+  audit row with `result: 'failure'`. The full platform description —
+  contracts, pipeline, lifecycle, checklist for the second provider — is
+  `docs/INTEGRATION_PLATFORM.md`.
 
 ## 5. Inbound MCP lifecycle
 
