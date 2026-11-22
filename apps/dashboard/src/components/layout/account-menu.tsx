@@ -40,7 +40,7 @@ export function AccountMenu({ username, role }: { username: string; role: string
   return (
     <HStack gap={2} align="center">
       <Tooltip content={`Signed in as ${username} (${role})`}>
-        <span className="inline-flex max-w-[12rem] truncate">
+        <span className="inline-flex max-w-[8rem] truncate sm:max-w-[12rem]">
           <Text type="supporting" as="span" data-testid="operator-username">
             {username}
           </Text>

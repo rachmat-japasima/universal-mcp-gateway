@@ -19,7 +19,7 @@ import { NAV_SECTIONS, isActive } from '@/lib/navigation';
  * No account menu is rendered: there is no operator identity yet, and inventing
  * one would imply an authentication boundary the gateway does not have.
  */
-export function PrimaryNavigation(): React.ReactElement {
+export function PrimaryNavigation({ footer }: { footer?: React.ReactNode }): React.ReactElement {
   const pathname = usePathname();
 
   return (
@@ -28,6 +28,7 @@ export function PrimaryNavigation(): React.ReactElement {
       header={
         <SideNavHeading heading="Universal MCP Gateway" headingHref="/dashboard" subheading="Control plane" />
       }
+      footer={footer}
     >
       {NAV_SECTIONS.map((section) => (
         <SideNavSection key={section.title} title={section.title}>

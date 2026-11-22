@@ -36,11 +36,32 @@ export function AppHeader({
       label="Dashboard header"
       heading={
         <HStack gap={2} align="center">
-          <span
+          {/* Product mark: three registry sources meeting one bus, one output
+              node. Geometric and stroke-only so it stays legible at 24px and
+              inherits the accent colour in both themes. */}
+          <svg
             aria-hidden="true"
-            className="h-6 w-6 shrink-0 rounded-md bg-[var(--color-accent)]"
-          />
-          <Text type="label">Universal MCP Gateway</Text>
+            viewBox="0 0 24 24"
+            width="24"
+            height="24"
+            fill="none"
+            className="shrink-0 text-[var(--color-accent)]"
+          >
+            <g stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M3.5 5.5h6.5" />
+              <path d="M3.5 12h6.5" />
+              <path d="M3.5 18.5h6.5" />
+              <path d="M10 5.5v13" />
+              <path d="M10 12h5" />
+            </g>
+            <circle cx="17.75" cy="12" r="2.75" fill="currentColor" />
+          </svg>
+          {/* Below `sm` the bar keeps the mark only: the bar is one row, and a
+              wordmark plus theme, readiness and account controls pushed the nav
+              toggle off a phone screen. */}
+          <span className="hidden sm:inline">
+            <Text type="label">Universal MCP Gateway</Text>
+          </span>
         </HStack>
       }
       startContent={
@@ -55,8 +76,13 @@ export function AppHeader({
       }
       endContent={
         <HStack gap={3} align="center">
-          <ThemeControl />
-          {children}
+          {/* Theme and readiness move into the drawer below `md` (the shell's
+              mobile breakpoint). The bar is a single non-wrapping row, so
+              anything left in `endContent` competes with the nav toggle. */}
+          <div className="hidden md:block">
+            <ThemeControl />
+          </div>
+          <div className="hidden md:flex">{children}</div>
           {operator === undefined ? null : <AccountMenu username={operator.username} role={operator.role} />}
         </HStack>
       }

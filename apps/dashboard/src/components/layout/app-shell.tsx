@@ -1,7 +1,7 @@
 import { AppShell } from '@astryxdesign/core/AppShell';
 
 import { GatewayStatus } from '@/components/feedback/gateway-status';
-import { AppHeader } from '@/components/layout/app-header';
+import { AppHeader, ThemeControl } from '@/components/layout/app-header';
 import { PrimaryNavigation } from '@/components/navigation/primary-navigation';
 import { fetchReadiness } from '@/lib/api/client';
 import { isApiError } from '@/lib/api/errors';
@@ -51,7 +51,19 @@ export async function AppShellLayout({
           <GatewayStatus initial={readiness} />
         </AppHeader>
       }
-      sideNav={<PrimaryNavigation />}
+      sideNav={
+        <PrimaryNavigation
+          footer={
+            /* Mobile drawer only: these controls leave the header below `md`
+               so the hamburger keeps its place. A desktop rail still shows
+               neither — the header carries them there. */
+            <div className="flex flex-col gap-3 md:hidden">
+              <GatewayStatus initial={readiness} />
+              <ThemeControl />
+            </div>
+          }
+        />
+      }
     >
       {children}
     </AppShell>
