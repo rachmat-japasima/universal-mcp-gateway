@@ -6,7 +6,7 @@ what the code does today; `docs/BACKEND_SPEC.md` holds the design rationale and
 `docs/ROADMAP.md` says what is not built yet.
 
 The machine-readable contract is served by the gateway itself at
-`GET /api/v1/openapi.json` (OpenAPI 3.1). `tests/openapi.test.ts` compares that
+`GET /api/v1/openapi.json` (OpenAPI 3.1). `apps/gateway/tests/openapi.test.ts` compares that
 document against the live Hono route table in both directions, so a documented
 path that does not exist — or a live path that is undocumented — fails the build.
 
@@ -40,7 +40,7 @@ mounted only when an operator exists, so a fresh install answers `404` until
 
 `/mcp` remains a **separate boundary** with its own bearer credential. An operator
 cookie is not accepted there and an agent bearer is not accepted on `/api/v1`;
-`tests/operator-auth.test.ts` asserts both. No REST route invokes a tool; there is
+`apps/gateway/tests/operator-auth.test.ts` asserts both. No REST route invokes a tool; there is
 exactly one path from an agent to a backend.
 
 ## 2. Contract
@@ -72,7 +72,7 @@ Lists add `pagination`:
 }
 ```
 
-`code` is from the fixed `ErrorCode` set (`src/shared/errors.ts`); no route
+`code` is from the fixed `ErrorCode` set (`apps/gateway/src/shared/errors.ts`); no route
 invents one. `message` is safe to show a user: never a stack trace, SQL text,
 driver message, or the received value.
 
@@ -134,7 +134,7 @@ Every list uses the same contract:
 
 ## 3. Endpoint inventory
 
-Every route below is implemented and covered by `tests/openapi.test.ts`.
+Every route below is implemented and covered by `apps/gateway/tests/openapi.test.ts`.
 
 ### 3.1 Infrastructure
 
@@ -171,7 +171,7 @@ plain-HTTP loopback is silently dropped and login then appears to do nothing).
 Session lifetime is 30 minutes idle and 12 hours absolute, both derived on read.
 
 No response ever contains a password hash, the session token, or an internal
-secret. `tests/operator-auth.test.ts` asserts the payload is free of all three.
+secret. `apps/gateway/tests/operator-auth.test.ts` asserts the payload is free of all three.
 ### 3.2 System and operations
 
 | Method | Path | Notes |
@@ -410,7 +410,7 @@ Three rules the payload is built to keep:
    during a storage outage.
 
 `/overview`, `/monitoring*`, and `/diagnostics` all read through one function
-(`opsSnapshot()` in `src/api/ops.ts`), so their counts cannot disagree.
+(`opsSnapshot()` in `apps/gateway/src/api/ops.ts`), so their counts cannot disagree.
 
 ### 4.2 `/api/v1/monitoring/sessions`
 

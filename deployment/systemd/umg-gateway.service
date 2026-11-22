@@ -18,7 +18,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/universal-mcp-gateway
-ExecStart=/usr/bin/node dist/index.js
+ExecStart=/usr/bin/node apps/gateway/dist/index.js
 Environment=ENVIRONMENT=production
 Environment=DATABASE_PATH=/opt/universal-mcp-gateway/data/gateway.db
 # Optional file (the "-" prefix means "ok if missing"). Production refuses to

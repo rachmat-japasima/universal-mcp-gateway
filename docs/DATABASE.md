@@ -2,7 +2,7 @@
 
 ## 1. Database choice
 
-SQLite via `better-sqlite3`, with versioned SQL migrations and repository abstractions. SQL statements live only in `src/infrastructure/database/`; no HTTP handler or UI code contains SQL.
+SQLite via `better-sqlite3`, with versioned SQL migrations and repository abstractions. SQL statements live only in `apps/gateway/src/infrastructure/database/`; no HTTP handler or UI code contains SQL.
 
 Verified against the installed driver: SQLite 3.54.1, `foreign_keys` ON, WAL available.
 
@@ -61,7 +61,7 @@ Configuration existing never implies a connection: a new backend starts `disconn
 - The table holds **only** a truthful status. No pid, command, URL, header, or client object is stored.
 - `last_error_code` is constrained to the three codes the column means (`BACKEND_CONNECTION_ERROR`, `BACKEND_TIMEOUT`, `BACKEND_UNAVAILABLE`); `last_error_message` is capped at 500 characters by a `CHECK`.
 - `reconnect_attempts` belongs to one reconnect sequence. It is reset on an explicit connect/reconnect and on startup recovery, so it cannot accumulate across process lifetimes.
-- Legal transitions are declared in `src/domain/backend-runtime.ts` (`BACKEND_TRANSITIONS`) and enforced by the lifecycle manager, which refuses to persist an edge the table's history cannot explain.
+- Legal transitions are declared in `apps/gateway/src/domain/backend-runtime.ts` (`BACKEND_TRANSITIONS`) and enforced by the lifecycle manager, which refuses to persist an edge the table's history cannot explain.
 - **Startup recovery:** a persisted `connected`/`connecting`/`unhealthy`/`disconnecting` is a claim by a process that no longer exists. Recovery rewrites it to `disconnected` (or `disabled`) without reconnecting.
 
 ### `agents`
@@ -87,7 +87,7 @@ No token material. Tombstoned on delete.
 
 Policies are shared objects; assignment does not copy them. Default deny is structural — no matching rule means no access.
 
-Precedence lives in `src/domain/policy.ts` and is not encoded in SQL: system restrictions → highest `priority` → deny over allow at equal priority → policy id → rule index. `priority` is copied into the comparator explicitly so an operator's ordering beats the deny preference, and ties are order-independent.
+Precedence lives in `apps/gateway/src/domain/policy.ts` and is not encoded in SQL: system restrictions → highest `priority` → deny over allow at equal priority → policy id → rule index. `priority` is copied into the comparator explicitly so an operator's ordering beats the deny preference, and ties are order-independent.
 
 `GET /api/v1/policies?backendId=` is answered in SQL, not after slicing a page: `EXISTS (SELECT 1 FROM json_each(rules_json) …)` matches a `backend` rule targeting that id or `*`. `json_valid` guards a hand-edited row. Doing it in the query is what keeps `pagination.total` honest.
 
@@ -101,7 +101,7 @@ Two identifiers, deliberately distinct:
 | `id` | the gateway's internal handle. Never sent to an MCP client; used by the management API and the audit trail. |
 | `mcp_session_id` | the protocol id the SDK issued at initialization and the client echoes in `mcp-session-id`. `UNIQUE` where not null, so one protocol session cannot belong to two agents. |
 
-- `status` is `active` \| `expired` \| `terminated` \| `invalidated`, written explicitly. A terminal status is authoritative: it cannot be overridden by a clock. A lapsed `expires_at` or idle deadline still reads and behaves as `expired` before the sweep writes it back (`sessionStatus()` in `src/domain/session.ts`).
+- `status` is `active` \| `expired` \| `terminated` \| `invalidated`, written explicitly. A terminal status is authoritative: it cannot be overridden by a clock. A lapsed `expires_at` or idle deadline still reads and behaves as `expired` before the sweep writes it back (`sessionStatus()` in `apps/gateway/src/domain/session.ts`).
 - `credential_id` records *which* credential opened the session. A revocation ends exactly those sessions rather than every session the agent has.
 - Identity columns (`id`, `agent_id`, `credential_id`, `mcp_session_id`, `created_at`) are immutable. `0005` enforces this with a `BEFORE UPDATE` trigger, so no code path — including another gateway process — can move a session to a different agent.
 - `sessions_no_reactivation` refuses any update that would turn a finished session back into `active`.
@@ -148,7 +148,7 @@ Both an idle window (`last_seen_at`) and an absolute ceiling (`expires_at`) are 
 
 Created in `0008` along with the credential table and `activity_events.connection_id`; `0009` added the validation timestamp. A provider id is a registry concept, not a foreign key: a connection row survives its provider being unregistered, and the API view says so instead of pretending the provider never existed.
 
-`status` transitions are declared as data in `src/integrations/connection.ts` (`CONNECTION_TRANSITIONS`): every non-terminal status can reach `disabled`, `disabled` is the only terminal, and `error`/`reauthorization_required` exit only through an explicit operator connect. Phase 13 added the `disabled → connecting` edge (operator re-enable, ADR-053) — the DB `CHECK` enumerates statuses, not transitions, so the edge landed in code with no schema change. Anything else fails at the boundary.
+`status` transitions are declared as data in `apps/gateway/src/integrations/connection.ts` (`CONNECTION_TRANSITIONS`): every non-terminal status can reach `disabled`, `disabled` is the only terminal, and `error`/`reauthorization_required` exit only through an explicit operator connect. Phase 13 added the `disabled → connecting` edge (operator re-enable, ADR-053) — the DB `CHECK` enumerates statuses, not transitions, so the edge landed in code with no schema change. Anything else fails at the boundary.
 
 `credential_id` is a vault reference only — the schema rejects anything that is not a UUID, so a pasted token string is a validation error, not a stored secret.
 
@@ -178,7 +178,7 @@ Partial unique indexes (`WHERE deleted_at IS NULL`) allow a name to be reused af
 
 ## 6. Migration strategy
 
-`src/infrastructure/database/migration-runner.ts`:
+`apps/gateway/src/infrastructure/database/migration-runner.ts`:
 
 - Files are `NNNN_name.sql`, loaded from disk at module load and sorted by version. Duplicate or malformed versions refuse startup.
 - Each migration and its `schema_migrations` row commit in **one transaction**, so a failure leaves no half-applied schema and no ledger entry.
@@ -208,7 +208,7 @@ Migration `0006_operator_authentication.sql` is the Phase 10.0 example, and it i
 
 No `sessions` change, no table rebuild, and no row dropped. The `operator_sessions` table is separate from `sessions` because `sessions.agent_id` is `NOT NULL REFERENCES agents (id)` — see §4.
 
-`tests/database.test.ts` asserts the applied version reaches `0006` and that `operator_sessions` exists.
+`apps/gateway/tests/database.test.ts` asserts the applied version reaches `0006` and that `operator_sessions` exists.
 
 Migration `0007_activity_correlation.sql` is the Phase 11 example — one
 statement, the smallest kind:
@@ -221,12 +221,12 @@ statement, the smallest kind:
 
 No other table changes; audit deliberately does not gain the column — the
 security trail records who did what under the gateway's own request id, not
-the caller's trace id. `tests/database.test.ts` asserts the applied version
+the caller's trace id. `apps/gateway/tests/database.test.ts` asserts the applied version
 reaches `0007`.
 
 ## 7. Repository interfaces
 
-Declared in `src/domain/repositories.ts` in domain terms — no SQL, no driver types, no transaction handles. Implementations live in `src/infrastructure/database/repositories/`.
+Declared in `apps/gateway/src/domain/repositories.ts` in domain terms — no SQL, no driver types, no transaction handles. Implementations live in `apps/gateway/src/infrastructure/database/repositories/`.
 
 | Interface | Implemented operations |
 | --- | --- |
@@ -280,8 +280,8 @@ Phase 3 writes audit rows for every administrative backend change and for failed
 
 ## 9. Backup and recovery
 
-Implemented as a CLI in Phase 18, Stage B (`src/cli/backup.ts`,
-`src/cli/restore.ts`; runbook in `docs/OPERATIONS.md`):
+Implemented as a CLI in Phase 18, Stage B (`apps/gateway/src/cli/backup.ts`,
+`apps/gateway/src/cli/restore.ts`; runbook in `docs/OPERATIONS.md`):
 
 - **Backup:** `pnpm backup [destination]` — a `VACUUM INTO` snapshot through
   the live connection, so a running gateway is safe to back up and WAL content

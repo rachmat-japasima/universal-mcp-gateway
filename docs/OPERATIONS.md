@@ -14,11 +14,11 @@ and migration policy are `docs/DATABASE.md`; security posture is
   indefinite wait:
   1. idle keep-alive connections are reaped immediately — the common case is
      an instant stop;
-  2. in-flight requests get ~5 s (`SHUTDOWN_DRAIN_LIMIT_MS` in `src/index.ts`);
+  2. in-flight requests get ~5 s (`SHUTDOWN_DRAIN_LIMIT_MS` in `apps/gateway/src/index.ts`);
   3. whatever is still open at the deadline is force-closed, with the ordered
      teardown (sessions → transports → store) still completing afterwards.
 
-  The regression that pins this is `tests/shutdown-drain.test.ts`: a client
+  The regression that pins this is `apps/gateway/tests/shutdown-drain.test.ts`: a client
   whose request can never finish used to hold `server.close()` open forever.
 - **Startup failure** (bad key material, taken port, unwritable database)
   logs the reason and exits 1; it never becomes an unhandled crash with no
@@ -72,8 +72,9 @@ copy first if the stakes are high; the preservation file makes that cheap.
 
 ## 4. Deployment
 
-`deploy/` holds the Phase 18 artifacts: Dockerfile, docker-compose.yml, a
-systemd unit example, and WSL2 notes (`deploy/README.md`). The one fact that
+`deployment/` holds the Phase 18 artifacts: `docker/Dockerfile` and
+`docker/docker-compose.yml`, a systemd unit example under `systemd/`, and WSL2
+notes (`deployment/README.md`). The one fact that
 shapes all of them: **the gateway is loopback-only by design**, so containers
 run with host networking and standard bridge publishing is refused by
 configuration, not by accident. Those artifacts are written against the
@@ -87,7 +88,7 @@ pnpm soak --profile=ci
 ```
 
 Steady bounded load against a real spawned gateway with a **mock stdio
-backend** (`tests/fixtures/mcp-fixture.ts`) — no real provider is ever
+backend** (`apps/gateway/tests/fixtures/mcp-fixture.ts`) — no real provider is ever
 contacted. Deliberately **not** part of `pnpm verify`; CI runs it as its own
 step. The pass gate is narrow and honest: more than 1% failed calls, a
 crashed gateway, or an unclean shutdown fails the run; everything else is
@@ -100,8 +101,8 @@ was partially reclaimed at idle — see §7 before quoting it.
 ## 6. Versioning
 
 The gateway is **0.x on purpose**. The version lives in exactly two places —
-`package.json` and `SERVICE_INFO` (`src/shared/service.ts`) — and
-`tests/version.test.ts` fails the suite if they drift. The 1.0.0 this
+`apps/gateway/package.json` and `SERVICE_INFO` (`apps/gateway/src/shared/service.ts`) — and
+`apps/gateway/tests/version.test.ts` fails the suite if they drift. The 1.0.0 this
 replaced was a placeholder, not an API-stability promise; 1.0.0 means a
 compatibility commitment nobody has made yet.
 

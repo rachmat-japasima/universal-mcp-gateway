@@ -29,7 +29,7 @@ Implemented:
 - `/api/v1/system/health` — management-plane liveness, distinct from both.
 - `/api/v1/diagnostics` — safe incident facts, read-only by construction.
 
-Neither probe, nor any `ops` endpoint, reveals a private path, an environment value, a secret, or a stack trace (`tests/ops-api.test.ts` asserts it).
+Neither probe, nor any `ops` endpoint, reveals a private path, an environment value, a secret, or a stack trace (`apps/gateway/tests/ops-api.test.ts` asserts it).
 
 ## 3. Structured logs
 
@@ -106,7 +106,7 @@ time. A time-series backend remains unbuilt, and adding one without a concrete
 need would be a second source of truth.
 
 Phase 11 added the second kind: an **in-memory aggregate registry**
-(`src/monitoring/metrics.ts`) — counters, gauges and bucketed histograms the
+(`apps/gateway/src/monitoring/metrics.ts`) — counters, gauges and bucketed histograms the
 gateway maintains itself, exported for a scraper and for the dashboard. It is
 process memory only: it resets on restart, keeps no history, and is therefore a
 source of *current rates and ratios*, never a record. See §4.3.
@@ -149,7 +149,7 @@ what is stored, never arithmetic invented from one instant.
 ### 4.2 One reader
 
 `/overview`, `/monitoring*`, and `/diagnostics` all call `opsSnapshot()`
-(`src/api/ops.ts`). Three endpoints computing backend counts down three code
+(`apps/gateway/src/api/ops.ts`). Three endpoints computing backend counts down three code
 paths is the classic dashboard bug — two widgets on one screen disagreeing about
 the same instant. With one reader they cannot, and one fix corrects all of them.
 The count queries are single statements (grouped `SUM(CASE …)` and `GROUP BY`),
@@ -163,7 +163,7 @@ The `byType`/`byOutcome` maps are keyed by closed enums, not by user input.
 A hand-rolled registry, not a client library: no Prometheus, OpenTelemetry, or
 time-series dependency was added, because the requirement is counts in memory
 and two exports, and a SDK would import a second pipeline the gateway does not
-have. `src/monitoring/metrics.ts` defines counter/gauge/histogram primitives
+have. `apps/gateway/src/monitoring/metrics.ts` defines counter/gauge/histogram primitives
 with per-metric validation:
 
 - **Labels are closed enums.** Route class (`health|ready|metrics|mcp|api|
@@ -214,8 +214,8 @@ current facts, not history — the durable trail is `/api/v1/activity` and
 better-sqlite3 is synchronous, so a "duration" would measure a function call,
 not a query.
 
-`tests/metrics.test.ts` covers registry mechanics, validation, export formats,
-and access control; `tests/instrumentation.test.ts` proves each writer site
+`apps/gateway/tests/metrics.test.ts` covers registry mechanics, validation, export formats,
+and access control; `apps/gateway/tests/instrumentation.test.ts` proves each writer site
 against the live surface.
 
 ## 5. Dashboard visualizations
@@ -419,7 +419,7 @@ must not use unbounded user input as a label.
 
 ## 8. Recovery
 
-Implemented in Phase 4 (`src/adapters/lifecycle.ts`):
+Implemented in Phase 4 (`apps/gateway/src/adapters/lifecycle.ts`):
 
 - Bounded exponential backoff with jitter: `initialDelayMs * 2^(n-1)`, capped at `maxDelayMs`, ± `jitterRatio`, at most `maxAttempts`. Off by default (`RECONNECT_ENABLED=false`) so a lost backend is not re-dialled behind the operator's back.
 - Only transient failures retry (`BACKEND_TIMEOUT`, `BACKEND_UNAVAILABLE`). A missing executable, a policy refusal, or rejected credentials is permanent — retrying cannot change the answer.

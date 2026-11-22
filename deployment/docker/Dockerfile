@@ -2,7 +2,7 @@
 #
 # NOT VERIFIED: this image has not been built or run in this environment. It
 # is written against the repository's real surface: `pnpm build` produces
-# `dist/index.js`, which was verified locally to boot, serve, and drain
+# `apps/gateway/dist/index.js`, which was verified locally to boot, serve, and drain
 # cleanly on SIGTERM. Expect to adjust details on first build.
 #
 # The gateway is loopback-only by design: configuration refuses any
@@ -13,7 +13,7 @@
 #     traffic arrives via the container IP. This is the security posture
 #     working as intended, not a defect.
 #   * run it with host networking: `--network host` (docker run) or
-#     `network_mode: host` (compose). See deploy/docker-compose.yml.
+#     `network_mode: host` (compose). See deployment/docker/docker-compose.yml.
 
 FROM node:26-slim
 
@@ -27,18 +27,20 @@ corepack enable
 WORKDIR /app
 
 # Manifests first so the dependency layer caches independently of source.
-# apps/dashboard is a workspace member: its manifest must be present for the
-# frozen install to resolve, but its code and dependencies are never built or
-# shipped by the gateway's image.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# Both workspace members' manifests must be present for the frozen install to
+# resolve; only the gateway's code is ever built or shipped by this image.
+COPY pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY apps/gateway/package.json apps/gateway/package.json
 COPY apps/dashboard/package.json apps/dashboard/package.json
 RUN pnpm install --frozen-lockfile
 
-COPY tsconfig.json ./
-COPY src ./src
-RUN pnpm build
+COPY apps/gateway/tsconfig.json apps/gateway/tsconfig.json
+COPY apps/gateway/src ./apps/gateway/src
+RUN pnpm --filter @universal-mcp-gateway/gateway build
 
-# SQLite lives under ./data by default; mount a volume here (compose does).
+# SQLite lives under <repo>/data by default; mount a volume here (compose does).
+# The gateway resolves its default database against the repository root inside
+# the image (/app), so this volume is the same file a bare-metal run uses.
 VOLUME /app/data
 
-CMD ["node", "dist/index.js"]
+CMD ["node", "apps/gateway/dist/index.js"]

@@ -136,7 +136,7 @@ The full product scope is approved in this document. Implement sequentially; do 
 - [x] Canonical pagination everywhere: `page`/`limit` (max 100), allowlisted sort/filter fields, deterministic `id` tie-break, `total` measured over the filtered set.
 - [x] Fixed a real pagination bug: policy `backendId` filtering moved from post-slice route code into SQL (`EXISTS … json_each`), so `total` describes the filtered set. A `backendId`/`agentId` filter that names nothing is now `404`.
 - [x] Documented one tightening: `GET /api/v1/backends/:id/tools` answers `404` for an unknown backend (was `200` + `[]`); `GET /tools?backendId=` still answers an empty page.
-- [x] OpenAPI 3.1 at `GET /api/v1/openapi.json`, hand-written (`src/api/openapi.ts`) with query parameters derived from the same Zod schemas the handlers parse. `tests/openapi.test.ts` checks the document against the live Hono route table **in both directions**, resolves every `$ref`, and asserts the pagination and error-envelope shapes. No new dependency — `z.toJSONSchema` ships with Zod 4.
+- [x] OpenAPI 3.1 at `GET /api/v1/openapi.json`, hand-written (`apps/gateway/src/api/openapi.ts`) with query parameters derived from the same Zod schemas the handlers parse. `apps/gateway/tests/openapi.test.ts` checks the document against the live Hono route table **in both directions**, resolves every `$ref`, and asserts the pagination and error-envelope shapes. No new dependency — `z.toJSONSchema` ships with Zod 4.
 - [x] `null` vs `0`: when a storage read fails, storage-backed fields are `null` and `status` is `degraded`; the in-memory catalog is still reported. An empty registry reports legitimate zeros.
 - [x] Single-statement aggregate queries: enabled/disabled splits, runtime distribution, session effective-status counts, activity/audit groupings — no N+1.
 - [x] No migration needed: the existing `created_at` and composite event indexes cover the new range/filter shapes. Production `data/gateway.db` untouched (migrations `0001–0005`, 0 backends, 0 agents).
@@ -257,7 +257,7 @@ connect/disconnect/reconnect, and delete. Deliberately excluded, and still
 placeholders: tools, agents, credentials, policies, sessions, activity, audit,
 monitoring, settings, OAuth, vault, semantic routing, managed integrations.
 
-What shipped, against the verified gateway contract (`src/api/routes/backends.routes.ts`):
+What shipped, against the verified gateway contract (`apps/gateway/src/api/routes/backends.routes.ts`):
 
 - `/dashboard/backends` — the registry table (`search`, `transport`, `enabled`,
   pagination, all server-side). Summary tiles read
@@ -285,7 +285,7 @@ What shipped, against the verified gateway contract (`src/api/routes/backends.ro
 **Documented contract corrections and limitations:**
 
 - `BackendRuntimeView` in the dashboard said `attempts`; the wire field is
-  `reconnectAttempts` (`toView()` in `src/adapters/lifecycle.ts`). Fixed.
+  `reconnectAttempts` (`toView()` in `apps/gateway/src/adapters/lifecycle.ts`). Fixed.
 - Filtering the registry by **runtime status** is not supported: the list route
   accepts `search`, `transport` and `enabled` only. The UI says so instead of
   offering a control that would filter nothing. Deferred until the API grows the
@@ -307,7 +307,7 @@ Scope: the catalog only — list, filter, detail, discovery state, name conflict
 and the two refresh routes. No invocation and no per-agent access matrix, both by
 design (see below).
 
-What shipped, against the verified gateway contract (`src/api/routes/tools.routes.ts`):
+What shipped, against the verified gateway contract (`apps/gateway/src/api/routes/tools.routes.ts`):
 
 - `/dashboard/tools` — the catalog table with the gateway's own `search`,
   `backendId` and `availability` filters and pagination. Counts read
@@ -447,7 +447,7 @@ termination.
 - No token, hash, cookie, or transport state appears anywhere; `mcpSessionId` is
   displayed as the routing handle it is.
 
-**One pre-existing test fixture bug fixed:** `tests/sessions.test.ts` pinned its
+**One pre-existing test fixture bug fixed:** `apps/gateway/tests/sessions.test.ts` pinned its
 clock to a date that has now passed while the repository derives a lapsed
 lifetime from the real `Date.now()`, so thirteen tests began failing
 independently of this batch. Both files matched `HEAD`; the fixture now starts at
@@ -579,7 +579,7 @@ sites: router, lifecycle, auth services, MCP handlers, session manager,
 gateway modern leg.
 
 **Metrics aggregation.** A hand-rolled in-memory registry
-(`src/monitoring/metrics.ts`) — no Prometheus/OTel/Redis dependency. Counter/
+(`apps/gateway/src/monitoring/metrics.ts`) — no Prometheus/OTel/Redis dependency. Counter/
 gauge/histogram primitives; **closed-enum labels only** (route class, MCP
 method, outcome, transport, stable error code, HTTP status — never tool names,
 agent ids, or user input); violations dropped and counted in
@@ -660,7 +660,7 @@ connector's own message stays in `details`. `reauthorization_required` flips
 the connection status, withdraws its tools, and fails closed until an operator
 acts — the router never drives a connection out of trouble.
 
-**Credentials.** An AES-256-GCM envelope vault (`src/integrations/vault.ts`):
+**Credentials.** An AES-256-GCM envelope vault (`apps/gateway/src/integrations/vault.ts`):
 per-record random DEK with per-record nonces, a versioned envelope
 `{v, keyId, wrappedDek, wrapNonce, wrapTag, nonce, ct, tag}`, master key from
 `INTEGRATION_MASTER_KEY` only (optional `INTEGRATION_MASTER_KEY_PREVIOUS` for
@@ -737,7 +737,7 @@ deliverable; nothing in it outruns its evidence.
 - **Stack pinned, not assumed.** Server and client SDK 2.4.0 (LATEST
   `2025-11-25`, supported back to `2024-10-07`), hono adapter 2.0.2; both
   protocol eras served through the SDK's own `isLegacyRequest`.
-- **Harness.** `tests/compatibility/` — six files, 34 tests, scenarios A–F
+- **Harness.** `apps/gateway/tests/compatibility/` — six files, 34 tests, scenarios A–F
   (basic protocol, authentication, authorization, session isolation, tool
   interoperability, failure/resilience), every one driven by the official
   client SDK over a real loopback socket against real stdio fixture
@@ -800,7 +800,7 @@ post-`2025-09-03` database/data-source split. Six read-only tools (`search`,
 `query_data_source`); fixed origin `https://api.notion.com`, pinned
 `Notion-Version: 2026-03-11`, redirects refused, one bounded `Retry-After ≤ 5s`
 retry; unknown and future block types recorded, never dropped. Zero
-provider-specific logic outside `src/integrations/notion/`: the registry entry
+provider-specific logic outside `apps/gateway/src/integrations/notion/`: the registry entry
 is the only core change, and the vault, lifecycle, catalog, authorization,
 execution, audit, and metrics paths are reused unchanged — proven by a
 router-level suite with two Notion connections, two agents, and a GitHub
@@ -828,7 +828,7 @@ origin `https://slack.com/api`, redirects refused, one bounded
 subtypes recorded, never dropped; cursors opaque, `limit` a deliberate ≤ 200
 bound. **`search.messages` is excluded on the audit's research finding** —
 user-token-only — documented, not approximated. Zero provider-specific logic
-outside `src/integrations/slack/`: the registry entry is the only core
+outside `apps/gateway/src/integrations/slack/`: the registry entry is the only core
 change, and the vault, lifecycle, catalog, authorization, execution, audit,
 and metrics paths are reused unchanged — proven by a router-level suite with
 two Slack connections, two agents, and Notion and GitHub connections

@@ -49,7 +49,7 @@ refuses redirects outright, and tool-call metrics split by a closed
 read-only, internal-connection-token Notion connector — six tools, pinned
 `Notion-Version: 2026-03-11`, the same vault, lifecycle, catalog,
 authorization, execution, audit, and metrics paths reused with zero
-provider-specific logic outside `src/integrations/notion/`; no test dials
+provider-specific logic outside `apps/gateway/src/integrations/notion/`; no test dials
 Notion, and live account validation was not performed. Phase 17 (third
 provider integration — Slack) is **implemented** (ADR-056,
 `docs/providers/SLACK.md`): a code-registered, read-only, bot-token Slack
@@ -57,7 +57,7 @@ connector — five tools, Slack's two-envelope failure rule (HTTP 200 with
 `ok:false` is a failure), nine read scopes, `ts` values kept as exact
 strings, and the same vault, lifecycle, catalog, authorization, execution,
 audit, and metrics paths reused with zero provider-specific logic outside
-`src/integrations/slack/`; no test dials Slack, and live workspace
+`apps/gateway/src/integrations/slack/`; no test dials Slack, and live workspace
 validation was not performed.
 - Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`,
   811 gateway tests; `pnpm test:dashboard`, 473 tests).
@@ -157,7 +157,7 @@ new runtime dependency.
 - Structured logging with serializer-level redaction (`authorization`, cookies,
   credential/token/secret field families); tool arguments and upstream responses
   are never logged.
-- A hand-rolled in-memory registry (`src/monitoring/metrics.ts`): counters,
+- A hand-rolled in-memory registry (`apps/gateway/src/monitoring/metrics.ts`): counters,
   gauges, bucketed histograms, `umg_`-prefixed, **closed-enum labels only** —
   never a tool name, agent id, or caller input; violations drop into
   `umg_metrics_dropped_total`. In memory only: resets on restart, current facts
@@ -186,7 +186,7 @@ production deployment.
   `managed_integration` (connection id; no fabricated `backendId`). One catalog,
   composite snapshot keys, deterministic namespacing reused — no existing MCP
   public tool name changed.
-- A code-registered provider registry (`src/integrations/`): zod-validated
+- A code-registered provider registry (`apps/gateway/src/integrations/`): zod-validated
   registrations, duplicate ids refused, declared capabilities cross-checked
   against the connector. No dynamic loading, no marketplace, no plugins.
 - Connectors are bounded guests: the execution context is exactly
@@ -218,7 +218,7 @@ production deployment.
 **Phase 13 — first real provider integration (GitHub).** ADR-053. The registry's
 first code entry: GitHub, **read-only**, fine-grained PAT.
 
-- The provider-owned HTTP client (`src/integrations/github/`): fixed origin
+- The provider-owned HTTP client (`apps/gateway/src/integrations/github/`): fixed origin
   `https://api.github.com` (HTTPS only, nothing caller-suppliable can redirect
   it), closed header set (`Bearer`, `X-GitHub-Api-Version: 2026-03-10`,
   `Accept: application/vnd.github+json`, UA `universal-mcp-gateway`), one retry
@@ -247,8 +247,9 @@ first code entry: GitHub, **read-only**, fine-grained PAT.
 
 **Phase 9 — Astryx dashboard foundation.** A Next.js 16 / React 19 dashboard
 lives in `apps/dashboard` (pnpm workspace) and uses Astryx directly as its design
-system. The gateway did **not** move: it is still the root package, so there is no
-`apps/gateway/package.json` and `dev:gateway` aliases the root `dev` script.
+system. At this point the gateway still lived at the repository root; the later
+repository restructuring moved it into `apps/gateway` (see Development
+commands below for the current workspace layout).
 
 - `/dashboard` reads real data from `GET /api/v1/overview`; `/dashboard/backends`
   manages the registry (Phase 10.1). The remaining module routes (`/tools`,
@@ -284,7 +285,7 @@ HTTP tool-invocation endpoint: calls go through `/mcp` only.
 
 **Backends can now run processes and make outbound connections.** The outbound
 policy (scheme, credentials, DNS-resolved destinations, redirects) is in
-`src/security/network-policy.ts`; `ALLOW_PRIVATE_NETWORK` opens only
+`apps/gateway/src/security/network-policy.ts`; `ALLOW_PRIVATE_NETWORK` opens only
 loopback/private/CGNAT and never metadata or link-local. TLS verification is
 never disabled.
 
@@ -325,7 +326,7 @@ Environment variables, with defaults:
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | Loopback only (`127.0.0.1`, `localhost`, `::1`) |
 | `PORT` | `8787` | 1–65535 |
-| `DATABASE_PATH` | `./data/gateway.db` | Created with parents if missing |
+| `DATABASE_PATH` | `./data/gateway.db`, resolved against the repository root | Created with parents if missing; cwd-independent (same file from any working directory) |
 | `LOG_LEVEL` | `info` | `fatal`…`trace`, `silent` |
 | `ENVIRONMENT` | `development` | `development`, `test`, `production` |
 | `REQUEST_BODY_LIMIT_BYTES` | `4194304` | Max MCP request body |
@@ -353,10 +354,24 @@ is the only one with no default, and it is deliberately not part of `Config`.
 
 ## Development commands
 
-Gateway (the root package):
+The repository is a pnpm workspace. The root manifest only orchestrates; each
+command below delegates to the owning package:
+
+| Location | Contents |
+| --- | --- |
+| `apps/gateway` | The gateway backend — source, tests, CLIs, its own manifests |
+| `apps/dashboard` | The Next.js operator dashboard |
+| `data/` | Runtime state, gitignored: `gateway.db`, `backups/` |
+| `deployment/` | Docker and systemd artifacts (NOT VERIFIED, `deployment/README.md`) |
+
+There is no `packages/` member yet: nothing is shared between the two apps
+(their only coupling is the runtime proxy through `GATEWAY_ORIGIN`), so no
+shared package is created for appearance.
+
+Gateway (`apps/gateway`):
 ```bash
 pnpm install
-pnpm dev            # tsx watch src/index.ts on 127.0.0.1:8787
+pnpm dev            # tsx watch apps/gateway/src/index.ts on 127.0.0.1:8787
 pnpm typecheck
 pnpm build
 pnpm test
@@ -366,7 +381,7 @@ Dashboard (`apps/dashboard`, port 3000):
 ```bash
 pnpm dev:dashboard       # next dev --port 3000
 pnpm typecheck:dashboard
-pnpm test:dashboard      # 38 jsdom component/validator tests
+pnpm test:dashboard    # 473 jsdom component/validator tests
 pnpm build:dashboard
 ```
 
@@ -595,7 +610,7 @@ surface.
 
 `GET /api/v1/openapi.json` is the authoritative contract (OpenAPI 3.1). It is
 generated from a literal table and checked against the live route table by
-`tests/openapi.test.ts`, so it cannot describe a route that does not exist.
+`apps/gateway/tests/openapi.test.ts`, so it cannot describe a route that does not exist.
 
 Every request body must be `application/json`. Errors use one envelope:
 `{ "error": { "code", "message", "requestId" } }`. The endpoint-by-endpoint
@@ -628,7 +643,7 @@ Phase 14 (agent compatibility) is **implemented** — see
 `docs/AGENT_COMPATIBILITY.md` for the client matrix and its evidence: Claude
 Code and OpenCode VERIFIED end-to-end, Codex CLI PARTIAL (no working local
 login to drive a turn), DeepSeek Desktop NOT VERIFIED (not installed), and
-the SDK harness (`tests/compatibility/`, scenarios A–F) carrying the
+the SDK harness (`apps/gateway/tests/compatibility/`, scenarios A–F) carrying the
 protocol-level proof for every standards-compliant client.
 
 The integration-platform half of Phase 15 is **implemented** (ADR-054): an
@@ -641,7 +656,7 @@ next provider.
 Phase 16 is **implemented** (ADR-055): Notion, the second code-registered
 provider — read-only, internal connection token, structurally different from
 GitHub (opaque cursors, a block tree, the database/data-source split) and
-landing with zero changes outside `src/integrations/notion/` and one registry
+landing with zero changes outside `apps/gateway/src/integrations/notion/` and one registry
 entry. `docs/providers/NOTION.md` is the provider guide. **Live Notion account
 validation: NOT PERFORMED — requires separate user approval.**
 
@@ -649,7 +664,7 @@ Phase 17 is **implemented** (ADR-056): Slack, the third code-registered
 provider — read-only, a manually supplied bot token, and a failure model
 neither predecessor shares (application failures arrive as HTTP 200 with
 `ok:false`, so the client reads both envelope halves of every answer) —
-landing with zero changes outside `src/integrations/slack/` and one registry
+landing with zero changes outside `apps/gateway/src/integrations/slack/` and one registry
 entry. `search.messages` is documented out, not approximated (it is a
 user-token-only method). `docs/providers/SLACK.md` is the provider guide.
 **Live Slack workspace validation: NOT PERFORMED — requires separate user

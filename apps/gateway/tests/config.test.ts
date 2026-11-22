@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import { loadConfig, parseConfig, redactConfig, type Config } from '../src/config/config.js';
@@ -14,12 +16,23 @@ describe('configuration defaults', () => {
     expect(expectValidParse({})).toMatchObject({
       host: '127.0.0.1',
       port: 8787,
-      databasePath: './data/gateway.db',
+      databasePath: fileURLToPath(new URL('../../../data/gateway.db', import.meta.url)),
       logLevel: 'info',
       environment: 'development',
       mcpEndpoint: '/mcp',
       healthEndpoint: '/health',
     });
+  });
+
+  it('anchors the default and any relative DATABASE_PATH to the repository root', () => {
+    // Both expected values are computed from this test file, not from the
+    // implementation's constant: the contract is *where the database lives*,
+    // independent of the process working directory (repo root, apps/gateway,
+    // or a supervisor's cwd must all mean the same file).
+    expect(expectValidParse({}).databasePath).toBe(fileURLToPath(new URL('../../../data/gateway.db', import.meta.url)));
+    expect(expectValidParse({ DATABASE_PATH: './nested/gw.db' }).databasePath).toBe(
+      fileURLToPath(new URL('../../../nested/gw.db', import.meta.url)),
+    );
   });
 
   it('keeps the endpoint contract fixed', () => {

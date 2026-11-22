@@ -21,7 +21,7 @@ Three identity domains never merge (ADR-048):
 
 | Concept | What it is | Where it lives |
 | --- | --- | --- |
-| Provider | A code registration: definition + connector | `src/integrations/registry.ts` (`REGISTRATIONS`) |
+| Provider | A code registration: definition + connector | `apps/gateway/src/integrations/registry.ts` (`REGISTRATIONS`) |
 | Connection | An operator's instance of a provider | `integration_connections` rows |
 | Credential | An encrypted envelope linked to a connection | `integration_credentials` rows |
 
@@ -40,7 +40,7 @@ model forced no change outside its own directory.
 
 ## 2. Provider definition
 
-`providerDefinitionSchema` (`src/integrations/provider.ts`):
+`providerDefinitionSchema` (`apps/gateway/src/integrations/provider.ts`):
 
 - `id` — lowercase slug (`github`), stable once published; connections
   reference it by this string. Not a row id: it appears in operator-facing
@@ -65,7 +65,7 @@ needs a design review before it needs code.
 
 ## 3. The connector contract
 
-`Connector` (`src/integrations/connector.ts`) is two optional methods,
+`Connector` (`apps/gateway/src/integrations/connector.ts`) is two optional methods,
 `discoverTools` and `executeTool`, present exactly when the corresponding
 capability is declared. No provider is forced to implement a lifecycle
 operation it does not have.
@@ -94,7 +94,7 @@ to `provider_error` — it cannot crash the gateway or smuggle a stack trace to
 a client.
 
 Each connector owns its own HTTP client (the GitHub client in
-`src/integrations/github/client.ts` is the model: fixed origin, closed header
+`apps/gateway/src/integrations/github/client.ts` is the model: fixed origin, closed header
 set, redirects refused, injectable `fetch`/`sleep` for tests). The gateway
 hands connectors no network policy because the connector's boundaries are its
 own review obligation — see §13.
@@ -129,7 +129,7 @@ input, because a machine that repairs input has a history that lies.
 
 ## 5. Credential vault integration
 
-One vault (`src/integrations/vault.ts`, ADR-051). There is no second
+One vault (`apps/gateway/src/integrations/vault.ts`, ADR-051). There is no second
 encryption system and no plaintext fallback anywhere.
 
 At rest, a credential is an envelope: a fresh random 32-byte data key per
@@ -256,7 +256,7 @@ is ownership, not locking:
   request-scoped, and revoking a live request's credential mid-flight is
   cancellation, not disablement.
 
-All four behaviors are pinned by `tests/integrations-concurrency.test.ts`
+All four behaviors are pinned by `apps/gateway/tests/integrations-concurrency.test.ts`
 against the production service with a gated fixture connector.
 
 ## 9. Authorization model
@@ -317,8 +317,8 @@ fields, and never audit metadata.
    what its credential is, why read-only first). `docs/DECISIONS.md` carries
    ADR-053, ADR-055, and ADR-056 as the models.
 2. Add the definition + connector import to `REGISTRATIONS`
-   (`src/integrations/registry.ts`). One line per file touched by hand.
-3. Implement the connector in `src/integrations/<provider>/`, modeled on
+   (`apps/gateway/src/integrations/registry.ts`). One line per file touched by hand.
+3. Implement the connector in `apps/gateway/src/integrations/<provider>/`, modeled on
    `github/`, `notion/`, and `slack/`: a client module owning the fixed origin
    and closed headers, a tools module of pure schemas and normalizers, a
    connector module composing them. Injectable `fetch`/`sleep`; no test
@@ -328,11 +328,11 @@ fields, and never audit metadata.
 5. Register tools read-only; annotations carry `readOnlyHint`. Write tools,
    webhooks, OAuth, sync workers are out of scope until a later phase says
    otherwise.
-6. Add suites mirroring `tests/integrations-github.test.ts` (and, for a
-   structurally different provider, `tests/integrations-notion.test.ts` and
-   `tests/integrations-slack.test.ts`):
+6. Add suites mirroring `apps/gateway/tests/integrations-github.test.ts` (and, for a
+   structurally different provider, `apps/gateway/tests/integrations-notion.test.ts` and
+   `apps/gateway/tests/integrations-slack.test.ts`):
    client boundary, normalizer honesty, execution through the production
-   service. Extend `tests/integrations.test.ts`'s "ships exactly the real
+   service. Extend `apps/gateway/tests/integrations.test.ts`'s "ships exactly the real
    providers" test so the registry's production contents stay pinned.
 7. Update this document, `SECURITY.md` §"managed providers", and the
    dashboard's provider list comes free (it reads the registry).

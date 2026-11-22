@@ -363,7 +363,7 @@ than generated, because `z.toJSONSchema()` describes shapes but not the
 
 ```bash
 pnpm install            # workspace install
-pnpm dev:gateway        # gateway on 127.0.0.1:8787 (root package)
+pnpm dev:gateway        # gateway on 127.0.0.1:8787 (apps/gateway package)
 pnpm dev:dashboard      # dashboard on localhost:3000
 pnpm dev                # gateway only (legacy alias, unchanged)
 
@@ -607,8 +607,8 @@ the other two own draft/pending state.
 
 ## 23. Gateway operations used
 
-Everything below is read from `src/api/routes/backends.routes.ts` and
-`src/domain/backend.ts` — nothing here is inferred from the product spec.
+Everything below is read from `apps/gateway/src/api/routes/backends.routes.ts` and
+`apps/gateway/src/domain/backend.ts` — nothing here is inferred from the product spec.
 
 | Operation | Route | Notes |
 | --- | --- | --- |
@@ -801,7 +801,7 @@ therefore safe and a name containing anything else cannot be expressed.
 - **No availability filter invented beyond the gateway's.** `search`,
   `backendId` and `availability` are the three parameters the route accepts.
 - **No conflict count in the discovery report.** `conflictCount` is a baseline
-  `0` by design (`src/routing/discovery.ts`), so the live number is read from
+  `0` by design (`apps/gateway/src/routing/discovery.ts`), so the live number is read from
   `/tools/conflicts`, which the page does.
 
 ### Schemas are inert
@@ -868,7 +868,7 @@ for the three management resources. Same behaviour, one perimeter.
 The list page reads `GET /api/v1/agents` (the table, with the gateway's own
 `search`, `status`, `clientType` and pagination) and `GET /api/v1/overview` (the
 counts). `/monitoring` does **not** report agents — that was verified against
-`monitoringPayload()` in `src/api/routes/ops.routes.ts` — so `/overview`, the same
+`monitoringPayload()` in `apps/gateway/src/api/routes/ops.routes.ts` — so `/overview`, the same
 payload the landing page reads, is the only source of registry-wide agent counts.
 
 The detail page reads three endpoints independently: the profile (whose `404`
@@ -1010,7 +1010,7 @@ smallest one consistent with the existing model:
   repository read.
 - `GET /api/v1/policies/:policyId/assignments` — returns `toPublicAgent` objects,
   the same shape as the agent list, so no new serialisation exists.
-- OpenAPI entry and four gateway tests (`tests/policies-api.test.ts`): the listing,
+- OpenAPI entry and four gateway tests (`apps/gateway/tests/policies-api.test.ts`): the listing,
   the `404`, cascade-on-agent-delete, and agreement with the per-agent view in both
   directions.
 
@@ -1069,13 +1069,13 @@ endpoint is what the agent page renders, so the two screens cannot disagree.
 
 | File | Purpose |
 | --- | --- |
-| `src/domain/repositories.ts` | `PolicyRepository.listAgentsForPolicy` |
-| `src/infrastructure/database/repositories/policies.ts` | The join; reuses `toAgent`/`AgentRow` from the agent repository |
-| `src/infrastructure/database/repositories/agents.ts` | `AgentRow`/`toAgent` exported for that reuse |
-| `src/registry/policy-service.ts` | `listAssignments` |
-| `src/api/routes/policies.routes.ts` | `GET /:policyId/assignments` |
+| `apps/gateway/src/domain/repositories.ts` | `PolicyRepository.listAgentsForPolicy` |
+| `apps/gateway/src/infrastructure/database/repositories/policies.ts` | The join; reuses `toAgent`/`AgentRow` from the agent repository |
+| `apps/gateway/src/infrastructure/database/repositories/agents.ts` | `AgentRow`/`toAgent` exported for that reuse |
+| `apps/gateway/src/registry/policy-service.ts` | `listAssignments` |
+| `apps/gateway/src/api/routes/policies.routes.ts` | `GET /:policyId/assignments` |
 | `src/api/openapi.ts` | OpenAPI entry for the new read |
-| `tests/policies-api.test.ts` | Four new gateway tests (14 total in the file) |
+| `apps/gateway/tests/policies-api.test.ts` | Four new gateway tests (14 total in the file) |
 | `src/lib/api/types.ts` | `POLICY_EFFECTS`, `POLICY_RESOURCES`, `PolicyRule`, `Policy`, `PolicyQuery`, `PolicyCreateInput`, `PolicyUpdateInput` |
 | `src/lib/api/policies.ts` | List/get/create/update/delete/assign/unassign/assignments |
 | `src/lib/policies/form.ts` | Validation mirroring the gateway; `broadeningChanges`; payload builders |
@@ -1226,7 +1226,7 @@ of *why* a session ended — a reason is not a status (`cleanup` and
 ### One test fixture was a time bomb
 
 `tests/sessions.test.ts` pinned its clock to `2026-11-19T10:00:00.000Z` while
-`toSession` in `src/infrastructure/database/repositories/events.ts` derives a
+`toSession` in `apps/gateway/src/infrastructure/database/repositories/events.ts` derives a
 lapsed lifetime from the **real** `Date.now()`. Once that date passed, every
 freshly created session read back as `expired` and thirteen tests failed. Both
 files were byte-identical to `HEAD`, so this was not a Phase 10 regression; the

@@ -86,7 +86,7 @@ Do not assume Windows and WSL share identical localhost routing or filesystem pa
 Suggested source boundaries:
 
 ```text
-src/
+apps/gateway/src/
   adapters/
     mcp/
       stdio/
@@ -137,7 +137,7 @@ This is a target structure, not a requirement to move existing files immediately
 ### 4.1 Implemented module layout (Phase 8)
 
 ```text
-src/
+apps/gateway/src/
   domain/          # contracts, no infrastructure imports
     primitives.ts        ids, timestamps, secret references
     backend.ts           definition + create/update schemas
@@ -233,7 +233,7 @@ Dependency direction is one-way: `index` → `core` → `api` → `registry` →
 
 Boundaries that matter:
 
-- **Domain vs persistence.** Repository interfaces live in `src/domain/repositories.ts` and speak in entities; SQL and `better-sqlite3` types never appear there. An in-memory fake satisfies the same contract.
+- **Domain vs persistence.** Repository interfaces live in `apps/gateway/src/domain/repositories.ts` and speak in entities; SQL and `better-sqlite3` types never appear there. An in-memory fake satisfies the same contract.
 - **Route vs service vs repository.** A route parses HTTP and formats the response; `BackendService` owns uniqueness, transactions, audit, and sanitization; repositories own SQL. No handler contains a statement or a business rule.
 - **Definition vs runtime.** `backends` holds configuration; `backend_runtime` holds observed connection state. A persisted backend never implies a live connection. Live objects (child processes, HTTP clients) live only in the lifecycle manager, never in either table.
 - **Service vs lifecycle.** `BackendService` is synchronous and owns no connections. After a mutating transaction commits, the route calls `lifecycle.reconcile(id)` once: the manager re-reads the committed row, compares a connection fingerprint, and decides what the change means for live state (ADR-034). The service never spawns or dials.
@@ -252,7 +252,7 @@ Declared once in `createManagementApi()`, applied to every `/api/v1` route:
 4. `jsonBodyLimit` — bounds the body before any parse allocates it.
 5. `requireJsonBody` — rejects a declared non-JSON content type, which blocks cross-site form posts.
 
-Order is load-bearing. The local-only check runs before a body is read, so a non-local caller cannot make the gateway buffer a payload. `operatorAuth` sits *before* the body limit and the content-type check for the same reason: an anonymous caller cannot spend parse budget, and `tests/operator-auth.test.ts` asserts a write with a malformed body answers `401`, not `400`. Session first, CSRF second — a valid-looking CSRF token with no session still gets `401`, so a token alone never authorizes.
+Order is load-bearing. The local-only check runs before a body is read, so a non-local caller cannot make the gateway buffer a payload. `operatorAuth` sits *before* the body limit and the content-type check for the same reason: an anonymous caller cannot spend parse budget, and `apps/gateway/tests/operator-auth.test.ts` asserts a write with a malformed body answers `401`, not `400`. Session first, CSRF second — a valid-looking CSRF token with no session still gets `401`, so a token alone never authorizes.
 
 Host/Origin checks reuse the SDK's own `validateHostHeader`/`validateOriginHeader`; only the response envelope differs from `/mcp` (ADR-029).
 
@@ -262,7 +262,7 @@ The API is not mounted at all when no store is configured, *and not mounted when
 
 ## 4.3 Outbound connection lifecycle (Phase 4)
 
-`src/adapters/lifecycle.ts` is the only place a backend is spawned or dialled. `docs/BACKEND_SPEC.md` §6.1 is the method-by-method contract; the architecture points are:
+`apps/gateway/src/adapters/lifecycle.ts` is the only place a backend is spawned or dialled. `docs/BACKEND_SPEC.md` §6.1 is the method-by-method contract; the architecture points are:
 
 - **Serialized per backend.** Each backend gets one promise chain, so two concurrent `connect` calls open one connection, not two.
 - **Explicit only.** Create, update, `enable`, and process start never connect. `enable` makes a backend eligible; `disable` cancels a pending retry and tears the connection down.
@@ -270,13 +270,13 @@ The API is not mounted at all when no store is configured, *and not mounted when
 - **State machine enforced at the write.** `BACKEND_TRANSITIONS` declares every legal edge and `persist()` refuses anything else, so an impossible status cannot reach the table.
 - **Backoff is bounded and jittered.** `initialDelay * 2^(n-1)`, capped, ± `jitterRatio`, at most `maxAttempts`. Only `BACKEND_TIMEOUT` and `BACKEND_UNAVAILABLE` retry; a bad executable, a policy refusal, or a rejected credential is permanent. Off by default (`RECONNECT_ENABLED=false`).
 - **Shutdown order.** `Gateway.close()` closes the MCP handler, then awaits `lifecycle.shutdown()`, then the caller closes the store — so a teardown can still write a truthful runtime row.
-- **Destination policy before the socket.** `src/security/network-policy.ts` validates scheme, credentials, and every DNS-resolved address, and wraps `fetch` so the check runs per request (SSRF; `docs/SECURITY.md` §3.2).
+- **Destination policy before the socket.** `apps/gateway/src/security/network-policy.ts` validates scheme, credentials, and every DNS-resolved address, and wraps `fetch` so the check runs per request (SSRF; `docs/SECURITY.md` §3.2).
 
-`docs/BACKEND_SPEC.md` §6 describes the transports; `tests/lifecycle.test.ts` and `tests/lifecycle-api.test.ts` exercise them against isolated fixtures only.
+`docs/BACKEND_SPEC.md` §6 describes the transports; `apps/gateway/tests/lifecycle.test.ts` and `apps/gateway/tests/lifecycle-api.test.ts` exercise them against isolated fixtures only.
 
 ## 4.4 Tool discovery and routing (Phase 5)
 
-`src/routing/` is one pipeline with four separable pieces; each file has one job and can be read alone.
+`apps/gateway/src/routing/` is one pipeline with four separable pieces; each file has one job and can be read alone.
 
 - **`namespacing.ts` — identity.** `publicToolName(backendId, originalName)` joins two normalized segments with `__`. Normalization replaces every character outside `[A-Za-z0-9._-]` with `_`; a name longer than 128 characters is cut and suffixed with `__<8 hex>` derived from `SHA-256(backendId, NUL, originalName)`. Same inputs, same name, always (ADR-036).
 - **`catalog.ts` — truth.** The catalog is in memory and authoritative. It holds one snapshot per backend (tools keyed by original name) plus an index from public name to owner. Collisions are computed at read time from the whole index, and **every** claimant is withheld rather than routing by discovery order. Nothing is persisted: a catalog row on disk would be a claim about a connection that a restart cannot honour (ADR-038).
@@ -298,7 +298,7 @@ same in-memory catalog everything else uses.
 
 Three structural choices:
 
-- **One snapshot reader.** `src/api/ops.ts` exports `opsSnapshot()` and every
+- **One snapshot reader.** `apps/gateway/src/api/ops.ts` exports `opsSnapshot()` and every
   consumer calls it: `/overview`, `/monitoring*`, `/diagnostics`. Three endpoints
   computing backend counts down three code paths is the classic dashboard bug;
   with one reader the numbers cannot disagree, and a single fix corrects all of
@@ -325,10 +325,10 @@ accident. The list endpoint omits `metadata`; only the detail read renders it �
 one explicit operator act, not a collection response carrying free-form context.
 
 `GET /api/v1/openapi.json` is a hand-written literal table
-(`src/api/openapi.ts`), because Hono exposes no typed route metadata: a generator
+(`apps/gateway/src/api/openapi.ts`), because Hono exposes no typed route metadata: a generator
 would describe the schemas and guess which one belongs to which handler. Query
 parameters are derived from the same Zod schemas the handlers parse, and
-`tests/openapi.test.ts` compares the document against the live route table in both
+`apps/gateway/tests/openapi.test.ts` compares the document against the live route table in both
 directions, so neither an undocumented route nor an invented one survives.
 
 ## 4.6 Observability layer (Phase 11)
@@ -342,12 +342,12 @@ context and an in-memory aggregate registry, and both reset with the process.
   correlatable. It generates/echoes `X-Request-Id` and accepts
   `X-Correlation-Id` only when it matches `^[A-Za-z0-9._-]{1,64}$` — validated,
   never trusted. Both ids live in `AsyncLocalStorage`
-  (`src/monitoring/context.ts`), not a global: deep call sites read them through
+  (`apps/gateway/src/monitoring/context.ts`), not a global: deep call sites read them through
   `correlationLogFields()` without a threaded parameter, and concurrent
   requests stay isolated. `activity_events.correlation_id` persists the join
   (migration `0007`); audit keeps `requestId` only.
 - **The registry is one module-level singleton.** Writers import `metrics`
-  from `src/monitoring/metrics.ts`; no constructor threading, no DI — the
+  from `apps/gateway/src/monitoring/metrics.ts`; no constructor threading, no DI — the
   aggregate must be observable from any layer, which is exactly the property
   constructor injection exists to prevent. Labels are closed enums (never a
   tool name, agent id, or user input), violations drop into
@@ -376,7 +376,7 @@ Notion (ADR-055, internal connection token), and Slack (ADR-056, manually
 supplied bot token) — all code-registered and read-only; the registry is still
 code and still has no runtime widening.
 
-- **`src/integrations/` is the whole module:** `source.ts` (the closed
+- **`apps/gateway/src/integrations/` is the whole module:** `source.ts` (the closed
   `{sourceType, sourceId}` pair), `provider.ts` (registration schema and the
   two capabilities), `connection.ts` (seven statuses, transitions-as-data,
   non-secret metadata), `registry.ts` (the `REGISTRATIONS` module constant —
@@ -448,7 +448,7 @@ code and still has no runtime widening.
 
 ## 6. Outbound adapter lifecycle
 
-Implemented in Phase 4 (`src/adapters/`, `docs/BACKEND_SPEC.md` §5–6). The adapter interface is deliberately narrow: connect to the official MCP Client SDK client, close, and expose a loggable target. Lifecycle, retry, health, and state persistence belong to the manager, so adding a transport does not mean reimplementing them.
+Implemented in Phase 4 (`apps/gateway/src/adapters/`, `docs/BACKEND_SPEC.md` §5–6). The adapter interface is deliberately narrow: connect to the official MCP Client SDK client, close, and expose a loggable target. Lifecycle, retry, health, and state persistence belong to the manager, so adding a transport does not mean reimplementing them.
 
 `McpBackendClient` wraps the SDK `Client` to normalize SDK/transport/OS failures onto the gateway's `AppError` taxonomy and own the per-call timeout. It walks the error's cause chain, so a wrapped `ECONNREFUSED` is still recognized as transient and a wrapped policy refusal still surfaces its real message.
 
@@ -456,7 +456,7 @@ A backend failure never crashes the gateway: `connect` rejects with a mapped err
 
 ## 7. Registry model
 
-Implemented in Phase 3 (`src/domain/backend.ts`, `src/registry/backend-service.ts`, `docs/BACKEND_SPEC.md`).
+Implemented in Phase 3 (`apps/gateway/src/domain/backend.ts`, `apps/gateway/src/registry/backend-service.ts`, `docs/BACKEND_SPEC.md`).
 
 Backend definition fields:
 - `id` — application-generated UUIDv4.
@@ -484,7 +484,7 @@ Do not store plaintext secrets in ordinary registry JSON/YAML or database column
 
 ## 8. Tool catalog and naming
 
-Implemented in Phase 5 (`src/routing/`, ADR-036/037/038). Public name:
+Implemented in Phase 5 (`apps/gateway/src/routing/`, ADR-036/037/038). Public name:
 `<normalized_backend_id>__<normalized_original_tool_name>`.
 
 Normalization is total and deterministic: every character outside
@@ -494,7 +494,7 @@ cut and suffixed with `__<8 hex of SHA-256(backendId NUL originalName)>` — the
 suffix is derived from identity, never random, so the same tool keeps the same
 name across restarts and rediscoveries.
 
-Catalog record (`src/domain/tool.ts`):
+Catalog record (`apps/gateway/src/domain/tool.ts`):
 
 - public name, original name, backend ID
 - description, input schema (the backend's own JSON Schema, forwarded verbatim)
@@ -547,7 +547,7 @@ Default deny for unknown identities and unassigned tools.
 ```
 Authorization: Bearer umg_live_<base64url>
         │
-        ▼  src/api/middleware/mcp-auth.ts   (mounted on /mcp only)
+        ▼  apps/gateway/src/api/middleware/mcp-auth.ts   (mounted on /mcp only)
    AuthService.authenticate
      shape → HMAC-SHA-256 → indexed lookup by digest → timing-safe re-compare
      → key id known? → not revoked/expired? → agent exists and enabled?
@@ -570,14 +570,14 @@ Three invariants hold this together:
 2. **One decision function for both directions.** `tools/list` filtering and `tools/call` rejection call the same `AuthorizationService.evaluate`. Drift would require changing one call site and not the other, and both are three lines long.
 3. **Deny before route.** A denied caller learns nothing: no backend is read, no reachability check runs, no schema is compiled, nothing is invoked, and the error is byte-identical to an unknown tool. `AuthorizationService.resolveTarget` is the single catalog read behind the decision (a `backend`-scoped rule needs to know the tool's backend) and is also what enriches the audit row; it never gates a call on its own.
 
-`AuthService` and `AuthorizationService` are composed in `src/core/gateway.ts` and injected; neither reads the environment. The hashing key is loaded by `src/index.ts` through `resolveCredentialKeys`, which throws in production when absent and returns keys that issue nothing otherwise, so a development process without a secret fails closed per request instead of inventing an ephemeral one.
+`AuthService` and `AuthorizationService` are composed in `apps/gateway/src/core/gateway.ts` and injected; neither reads the environment. The hashing key is loaded by `apps/gateway/src/index.ts` through `resolveCredentialKeys`, which throws in production when absent and returns keys that issue nothing otherwise, so a development process without a secret fails closed per request instead of inventing an ephemeral one.
 
 ### 9.2 Implemented in Phase 10.0 (management surface)
 
 ```
 POST /api/v1/auth/login  (exempt)          every other /api/v1 route
         │                                          │
-        ▼  src/registry/operator-service.ts        ▼  operatorAuth
+        ▼  apps/gateway/src/registry/operator-service.ts        ▼  operatorAuth
    findByUsername (case-insensitive)          read `umg_operator` cookie → shape check
      → dummy scrypt if unknown  ─────────┐      → HMAC(token) → indexed lookup by digest
      → verify scrypt hash                │      → key id current? → not revoked?
@@ -627,7 +627,7 @@ assumed:
   a client-supplied session id is validated against the database if present and refused otherwise.
 - The **2025 era** has a real protocol session. Serving it requires
   `WebStandardStreamableHTTPServerTransport` with `sessionIdGenerator` +
-  `onsessioninitialized`/`onsessionclosed`, which is exactly what `src/sessions/session-manager.ts`
+  `onsessioninitialized`/`onsessionclosed`, which is exactly what `apps/gateway/src/sessions/session-manager.ts`
   wires. The default `createMcpHandler` (`legacy: 'stateless'`) would never issue an id, so a
   binding layer on top of it would have been dead code.
 
@@ -695,7 +695,7 @@ produce an inconsistent session**, and no path can leave a session half-ended.
   processes. A second gateway pointed at the same file cannot violate them.
 - **Duplicate initialization.** Two transports cannot both bind one protocol id: the second
   `INSERT` hits the unique index and the initialization fails. Asserted by
-  `tests/sessions.test.ts` (service level) and by the unique index in `verify-0005.ts`.
+  `apps/gateway/tests/sessions.test.ts` (service level) and by the unique index in `verify-0005.ts`.
 - **Terminate vs. request.** The request path validates *before* the transport handles anything,
   and the terminate path is a single conditional update. A request that validated first may
   finish; one that arrives after the update sees `terminated`. Neither leaves a row that claims
@@ -725,7 +725,7 @@ it lands. Until then `concurrencyMode` is stored and validated but not enforced 
 
 ## 12. Data persistence
 
-SQLite stores registry metadata, agent profiles, policy records, audit events, and any bounded operational metadata. Access goes through the repository interfaces in `src/domain/repositories.ts`; SQL is confined to `src/infrastructure/database/`. Runtime MCP client/transport/process objects stay in memory.
+SQLite stores registry metadata, agent profiles, policy records, audit events, and any bounded operational metadata. Access goes through the repository interfaces in `apps/gateway/src/domain/repositories.ts`; SQL is confined to `apps/gateway/src/infrastructure/database/`. Runtime MCP client/transport/process objects stay in memory.
 
 Implemented in Phase 2 (details in `docs/DATABASE.md`):
 
@@ -741,10 +741,10 @@ Retention and backup policy are still to be defined. Do not store sensitive tool
 ### 13.1 Shape
 
 The dashboard is a Next.js App Router application in `apps/dashboard`, a pnpm
-workspace package (`@universal-mcp-gateway/dashboard`). The gateway stays the
-**root** package — it was not moved into `apps/gateway`, so there is no
-`apps/gateway/package.json`, and `dev:gateway` / `build:gateway` simply alias the
-root scripts.
+workspace package (`@universal-mcp-gateway/dashboard`). The gateway is the
+sibling workspace package `apps/gateway`
+(`@universal-mcp-gateway/gateway`); the repository root is a thin
+orchestration manifest whose scripts delegate with `pnpm --filter`.
 
 ```text
 apps/dashboard/
@@ -809,7 +809,7 @@ server-rendered readiness value as `initial` and refreshes on demand — there i
 no polling, so an idle dashboard is not a request generator.
 
 `lib/validation/readiness.ts` validates the body against the real contract in
-`src/api/routes/ops.routes.ts` (`readyHandler`): `status`, both `checks` members,
+`apps/gateway/src/api/routes/ops.routes.ts` (`readyHandler`): `status`, both `checks` members,
 `timestamp` required; `migrationVersion` optional, because the handler
 spread-omits it exactly when migrations are unreadable. A correct
 `!response.ok` guard would be wrong here: it would turn a legitimate
@@ -857,7 +857,7 @@ spread-omits it exactly when migrations are unreadable. A correct
 
 ## 15. Error taxonomy
 
-Implemented in `src/shared/errors.ts` as `AppError` with stable `ErrorCode` values. Each code has a fixed category, HTTP status, and JSON-RPC code (`errorDefinition()`), so mapping is a table lookup rather than per-call judgement.
+Implemented in `apps/gateway/src/shared/errors.ts` as `AppError` with stable `ErrorCode` values. Each code has a fixed category, HTTP status, and JSON-RPC code (`errorDefinition()`), so mapping is a table lookup rather than per-call judgement.
 
 | Code | Category | HTTP | JSON-RPC |
 | --- | --- | --- | --- |

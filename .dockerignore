@@ -1,0 +1,13 @@
+# The Docker/compose build context is the repository root. Keep local state —
+# above all the live SQLite database and any secrets — out of the image and
+# out of the context upload.
+data/
+.env
+.git/
+node_modules/
+apps/*/node_modules/
+apps/*/dist/
+apps/dashboard/.next/
+apps/dashboard/*.tsbuildinfo
+graphify-out/
+*.log

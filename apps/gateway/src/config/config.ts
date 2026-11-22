@@ -1,3 +1,6 @@
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { z } from 'zod';
 
 /**
@@ -20,6 +23,20 @@ export const ENVIRONMENTS = ['development', 'test', 'production'] as const;
 export type Environment = (typeof ENVIRONMENTS)[number];
 
 const DEFAULT_DATABASE_PATH = './data/gateway.db';
+
+/**
+ * The repository root this package lives in, anchored to this file so the
+ * process working directory cannot change it. `src/config/config.ts` and its
+ * build output `dist/config/config.js` sit at the same depth under
+ * `apps/gateway` (two levels), so four hops up are the repository root in
+ * development and production alike. Relative `DATABASE_PATH` values — the
+ * default included — resolve against it: the gateway may be started from the
+ * repository root, from `apps/gateway`, or by a supervisor with its own
+ * working directory, and all three must mean the same `<repo>/data/gateway.db`,
+ * never a second database silently created wherever the process happened to
+ * start.
+ */
+const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 
 export const configSchema = z
   .object({
@@ -164,7 +181,9 @@ export function parseConfig(
   };
 
   const result = configSchema.safeParse(candidate);
-  return result.success ? { ok: true, config: result.data } : { ok: false, issues: result.error.issues };
+  return result.success
+    ? { ok: true, config: { ...result.data, databasePath: resolve(REPO_ROOT, result.data.databasePath) } }
+    : { ok: false, issues: result.error.issues };
 }
 
 /**

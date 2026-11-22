@@ -35,15 +35,15 @@ The full product includes gateway core, backend registry, adapters, tool routing
   implemented (ADR-046/047), Phase 12 (integration-ready architecture) is
   implemented (ADR-048–052), **Phase 13 (first real provider — GitHub,
   ADR-053) is implemented**, **Phase 14 (agent compatibility) is implemented**
-  (`docs/AGENT_COMPATIBILITY.md` is the client matrix; `tests/compatibility/`
+  (`docs/AGENT_COMPATIBILITY.md` is the client matrix; `apps/gateway/tests/compatibility/`
   is its SDK harness), **the integration-platform half of Phase 15 is
   implemented** (ADR-054: refresh in place, honest failed-refresh state,
   lifecycle concurrency ownership, redirect refusal, source-typed metrics),
   **Phase 16 (second provider — Notion, ADR-055) is implemented**, and
   **Phase 17 (third provider — Slack, ADR-056) is implemented**.
-  `pnpm typecheck`, `pnpm build`, and `pnpm test` pass (811 tests), and the
+  `pnpm typecheck`, `pnpm build`, and `pnpm test` pass (828 tests), and the
   dashboard passes its own typecheck, build, and 473 tests.
-- `src/integrations/` holds the managed-integration domain: source refs,
+- `apps/gateway/src/integrations/` holds the managed-integration domain: source refs,
   provider registration (the registry is code; its entries are
   `githubRegistration`, `notionRegistration`, and `slackRegistration` — all
   read-only), connection lifecycle as data, the bounded connector contract,
@@ -56,37 +56,39 @@ The full product includes gateway core, backend registry, adapters, tool routing
   Slack Socket Mode or app installation, no enterprise hosts, no write
   tools** — and no test dials `api.github.com`, `api.notion.com`, or
   `slack.com` (each connector's `fetchImpl` is injectable).
-- `src/core/gateway.ts` builds the app via `createGateway({ config, logger, store?, credentialKeys? })`:
+- `apps/gateway/src/core/gateway.ts` builds the app via `createGateway({ config, logger, store?, credentialKeys? })`:
   SDK `createMcpHandler` + Host/Origin middleware for non-API paths + `/health`, mounts the
   management API at `/api/v1` when a store is present, and mounts bearer authentication on
   `/mcp` whenever auth services exist.
-- `src/auth/` holds MCP authentication (`auth-service.ts`), policy evaluation
+- `apps/gateway/src/auth/` holds MCP authentication (`auth-service.ts`), policy evaluation
   (`authorization.ts`), credential keying/digests (`credential-key.ts`), and
   operator password hashing (`operator-password.ts`, scrypt). Only
   `credential-key.ts` reads the environment, and `CREDENTIAL_HASH_SECRET` is
   deliberately outside `Config` (ADR-039).
-- `src/api/` is the HTTP layer (routes, guards, envelopes); `src/registry/backend-service.ts`
+- `apps/gateway/src/api/` is the HTTP layer (routes, guards, envelopes); `apps/gateway/src/registry/backend-service.ts`
   holds backend business rules, transactions, audit, and sanitization.
-  `src/registry/{agent,credential,policy}-service.ts` hold the Phase 6 rules, and
-  `src/registry/operator-service.ts` holds Phase 10.0 operator login, lockout,
+  `apps/gateway/src/registry/{agent,credential,policy}-service.ts` hold the Phase 6 rules, and
+  `apps/gateway/src/registry/operator-service.ts` holds Phase 10.0 operator login, lockout,
   session lifecycle, rotation, and CSRF derivation.
-- **Two authentication boundaries, never interchangeable:** `src/api/middleware/mcp-auth.ts`
-  guards `/mcp` with a per-agent bearer credential; `src/api/middleware/operator-auth.ts`
+- **Two authentication boundaries, never interchangeable:** `apps/gateway/src/api/middleware/mcp-auth.ts`
+  guards `/mcp` with a per-agent bearer credential; `apps/gateway/src/api/middleware/operator-auth.ts`
   guards every `/api/v1` route with an operator cookie (default-deny, closed
   exemption list `POST /api/v1/auth/{login,logout}`, plus `X-CSRF-Token` on
   non-safe methods). `/health` and `/ready` stay unauthenticated.
-- `src/domain/` holds entities, Zod schemas, and repository interfaces
-  (`operator.ts` for Phase 10.0 operator identity/session); `src/shared/errors.ts`
-  the error taxonomy; `src/config/config.ts` the pure config parser;
-  `src/infrastructure/database/` the SQLite foundation and repositories.
+- `apps/gateway/src/domain/` holds entities, Zod schemas, and repository interfaces
+  (`operator.ts` for Phase 10.0 operator identity/session); `apps/gateway/src/shared/errors.ts`
+  the error taxonomy; `apps/gateway/src/config/config.ts` the pure config parser;
+  `apps/gateway/src/infrastructure/database/` the SQLite foundation and repositories.
 - Persistence: one connection per process, WAL + `synchronous=FULL`, transactional
   checksummed migrations, tombstones for backends/agents, derived credential/session status.
 - Gateway endpoint target: `http://127.0.0.1:8787/mcp`.
 - Health endpoint: `http://127.0.0.1:8787/health`.
 - Dashboard: `apps/dashboard`, a pnpm workspace package (Next 16, React 19, Astryx
   0.7.16), served at `localhost:3000` and reading the gateway through
-  `GATEWAY_ORIGIN` server-side (default `http://127.0.0.1:8787`). The gateway stays
-  the **root** package — there is no `apps/gateway/package.json`.
+  `GATEWAY_ORIGIN` server-side (default `http://127.0.0.1:8787`). The gateway is
+  the sibling workspace package `apps/gateway`
+  (`@universal-mcp-gateway/gateway`); the repository root is a thin
+  orchestration manifest whose scripts delegate with `pnpm --filter`.
 - Production backend registry must remain empty initially, and the **provider
   registry is code** (ADR-050): `githubRegistration` (Phase 13),
   `notionRegistration` (Phase 16), and `slackRegistration` (Phase 17) are its
@@ -138,7 +140,7 @@ hint on the connection detail page.
 **Two authentication boundaries exist and must stay separate.** `/mcp` requires a
 per-agent bearer credential (Phase 6); every `/api/v1` route requires an operator
 session (Phase 10.0). Neither is accepted by the other, they share no table, and
-`tests/operator-auth.test.ts` asserts both negations. Do not "unify" them, and do
+`apps/gateway/tests/operator-auth.test.ts` asserts both negations. Do not "unify" them, and do
 not treat an operator session as a way to call tools. Phase 12 adds a third
 domain on the same principle: a **connection** is neither an agent nor an
 operator, and a `backend`-scoped policy rule naming a connection id is rejected
@@ -150,29 +152,30 @@ per-IP login rate limit. Anything that widens reachability is a security-posture
 change and needs the user's approval. The dashboard inherits the same rule: do
 not expose it beyond loopback.
 
-The gateway remains the root package. `apps/dashboard` is the only workspace
-package; use `pnpm --filter @universal-mcp-gateway/dashboard …` rather than
-inventing a package name.
+The repository is a pnpm workspace with two apps: `apps/gateway`
+(`@universal-mcp-gateway/gateway`, this backend) and `apps/dashboard`
+(`@universal-mcp-gateway/dashboard`). Root scripts delegate with
+`pnpm --filter <name> …` rather than inventing package-local commands.
 
 Evidence to build on:
-- `tests/mcp-auth.test.ts` — the authentication/authorization boundary over a real socket:
+- `apps/gateway/tests/mcp-auth.test.ts` — the authentication/authorization boundary over a real socket:
   uniform 401s, session-id replay, header spoofing, per-agent `tools/list`, and a denied call
   being byte-identical to an unknown tool.
-- `tests/credentials.test.ts`, `tests/authentication.test.ts`, `tests/authorization.test.ts` —
+- `apps/gateway/tests/credentials.test.ts`, `apps/gateway/tests/authentication.test.ts`, `apps/gateway/tests/authorization.test.ts` —
   digest/key handling, failure reasons, and policy precedence.
-- `tests/gateway.test.ts` — MCP protocol tests over the real loopback server using the official MCP Client SDK.
-- `tests/compatibility/` — the Phase 14 harness: six scenario files (A–F) over
+- `apps/gateway/tests/gateway.test.ts` — MCP protocol tests over the real loopback server using the official MCP Client SDK.
+- `apps/gateway/tests/compatibility/` — the Phase 14 harness: six scenario files (A–F) over
   a shared boot (`harness.ts`), each driven as a client drives the gateway;
   `docs/AGENT_COMPATIBILITY.md` records what it proves and what only a real
   client could.
 - Both protocol eras work: 2025 `initialize` and 2026-07-28 `server/discover`.
 - Serving is stateless per exchange; see ADR-020 in `DECISIONS.md` before changing session behavior.
 - Do not re-add the Hono JSON body middleware (ADR-021): it degrades JSON-RPC parse errors to plain text.
-  The management API uses its own guard (`src/api/middleware/guards.ts`) for the same reason.
-- Phase 2/3 tests: `tests/domain-*.test.ts`, `tests/config.test.ts`, `tests/errors.test.ts`,
-  `tests/database.test.ts`, `tests/repositories.test.ts`, `tests/backend-service.test.ts`,
-  `tests/api.test.ts` — all on isolated temp databases.
-- `tests/api.test.ts` includes one real-socket test. `app.request()` cannot reproduce adaptor
+  The management API uses its own guard (`apps/gateway/src/api/middleware/guards.ts`) for the same reason.
+- Phase 2/3 tests: `apps/gateway/tests/domain-*.test.ts`, `apps/gateway/tests/config.test.ts`, `apps/gateway/tests/errors.test.ts`,
+  `apps/gateway/tests/database.test.ts`, `apps/gateway/tests/repositories.test.ts`, `apps/gateway/tests/backend-service.test.ts`,
+  `apps/gateway/tests/api.test.ts` — all on isolated temp databases.
+- `apps/gateway/tests/api.test.ts` includes one real-socket test. `app.request()` cannot reproduce adaptor
   header behaviour (it always presents a body stream and may add `Content-Length: 0`), and an
   in-process-only suite once hid a bug that rejected bodyless `POST .../enable` and `DELETE`.
   Keep at least one real-listener test for anything that inspects request framing.
@@ -184,20 +187,21 @@ Contracts to use rather than invent:
 - Public responses are built by `toPublicBackend()`, not by serializing a row. Add fields there deliberately.
 - Update schemas intentionally have **no defaults** — a default there overwrites stored values the caller never mentioned. `undefined` means "leave it", `null` means "clear it".
 - Throw `AppError` with a stable `ErrorCode`; never return raw SQLite or OS text to a client.
-- Reach the database only through `src/domain/repositories.ts`; SQL belongs in `src/infrastructure/database/`.
+- Reach the database only through `apps/gateway/src/domain/repositories.ts`; SQL belongs in `apps/gateway/src/infrastructure/database/`.
 - Register a new schema change as a new `NNNN_*.sql` migration. Never edit an applied migration (the checksum gate refuses startup).
-- Operator authentication rules live in `src/registry/operator-service.ts`; the
-  HTTP boundary lives in `src/api/middleware/operator-auth.ts`. A route never
+- Operator authentication rules live in `apps/gateway/src/registry/operator-service.ts`; the
+  HTTP boundary lives in `apps/gateway/src/api/middleware/operator-auth.ts`. A route never
   verifies a password or mints a session itself. New `/api/v1` routes are
   protected by default — the exemption list is closed, so do not add to it
   casually.
 - Operator sessions store only an HMAC digest (`token_hash`); never store, log, or
   return the raw cookie value. The CSRF token is derived, not stored.
-- `tests/operator-auth.test.ts` and `tests/operator-identity.test.ts` are the
+- `apps/gateway/tests/operator-auth.test.ts` and `apps/gateway/tests/operator-identity.test.ts` are the
   boundary contracts. Extend them when adding a route or a session rule.
-- The repo is now a pnpm workspace with one package: `apps/dashboard`. The gateway
-  intentionally remains the root package — do not move it into `apps/gateway` (see
-  ADR-022 on directory moves).
+- The repo is a pnpm workspace with two apps: `apps/gateway` (this backend)
+  and `apps/dashboard`. The gateway was moved into `apps/gateway` by the
+  repository restructuring, superseding ADR-022's "no split yet" stance (the
+  ADR itself records why the split was deferred and is kept as history).
 
 ## 4. Hard constraints
 
@@ -250,7 +254,7 @@ Phase 9 established these; they apply to all dashboard work:
 - Keep backend failures isolated.
 - Use migrations for persistent schema changes; applied migrations are immutable.
 - Store secret references (`secret:<path>`, `env:<VAR>`), never secret values.
-- Keep domain (`src/domain`) free of infrastructure imports.
+- Keep domain (`apps/gateway/src/domain`) free of infrastructure imports.
 - Make changes small and testable.
 - Do not claim tests passed unless you ran them.
 - Do not invent runtime metrics or sample production data.

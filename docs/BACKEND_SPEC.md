@@ -4,7 +4,7 @@
 
 Defines the management API, registry domain, MCP adapters, routing, and lifecycle. Everything described here is implemented through Phase 8; `docs/API_REFERENCE.md` is the endpoint-by-endpoint inventory and `docs/ROADMAP.md` lists what is still unbuilt.
 
-Every route in this document is also described, machine-readably, by `GET /api/v1/openapi.json`. `tests/openapi.test.ts` holds the two in sync.
+Every route in this document is also described, machine-readably, by `GET /api/v1/openapi.json`. `apps/gateway/tests/openapi.test.ts` holds the two in sync.
 
 ## 2. API conventions (implemented)
 
@@ -23,7 +23,7 @@ Every route in this document is also described, machine-readably, by `GET /api/v
 }
 ```
 
-- Codes come from the fixed `ErrorCode` set in `src/shared/errors.ts`. `UNAUTHENTICATED`, `FORBIDDEN`, `BACKEND_NOT_FOUND`, `TOOL_NOT_FOUND` from earlier drafts are **not** used; the implemented set is `VALIDATION_ERROR`, `RESOURCE_NOT_FOUND`, `RESOURCE_CONFLICT`, `AUTHENTICATION_ERROR`, `AUTHORIZATION_ERROR`, `MCP_PROTOCOL_ERROR`, `BACKEND_CONNECTION_ERROR`, `BACKEND_TIMEOUT`, `BACKEND_UNAVAILABLE`, `DATABASE_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`.
+- Codes come from the fixed `ErrorCode` set in `apps/gateway/src/shared/errors.ts`. `UNAUTHENTICATED`, `FORBIDDEN`, `BACKEND_NOT_FOUND`, `TOOL_NOT_FOUND` from earlier drafts are **not** used; the implemented set is `VALIDATION_ERROR`, `RESOURCE_NOT_FOUND`, `RESOURCE_CONFLICT`, `AUTHENTICATION_ERROR`, `AUTHORIZATION_ERROR`, `MCP_PROTOCOL_ERROR`, `BACKEND_CONNECTION_ERROR`, `BACKEND_TIMEOUT`, `BACKEND_UNAVAILABLE`, `DATABASE_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`.
 - `X-Request-Id` is echoed on every response. A well-formed inbound value is kept for log correlation; anything else is replaced. Phase 11 adds `X-Correlation-Id`: same treatment, but validated against `^[A-Za-z0-9._-]{1,64}$` and never trusted beyond that — it groups log lines and activity rows, and nothing else. Both ids are carried through AsyncLocalStorage, not a global.
 - Every input is validated with Zod: body, query, and route parameters. Unknown **body** keys are rejected (`.strict()`). Unknown **query** *names* are ignored, because browsers and proxies add them freely (`utm_*`, cache busters); an unknown query *value* — a status outside its enum, a malformed UUID or date, `limit` above the cap — is still a `400`.
 - Internal exception text is never serialized. Non-`AppError` failures become a generic `INTERNAL_ERROR`.
@@ -129,7 +129,7 @@ Response:
 
 ## 4. Backend domain model (implemented)
 
-### BackendDefinition (`src/domain/backend.ts`)
+### BackendDefinition (`apps/gateway/src/domain/backend.ts`)
 - `id` — UUIDv4.
 - `name` — 1–120 chars, unique among active backends.
 - `description` — ≤ 2000 chars, optional/nullable.
@@ -138,7 +138,7 @@ Response:
 - `version` — integer ≥ 1.
 - `createdAt`, `updatedAt` — UTC ISO-8601.
 
-### BackendRuntime (`src/domain/backend-runtime.ts`)
+### BackendRuntime (`apps/gateway/src/domain/backend-runtime.ts`)
 - `status`, `lastConnectedAt`, `lastHealthCheckAt`, `lastErrorCode`, `lastErrorAt`, `lastErrorMessage`, `reconnectAttempts`, `updatedAt`.
 
 Live clients, process handles, or transport instances are never persisted.
@@ -179,7 +179,7 @@ interface BackendAdapter {
 
 - `createAdapter()` switches on `connection.type`; adding a transport is one new
   file plus one case, with no change to the manager.
-- `McpBackendClient` (`src/adapters/mcp-client.ts`) wraps the SDK `Client`. It
+- `McpBackendClient` (`apps/gateway/src/adapters/mcp-client.ts`) wraps the SDK `Client`. It
   exists to normalize SDK/transport/OS failures onto the gateway's `AppError`
   taxonomy, apply the per-call timeout, and own `close()`. It walks the error's
   cause chain so a wrapped `ECONNREFUSED` is still recognized as transient.
@@ -189,7 +189,7 @@ interface BackendAdapter {
 
 ## 6. Transport configuration (implemented)
 
-### stdio (`src/adapters/stdio-adapter.ts`)
+### stdio (`apps/gateway/src/adapters/stdio-adapter.ts`)
 - `command` is a single executable token and `args` is an array; the SDK spawns
   with `shell: false`, so there is no shell and nothing to interpolate.
 - The child receives `getDefaultEnvironment()` (`HOME`, `PATH`, `USER`, `SHELL`,
@@ -202,9 +202,9 @@ interface BackendAdapter {
   reimplemented.
 - A failed handshake closes the child before throwing, so no process leaks.
 
-### Streamable HTTP (`src/adapters/http-adapter.ts`)
+### Streamable HTTP (`apps/gateway/src/adapters/http-adapter.ts`)
 - Destination is resolved and classified before any socket opens
-  (`src/security/network-policy.ts`). `fetch` is replaced by a guarded one, so
+  (`apps/gateway/src/security/network-policy.ts`). `fetch` is replaced by a guarded one, so
   every request is re-checked, which is also how redirects are covered.
 - `redirectPolicy: 'same-origin'`: a cross-origin redirect fails instead of being
   followed to a new destination.
@@ -217,7 +217,7 @@ interface BackendAdapter {
 
 ## 6.1 Runtime lifecycle (implemented)
 
-`src/adapters/lifecycle.ts` is the only owner of live connections. Live objects
+`apps/gateway/src/adapters/lifecycle.ts` is the only owner of live connections. Live objects
 never enter the database; the database holds a truthful status row.
 
 | Method | Behaviour |
@@ -230,7 +230,7 @@ never enter the database; the database holds a truthful status row.
 | `getRuntimeState` / `getAllRuntimeStates` | Read paths; fall back to the stored row, then to the initial state. |
 | `shutdown()` | Stops all connections, cancels every timer, refuses new connects. Runs before the store closes. |
 
-**State machine** (`src/domain/backend-runtime.ts`): `BACKEND_TRANSITIONS` declares
+**State machine** (`apps/gateway/src/domain/backend-runtime.ts`): `BACKEND_TRANSITIONS` declares
 every legal edge and `canTransition()` enforces it. `persist()` throws
 `INTERNAL_ERROR` on an illegal edge — a silently stored impossible status would
 be worse than a crash. `disconnecting` exists because teardown is not
@@ -249,7 +249,7 @@ the real problem.
 
 ## 7. Tool routing (implemented in Phase 6)
 
-Implemented in `src/routing/`, served on `/mcp`. Every step exists except 6 and 8,
+Implemented in `apps/gateway/src/routing/`, served on `/mcp`. Every step exists except 6 and 8,
 which are Phase 7 concurrency control.
 
 1. **Authenticate the caller** (Phase 6, before anything else runs). `mcpAuthenticate`
@@ -513,7 +513,7 @@ the leak path the day a caller put something in it.
    storage-backed fields become `null` and `status` becomes `degraded`. The
    in-memory catalog is still reported, because it survives the outage.
 3. **One snapshot.** `/overview`, `/monitoring*`, and `/diagnostics` all read
-   through `opsSnapshot()` (`src/api/ops.ts`), so two endpoints cannot report
+   through `opsSnapshot()` (`apps/gateway/src/api/ops.ts`), so two endpoints cannot report
    different backend counts for the same instant.
 
 `/ready` is outside `/api/v1` (infrastructure probes should not follow an API

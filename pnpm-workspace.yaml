@@ -7,3 +7,7 @@ allowBuilds:
 
 packages:
   - 'apps/*'
+  # Reserved: no packages/ member exists yet — nothing is shared between the
+  # gateway and the dashboard (their only coupling is the runtime proxy), so no
+  # package is created for appearance.
+  - 'packages/*'

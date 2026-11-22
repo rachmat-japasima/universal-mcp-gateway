@@ -1,7 +1,7 @@
 # Deploying the Universal MCP Gateway
 
 Phase 18, Stage C artifacts. **Everything here is written against the
-repository's real surface (`dist/index.js` was verified locally to boot,
+repository's real surface (`apps/gateway/dist/index.js` was verified locally to boot,
 serve, and drain on SIGTERM), but the container and unit files themselves are
 NOT VERIFIED — none of them was built, run, or installed in the environment
 that produced this repository.** Expect small adjustments on first use.
@@ -22,14 +22,14 @@ network service. Consequences:
 
 | File | Purpose |
 | --- | --- |
-| `Dockerfile` | Container image; `pnpm build` in-image, then `node dist/index.js`. |
-| `docker-compose.yml` | Host-networked service, named volume at `/app/data`, node-based healthcheck. |
-| `umg-gateway.service` | systemd unit example; copy and edit, nothing is installed for you. |
+| `docker/Dockerfile` | Container image; gateway build in-image, then `node apps/gateway/dist/index.js`. |
+| `docker/docker-compose.yml` | Host-networked service, named volume at `/app/data`, node-based healthcheck. |
+| `systemd/umg-gateway.service` | systemd unit example; copy and edit, nothing is installed for you. |
 
 ## Docker
 
 ```sh
-cd deploy
+cd deployment/docker
 export CREDENTIAL_HASH_SECRET=$(openssl rand -base64 32)   # required in production
 docker compose up -d --build
 curl http://127.0.0.1:8787/health
@@ -39,7 +39,7 @@ Docker Engine on Linux, including inside WSL2, supports host networking.
 Docker Desktop on macOS does not — run the gateway directly there instead.
 
 Backups from inside the container use the built CLI:
-`docker compose exec umg-gateway node dist/cli/backup-main.js` (NOT VERIFIED —
+`docker compose exec umg-gateway node apps/gateway/dist/cli/backup-main.js` (NOT VERIFIED —
 same code path as the verified `pnpm backup`, but never executed in a
 container). Restores must run with the gateway stopped, which in compose means
 `docker compose stop` first; see `docs/DATABASE.md` §9.
@@ -47,7 +47,7 @@ container). Restores must run with the gateway stopped, which in compose means
 ## systemd
 
 ```sh
-sudo cp deploy/umg-gateway.service /etc/systemd/system/
+sudo cp deployment/systemd/umg-gateway.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now umg-gateway
 ```
 

@@ -18,7 +18,7 @@ evidence produced by that claim's own run:
 - **PROTOCOL VERIFIED** — the protocol behavior a client of this kind needs
   was exercised by the official TypeScript SDK (`@modelcontextprotocol/client`
   2.4.0 — the same client library these agents embed) driving the real HTTP
-  surface in `tests/compatibility/`. The client itself was not driven
+  surface in `apps/gateway/tests/compatibility/`. The client itself was not driven
   end-to-end.
 - **PARTIAL** — some links of the chain are verified and others are not; the
   entry says exactly which.
@@ -140,14 +140,14 @@ the gateway speaks the standard Streamable HTTP transport with bearer
 authentication and no client-specific behavior, and every DeepSeek-version
 unknown is a client-side question, not a gateway-side one.
 
-## 4. The SDK harness (`tests/compatibility/`)
+## 4. The SDK harness (`apps/gateway/tests/compatibility/`)
 
 Six files, 34 tests, run by the root vitest suite. Everything is driven the
 way a real client drives it: the official SDK `Client` over
 `StreamableHTTPClientTransport` against a real loopback socket, with raw
 `fetch` only for the wire-level facts the SDK cannot express (a missing
 header, a foreign session id, a `DELETE`, a stale cursor). Backends are real
-stdio subprocesses (`tests/fixtures/catalog-fixture.ts`), so discovery,
+stdio subprocesses (`apps/gateway/tests/fixtures/catalog-fixture.ts`), so discovery,
 schema forwarding, and execution cross the real transport.
 
 - **A — basic protocol** (`basic-protocol.test.ts`): initialize, the

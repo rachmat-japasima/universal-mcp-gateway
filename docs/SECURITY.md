@@ -88,7 +88,7 @@ designed against what they must not become:
 
 ## 3.2 Outbound destination policy (SSRF)
 
-Implemented in `src/security/network-policy.ts`. A gateway that dials operator-supplied URLs is an SSRF primitive unless destinations are constrained; `http://169.254.169.254/` or `http://10.0.0.5:6379/` in a backend definition would otherwise turn the local API into a network scanner.
+Implemented in `apps/gateway/src/security/network-policy.ts`. A gateway that dials operator-supplied URLs is an SSRF primitive unless destinations are constrained; `http://169.254.169.254/` or `http://10.0.0.5:6379/` in a backend definition would otherwise turn the local API into a network scanner.
 
 Rules, applied to every Streamable HTTP request:
 
@@ -117,7 +117,7 @@ Separate dashboard and MCP authentication:
 These are **separate security boundaries**. An operator session is never accepted
 as an agent credential, and an agent credential never grants dashboard access.
 Do not use a client-supplied `agentName` or arbitrary metadata as proof of
-identity. `tests/operator-auth.test.ts` asserts both directions: an operator
+identity. `apps/gateway/tests/operator-auth.test.ts` asserts both directions: an operator
 cookie at `/mcp` gets `401` with a `Bearer` challenge, and an agent bearer at
 `/api/v1` gets `401`.
 
@@ -137,7 +137,7 @@ Every HTTP request to `/mcp` is authenticated independently. There is no session
 
 The token is never written to the database, an API response after issuance, a log line, or an audit row. Verification is: shape check → HMAC over the presented token → **single indexed lookup by digest** → timing-safe re-compare → key id known to this process → status (`revoked`/`expired`) → owning agent exists and is enabled → touch usage.
 
-**Hashing secret.** `CREDENTIAL_HASH_SECRET` (minimum 32 characters) is read in `src/index.ts` and `src/auth/credential-key.ts`, never through `Config`. It therefore cannot appear in `redactConfig`, any API response, or a config dump. `CREDENTIAL_HASH_KEY_ID` defaults to `v1` and exists for rotation.
+**Hashing secret.** `CREDENTIAL_HASH_SECRET` (minimum 32 characters) is read in `apps/gateway/src/index.ts` and `apps/gateway/src/auth/credential-key.ts`, never through `Config`. It therefore cannot appear in `redactConfig`, any API response, or a config dump. `CREDENTIAL_HASH_KEY_ID` defaults to `v1` and exists for rotation.
 
 - Production: a missing or too-short secret **fails startup**. Starting with authentication permanently unavailable would answer 401 to every MCP client while `/health` stayed green — a silently dead gateway.
 - Development: startup succeeds and every MCP request fails closed with 401, so health checks and the management API remain usable while the secret is provisioned. An ephemeral secret is deliberately **not** generated: it would verify tokens only until the next restart.
@@ -163,13 +163,13 @@ session stops probing, and they carry no sensitive data.
 **Enforcement is in the gateway, not in Next.js.** The REST surface is directly
 reachable on `127.0.0.1:8787` by any local process, so a guard that lived in the
 browser app would be cosmetic: `curl` does not load a page. The middleware is
-`src/api/middleware/operator-auth.ts`.
+`apps/gateway/src/api/middleware/operator-auth.ts`.
 
 **Default deny with a closed exemption list.** A request is allowed only if it
 carries a live operator cookie, with exactly two exemptions — `POST
 /api/v1/auth/login` and `POST /api/v1/auth/logout`, the endpoints whose job is to
 create and end a session. The direction matters: a route added later is protected
-because it did not opt out. `tests/operator-auth.test.ts` asserts a `401` on one
+because it did not opt out. `apps/gateway/tests/operator-auth.test.ts` asserts a `401` on one
 route per router (15 paths) so a router mounted without the middleware fails a test
 rather than shipping an open surface.
 
@@ -194,13 +194,13 @@ Run `pnpm operator:create` on the gateway host."* and nothing more.
 **Identity separation.** Operators live in `admin_users` and `operator_sessions`,
 not in `agents`/`sessions`. Sharing a table would make "this credential can call
 tools" and "this session can mint credentials" the same row. An operator row is
-never returned with its hash: every public shape strips it (`tests/operator-identity.test.ts`).
+never returned with its hash: every public shape strips it (`apps/gateway/tests/operator-identity.test.ts`).
 
 **Audit.** Emitted on the wire today: `operator.login.succeeded`,
 `operator.login.failed`, `operator.logout`, `operator.session.expired` (written
 when a lapsed session is refused), and `operator.created` (written by
 `pnpm operator:create`). Three further actions are declared in
-`src/domain/audit-event.ts` with **no caller**: `operator.session.revoked`
+`apps/gateway/src/domain/audit-event.ts` with **no caller**: `operator.session.revoked`
 (`OperatorService.revokeSession` is only reachable from code, not from a route),
 `operator.disabled`, and `operator.password_changed` — there is no disable route
 and no password-change route (§8.2). Listing an action in the vocabulary is not
@@ -261,7 +261,7 @@ Every step re-reads the database. A session id alone authenticates nothing: a re
 
 **Which era has a session at all.** Against the installed SDK (server/client `2.4.0`), the 2026 era is per-request by design and issues no `mcp-session-id`; identity is re-established on every exchange, so there is nothing to bind and nothing to hijack. The 2025 era does issue one, and is served through `WebStandardStreamableHTTPServerTransport` with `sessionIdGenerator`. Only an `initialize` or a request that already presents a session id takes that path; everything else keeps the stateless leg, which is why a one-shot `tools/list` still works exactly as it did in Phase 6.
 
-**Refusals do not disclose ownership.** A session belonging to another agent, a session id that was never issued, a terminated session, an expired session, and a session whose transport is gone all answer the same `404` with `{"code":-32001,"message":"Session not found"}`. `tests/mcp-sessions.test.ts` asserts the cross-agent body is byte-identical to the never-issued body. The real reason (`session_owner_mismatch`, `session_unknown`, `session_expired`, `credential_revoked`, `agent_disabled`, …) exists only in the `session.access.denied` audit row and the log.
+**Refusals do not disclose ownership.** A session belonging to another agent, a session id that was never issued, a terminated session, an expired session, and a session whose transport is gone all answer the same `404` with `{"code":-32001,"message":"Session not found"}`. `apps/gateway/tests/mcp-sessions.test.ts` asserts the cross-agent body is byte-identical to the never-issued body. The real reason (`session_owner_mismatch`, `session_unknown`, `session_expired`, `credential_revoked`, `agent_disabled`, …) exists only in the `session.access.denied` audit row and the log.
 
 **Identity is immutable.** The owning agent, credential, protocol id, internal id, and creation time cannot change after insert: migration `0005` installs a `BEFORE UPDATE` trigger that aborts the statement, so even a bug — or another gateway process — cannot reassign a session. A finished session cannot be returned to `active` either (`sessions_no_reactivation`), so an operator's termination is one-way.
 
@@ -307,7 +307,7 @@ Authentication success and failure rows are collapsed per agent (success) or per
 ### 6.3 Implemented in Phase 6
 
 - **The MCP credential is an HMAC-SHA-256 digest of the whole token, keyed by `CREDENTIAL_HASH_SECRET`.** A plain SHA-256 would let anyone who obtained a copy of the database verify guesses offline; keying the digest means a database leak alone is not enough to mount a dictionary attack on tokens that follow the `umg_live_` format.
-- **The secret never enters `Config`.** It is read by `src/auth/credential-key.ts` and `src/index.ts` only. `redactConfig`, the config validator, the management API, `/health`, and `/api/v1/system` have no field that could carry it, so it cannot be leaked by a serialization change.
+- **The secret never enters `Config`.** It is read by `apps/gateway/src/auth/credential-key.ts` and `apps/gateway/src/index.ts` only. `redactConfig`, the config validator, the management API, `/health`, and `/api/v1/system` have no field that could carry it, so it cannot be leaked by a serialization change.
 - **Comparison is timing-safe.** The indexed lookup is by digest, so a hit already implies equality; `crypto.timingSafeEqual` re-checks it anyway so a future query change cannot silently turn a prefix match into an authentication.
 - **Key ids make rotation possible without a flag day.** `hash_key_id` records which key produced a digest. A credential whose key id this process does not hold is refused (`unknown_key`) rather than verified on the digest alone.
 - **Tokens are returned exactly once**, at issue or rotate. There is no "show token" endpoint and no field in any projection that carries one. `toPublicCredential()` omits `credentialHash` and `token` by construction, not by a delete call.
@@ -321,7 +321,7 @@ Authentication success and failure rows are collapsed per agent (success) or per
 This is the "encrypted secret storage" §6 requires documentation for, so this subsection states key derivation, key location, rotation, backup, and recovery explicitly (ADR-051).
 
 - **What is stored:** `integration_credentials.envelope` — an AES-256-GCM envelope `{v, keyId, wrappedDek, wrapNonce, wrapTag, nonce, ct, tag}`. Per seal: a fresh random 32-byte DEK seals the payload; the master key wraps the DEK; both GCM operations bind the key id as AAD and use fresh 12-byte nonces. No column anywhere in the schema can hold plaintext, and the security suite scans every database file (WAL siblings included) after a round trip to prove the value never lands on disk.
-- **Key derivation:** none — the key *is* the secret. `INTEGRATION_MASTER_KEY` is 32 bytes, base64, read by `src/integrations/vault.ts` only; it never enters `Config`, is never logged, and is not echoed by `/health`, `/diagnostics`, or `/api/v1/system`. The envelope's `keyId` is digest-derived (never the key bytes), which is what makes a mismatch diagnosable without disclosing material.
+- **Key derivation:** none — the key *is* the secret. `INTEGRATION_MASTER_KEY` is 32 bytes, base64, read by `apps/gateway/src/integrations/vault.ts` only; it never enters `Config`, is never logged, and is not echoed by `/health`, `/diagnostics`, or `/api/v1/system`. The envelope's `keyId` is digest-derived (never the key bytes), which is what makes a mismatch diagnosable without disclosing material.
 - **Key location:** the process environment only. No config file, no database row, no default. A key that can decrypt the database must not live in the database; a default key would be a lock painted on.
 - **Rotation:** set `INTEGRATION_MASTER_KEY` to the new value and `INTEGRATION_MASTER_KEY_PREVIOUS` to the old. Sealing always uses the active key; unsealing tries active then previous and reports both key ids on mismatch. Re-encrypting old records is an explicit operator re-store per credential — no background re-encryption exists, because a queue for it would be unwritten code whose only effect is moving ciphertext around without an operator decision.
 - **Backup and recovery:** back up the key the way any environment secret is backed up (the deployment's env file); a database backup without the key is inert ciphertext by design. Losing the key loses the credentials — they must be re-stored at the provider. That is the honest failure mode of envelope encryption and it is preferred to a recoverable plaintext.
@@ -523,7 +523,7 @@ Phase 7 session actions (`docs/MONITORING.md` §6.4 has the full table): `sessio
 - `access.denied` names the resolved backend and tool id when the decision could be made about them, and the bare public name otherwise. A name that resolves to nothing is audited by name only, so probing for tools leaves a trail without confirming that anything exists.
 - Repeated failures are collapsed per reason within a 60-second window, with the suppressed count folded into the next row, so a loop cannot grow the table linearly.
 - Audit is best-effort by design: `safeAudit` swallows a write failure after logging it, because a request that was already refused for security reasons must not turn into a 500.
-- Tokens, headers, agent-supplied names, and authorization reasons never appear in metadata. `tests/mcp-auth.test.ts` and `tests/authentication.test.ts` assert both the presence of the ids and the absence of the token.
+- Tokens, headers, agent-supplied names, and authorization reasons never appear in metadata. `apps/gateway/tests/mcp-auth.test.ts` and `apps/gateway/tests/authentication.test.ts` assert both the presence of the ids and the absence of the token.
 
 ### 9.1.4 Correlation and telemetry stores (Phase 11)
 
@@ -535,7 +535,7 @@ what they do.
   `^[A-Za-z0-9._-]{1,64}$`; anything else is replaced. The id is an operator
   convenience for joining log lines, not an input to trust — an unsanitized
   header would be a log-injection primitive (newlines, ANSI escapes, forged
-  JSON fields). `tests/correlation.test.ts` pins the validation, the isolation
+  JSON fields). `apps/gateway/tests/correlation.test.ts` pins the validation, the isolation
   between concurrent requests, and the absence of leaked context.
 - The id travels via `AsyncLocalStorage`, never a global: concurrent requests
   cannot read each other's context, and no mutable module state exists to
@@ -596,7 +596,7 @@ what they do.
 - Gateway restart while a backend claims `connected` (recovered to `disconnected`; nothing is re-dialled).
 - Disable, delete, or config change while a child process is live (process is torn down, pending retries cancelled).
 
-Phase 6 additions (all covered by `tests/credentials.test.ts`, `tests/authentication.test.ts`, `tests/authorization.test.ts`, `tests/mcp-auth.test.ts`):
+Phase 6 additions (all covered by `apps/gateway/tests/credentials.test.ts`, `apps/gateway/tests/authentication.test.ts`, `apps/gateway/tests/authorization.test.ts`, `apps/gateway/tests/mcp-auth.test.ts`):
 
 - `/mcp` called with no credential, a malformed header, a malformed token, an unknown token, a revoked credential, an expired credential, or a disabled agent's credential (all one identical 401).
 - The same bearer token replayed against a *different* request after revocation (401: verification is per request, not per session).
@@ -614,7 +614,7 @@ Phase 6 additions (all covered by `tests/credentials.test.ts`, `tests/authentica
 - Rotating a credential (`previousCredentialId` audited, old token dead immediately) and deleting an agent (all credentials revoked, all assignments dropped).
 - Inspecting `/health`, `/api/v1/system`, and the agent/credential/policy endpoints for the hashing secret or a stored token (never present).
 
-Phase 7 additions (covered by `tests/mcp-sessions.test.ts`, `tests/sessions.test.ts`, `tests/sessions-api.test.ts`):
+Phase 7 additions (covered by `apps/gateway/tests/mcp-sessions.test.ts`, `apps/gateway/tests/sessions.test.ts`, `apps/gateway/tests/sessions-api.test.ts`):
 
 - Agent A initializing a session, then agent B presenting A's `mcp-session-id`: `404`, byte-identical to a never-issued id, A's session still `active` and still owned by A.
 - The same test in reverse (B→A), so the result cannot depend on creation order.
@@ -625,11 +625,11 @@ Phase 7 additions (covered by `tests/mcp-sessions.test.ts`, `tests/sessions.test
 - Credential expiry with the session row still `active`: refused at authentication, before any session lookup succeeds.
 - Idle timeout and max lifetime reached with no sweep: refused at request time; the stored row is unchanged, proving enforcement does not depend on the sweep.
 - Terminate through the API, then a session-bearing `tools/call`: `404`. Repeating terminate returns the same timestamp and does not resurrect the session.
-- Raw `UPDATE sessions SET agent_id = ...` and `UPDATE ... SET status = 'active'` on a finished row: both abort (trigger), asserted at the repository level in `tests/repositories.test.ts` and against an upgraded database by `verify-0005.ts`.
+- Raw `UPDATE sessions SET agent_id = ...` and `UPDATE ... SET status = 'active'` on a finished row: both abort (trigger), asserted at the repository level in `apps/gateway/tests/repositories.test.ts` and against an upgraded database by `verify-0005.ts`.
 - Graceful shutdown: every active session becomes `terminated` / `gateway_shutdown`, and transports are released before the store closes.
 - `/api/v1/sessions`, its detail, terminate, and cleanup endpoints read for credential hashes, tokens, and transport state (never present).
 
-Phase 8 additions (covered by `tests/ops-api.test.ts`, `tests/openapi.test.ts`, `tests/policies-api.test.ts`):
+Phase 8 additions (covered by `apps/gateway/tests/ops-api.test.ts`, `apps/gateway/tests/openapi.test.ts`, `apps/gateway/tests/policies-api.test.ts`):
 
 - `/settings` and `/diagnostics` searched for the hashing secret, a token, `process.env`, a database path, and the words `secret`/`token`/`password`/`authorization` (never present).
 - A credential issued to a real agent, then `/overview` searched for its raw token (never present).
