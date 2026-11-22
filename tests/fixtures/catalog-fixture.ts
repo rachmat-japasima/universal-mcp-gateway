@@ -149,6 +149,106 @@ const TOOLS: Record<string, Array<{ tool: Tool; handler: (args: Record<string, u
       handler: () => echo('listfail'),
     },
   ],
+  // Phase 14 interop shapes: schemas and results that stress what a real
+  // client must round-trip. Test-only, like every other mode here.
+  shapes: [
+    {
+      tool: {
+        name: 'report_card',
+        description: 'Nested, array, enum, and nullable inputs; structured output',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            student: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                grade: { type: 'integer', minimum: 0, maximum: 100 },
+                tags: { type: 'array', items: { type: 'string' } },
+              },
+              required: ['name', 'grade'],
+              additionalProperties: false,
+            },
+            mood: { enum: ['calm', 'excited'] },
+            note: { type: ['string', 'null'] },
+          },
+          required: ['student', 'mood'],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: 'object',
+          properties: {
+            summary: { type: 'string' },
+            grade: { type: 'integer' },
+          },
+          required: ['summary', 'grade'],
+          additionalProperties: false,
+        },
+      },
+      handler: (args) => {
+        const student = args['student'] as { name?: unknown } | undefined;
+        return {
+          content: [{ type: 'text' as const, text: `card for ${String(student?.name ?? '?')}` }],
+          structuredContent: {
+            summary: `mood=${String(args['mood'])} note=${args['note'] === null ? 'null' : 'present'}`,
+            grade: 88,
+          },
+        };
+      },
+    },
+    {
+      tool: {
+        name: 'unicode_echo',
+        description: 'Round-trips text most terminals and JSON parsers mangle',
+        inputSchema: {
+          type: 'object',
+          properties: { text: { type: 'string' } },
+          required: ['text'],
+          additionalProperties: false,
+        },
+      },
+      handler: (args) => ({
+        content: [{ type: 'text' as const, text: `回显 “${String(args['text'])}” ✓ emoji: 🛠️` }],
+      }),
+    },
+    {
+      tool: {
+        name: 'multi_block',
+        description: 'Answers with several content blocks',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: () => ({
+        content: [
+          { type: 'text' as const, text: 'first block' },
+          { type: 'text' as const, text: 'second block' },
+        ],
+      }),
+    },
+    {
+      tool: {
+        name: 'big_payload',
+        description: 'A large but permitted response',
+        inputSchema: {
+          type: 'object',
+          properties: { kilobytes: { type: 'integer', minimum: 1, maximum: 512 } },
+          required: ['kilobytes'],
+          additionalProperties: false,
+        },
+      },
+      handler: (args) => {
+        const kilobytes = Number(args['kilobytes'] ?? 1);
+        return { content: [{ type: 'text' as const, text: 'x'.repeat(kilobytes * 1024) }] };
+      },
+    },
+    {
+      tool: {
+        name: 'explode',
+        description: 'A tool-level failure: an isError result, never a protocol error',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      handler: () => ({ content: [{ type: 'text' as const, text: 'fixture: tool failure' }], isError: true }),
+    },
+  ],
 };
 
 const entries = TOOLS[mode];

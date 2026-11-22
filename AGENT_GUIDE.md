@@ -30,10 +30,12 @@ The full product includes gateway core, backend registry, adapters, tool routing
   adjusted scope, **Phase 10.0 (dashboard operator identity and
   authentication) is implemented** (ADR-045), Phase 11 (observability) is
   implemented (ADR-046/047), Phase 12 (integration-ready architecture) is
-  implemented (ADR-048–052), and **Phase 13 (first real provider — GitHub,
-  ADR-053) is implemented**. `pnpm typecheck`, `pnpm build`, and
-  `pnpm test` pass (697 tests), and the dashboard passes its own typecheck,
-  build, and 470 tests.
+  implemented (ADR-048–052), **Phase 13 (first real provider — GitHub,
+  ADR-053) is implemented**, and **Phase 14 (agent compatibility) is
+  implemented** — `docs/AGENT_COMPATIBILITY.md` is the client matrix;
+  `tests/compatibility/` is its SDK harness. `pnpm typecheck`, `pnpm build`,
+  and `pnpm test` pass (731 tests), and the dashboard passes its own
+  typecheck, build, and 470 tests.
 - `src/integrations/` holds the managed-integration domain: source refs,
   provider registration (the registry is code; its first entry is
   `githubRegistration` — read-only, fine-grained PAT), connection lifecycle
@@ -85,12 +87,21 @@ Inspect actual repository state before editing. This document may lag the code.
 
 ## 3. Immediate assignment
 
-Phases 1–13 are complete in their stated scopes (Phase 13 is the first real
-provider — GitHub, read-only, ADR-053). The remaining Phase 10 module pages are
-not started. **Phase 14 (agent compatibility) is not started and must not be
-started without explicit approval**; the roadmap renumbered during execution —
-the originally planned Phase 13/14 swap was leapfrogged when the first-real-
-provider work landed as Phase 13, and agent compatibility took Phase 14.
+Phases 1–14 are complete in their stated scopes (Phase 13 is the first real
+provider — GitHub, read-only, ADR-053; Phase 14 is agent compatibility —
+`docs/AGENT_COMPATIBILITY.md`, harness in `tests/compatibility/`). The
+remaining Phase 10 module pages are not started. **Phase 15 (hardening and
+release) is not started and must not be started without explicit approval**;
+the roadmap renumbered during execution — the originally planned Phase 13/14
+swap was leapfrogged when the first-real-provider work landed as Phase 13,
+and agent compatibility took Phase 14.
+
+Phase 14's rules, which outlive the phase: the gateway has **no
+agent-specific code** — compatibility is protocol-level and stays that way;
+`docs/AGENT_COMPATIBILITY.md` never claims more than its evidence (the
+vocabulary is VERIFIED / PROTOCOL VERIFIED / PARTIAL / NOT VERIFIED /
+UNSUPPORTED); and real-client probes always use isolated temp configs —
+never an existing Claude Code, Codex, or OpenCode configuration.
 
 Phase 9 built the dashboard foundation: shell, navigation, theme, Astryx
 integration, typed API client, same-origin read proxy, and feedback compositions.
@@ -126,6 +137,10 @@ Evidence to build on:
 - `tests/credentials.test.ts`, `tests/authentication.test.ts`, `tests/authorization.test.ts` —
   digest/key handling, failure reasons, and policy precedence.
 - `tests/gateway.test.ts` — MCP protocol tests over the real loopback server using the official MCP Client SDK.
+- `tests/compatibility/` — the Phase 14 harness: six scenario files (A–F) over
+  a shared boot (`harness.ts`), each driven as a client drives the gateway;
+  `docs/AGENT_COMPATIBILITY.md` records what it proves and what only a real
+  client could.
 - Both protocol eras work: 2025 `initialize` and 2026-07-28 `server/discover`.
 - Serving is stateless per exchange; see ADR-020 in `DECISIONS.md` before changing session behavior.
 - Do not re-add the Hono JSON body middleware (ADR-021): it degrades JSON-RPC parse errors to plain text.

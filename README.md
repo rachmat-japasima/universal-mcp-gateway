@@ -584,23 +584,29 @@ Phase 8 behaviour changes — is `docs/API_REFERENCE.md`.
 - `SECURITY.md` — security requirements.
 - `DATABASE.md` — database model and persistence.
 - `MONITORING.md` — logs, metrics, audit, operations.
+- `AGENT_COMPATIBILITY.md` — which MCP clients work, with evidence.
 - `ROADMAP.md` — implementation phases.
 - `DECISIONS.md` — accepted decisions.
 - `AGENT_GUIDE.md` — instructions for local coding agents.
 
 ## Next task
 
-Phase 13 — by approval, one of two candidates (see the Phase 12 report's
-recommendation): the first **real provider integration** (a code-registered
-connector against one approved provider, read-only tools first — the shape
-Phase 12 exists to host), or agent-compatibility verification (Claude Code,
-Codex CLI, OpenCode, DeepSeek against the live `/mcp` surface). The previously
-planned roadmap renumbers accordingly (old 12 → 13, old 13 → 14).
+Phase 14 (agent compatibility) is **implemented** — see
+`docs/AGENT_COMPATIBILITY.md` for the client matrix and its evidence: Claude
+Code and OpenCode VERIFIED end-to-end, Codex CLI PARTIAL (no working local
+login to drive a turn), DeepSeek Desktop NOT VERIFIED (not installed), and
+the SDK harness (`tests/compatibility/`, scenarios A–F) carrying the
+protocol-level proof for every standards-compliant client.
 
-**Start with a decision, not code:** both candidates need user approval before
+Next: **Phase 15 — hardening and release** (see `docs/ROADMAP.md`):
+security review, soak and failure/recovery tests, backup/restore
+verification, docs and versioning, local process supervision. Nothing
+non-loopback without the explicit security gate.
+
+**Start with a decision, not code:** each step needs user approval before
 anything is registered or connected. Not to be added without approval: real
 backends, agent client config changes, OAuth or any third-party auth flow,
-non-loopback exposure. Still deferred from Phase 7–12: real-browser
+non-loopback exposure. Still deferred from Phase 7–14: real-browser
 click-path verification, per-backend `limited` queueing
 (`docs/ARCHITECTURE.md` §11.2), backup/restore APIs, audit retention, session
 cleanup sweep UI, operator password-change API.

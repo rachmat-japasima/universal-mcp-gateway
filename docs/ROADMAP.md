@@ -730,14 +730,44 @@ GitHub, code-registered, fine-grained PAT, **read-only**.
   operator runs `test` or `enable` with their own token.
 
 ## Phase 14 — Agent compatibility
-- Verify Claude Code, Codex CLI, OpenCode, and DeepSeek client compatibility.
-- Connect one client at a time.
-- Direct HTTP where supported.
-- Local stdio bridge only where necessary.
-- Do not alter agent configs without user approval.
-- Further providers (FigCraft is a candidate, not a requirement) follow the
-  Phase 13 pattern: read-only first, code-registered, through the same seam;
-  add each only after the pilot is stable.
+**Implemented.** Audit first, then an SDK-driven harness, then real clients
+where an isolated probe was possible. `docs/AGENT_COMPATIBILITY.md` is the
+deliverable; nothing in it outruns its evidence.
+
+- **Stack pinned, not assumed.** Server and client SDK 2.4.0 (LATEST
+  `2025-11-25`, supported back to `2024-10-07`), hono adapter 2.0.2; both
+  protocol eras served through the SDK's own `isLegacyRequest`.
+- **Harness.** `tests/compatibility/` — six files, 34 tests, scenarios A–F
+  (basic protocol, authentication, authorization, session isolation, tool
+  interoperability, failure/resilience), every one driven by the official
+  client SDK over a real loopback socket against real stdio fixture
+  subprocesses; a new `shapes` fixture mode covers nested/enum/unicode/
+  structured/large payloads. Closes the explicit-notification, DELETE, and
+  stale-cursor gaps the audit found.
+- **Real clients.** Claude Code 2.1.330 **VERIFIED** (isolated
+  `--mcp-config` + `--allowedTools`, full tool round trip, unicode intact);
+  OpenCode 2.3.2 **VERIFIED** (`mcp add`/`mcp list` health check, then a full
+  `opencode run` round trip — all in a temp project); Codex CLI 0.171.0
+  **PARTIAL** (registration, URL, and bearer-token plumbing verified; no
+  end-to-end turn possible locally — the machine's Codex model key is
+  rejected by the provider); DeepSeek Desktop **NOT VERIFIED** (not
+  installed; installing a client needs approval that was not asked for).
+  Every probe ran against a scratch gateway with test fixtures; every temp
+  file holding a token was deleted afterwards; no existing client config
+  was read for writing or modified.
+- **Honest absences, kept.** No MCP-surface rate limiter exists by design, so
+  no 429 scenario was faked; STDIO serving stays unsupported; no per-client
+  code entered the gateway (the matrix is protocol-level, which is the
+  point).
+- **Verification:** 34 compatibility tests (gateway total 731 across 44
+  files); both typechecks; both production builds; full root + dashboard
+  regression. **Not built:** nothing — the phase required no gateway code
+  change; the only source-adjacent edits are test fixtures. **Not
+  verified:** DeepSeek Desktop (absent), Codex end-to-end (bad local login).
+
+Further providers (FigCraft is a candidate, not a requirement) follow the
+Phase 13 pattern: read-only first, code-registered, through the same seam;
+add each only after the pilot is stable.
 
 ## Phase 15 — Hardening and release
 - Security review.
