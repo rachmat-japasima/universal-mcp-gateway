@@ -789,7 +789,26 @@ Still open under this phase (the release half):
 - Local deployment and process supervision.
 - Explicit security gate before non-loopback exposure.
 
-## Phase 16 — Optional enhancements
+## Phase 16 — Second provider integration (Notion)
+
+*Notion as the second code-registered provider (ADR-055) is **implemented** —
+see `docs/providers/NOTION.md`.* Audit-first again: the platform-generalization
+claim is now proven by a structurally different provider — internal connection
+token (no OAuth), opaque cursor pagination, a block-tree content model, the
+post-`2025-09-03` database/data-source split. Six read-only tools (`search`,
+`get_page`, `get_block`, `list_block_children`, `get_database`,
+`query_data_source`); fixed origin `https://api.notion.com`, pinned
+`Notion-Version: 2026-03-11`, redirects refused, one bounded `Retry-After ≤ 5s`
+retry; unknown and future block types recorded, never dropped. Zero
+provider-specific logic outside `src/integrations/notion/`: the registry entry
+is the only core change, and the vault, lifecycle, catalog, authorization,
+execution, audit, and metrics paths are reused unchanged — proven by a
+router-level suite with two Notion connections, two agents, and a GitHub
+connection publishing alongside (18 tools, zero collisions, each call carrying
+its own connection's sealed token). No test dials `api.notion.com`; **live
+account validation: NOT PERFORMED — requires separate user approval.**
+
+## Not scheduled (candidate future phases)
 - Import/export configuration.
 - Advanced alerting.
 - More transports.

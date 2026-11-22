@@ -1783,7 +1783,7 @@ would otherwise check by hand.
 | `src/lib/utils/status.ts` | `connectionStatus` — the seven-value label map |
 | `src/features/integrations/connections-table.tsx` | List rows: name link, provider, status indicator, "Sealed/None", validated, updated |
 | `src/features/integrations/connection-form.tsx` | Create; single-provider preselection; token-shaped fields structurally absent |
-| `src/features/integrations/credential-panel.tsx` | The PAT surface; store/replace behind a confirm; test as data; GitHub scope copy |
+| `src/features/integrations/credential-panel.tsx` | The token surface; store/replace behind a confirm; test as data; GitHub scope copy and, for Notion connections, the read-content capability, developer-portal link, and share-pages explanation |
 | `src/features/integrations/connection-actions.tsx` | Enable/disable/disconnect/delete with consequence-stating confirms |
 | `src/features/integrations/tools-table.tsx` | Published tools; "Not connected" vs "No tools published" as distinct empty states |
 | `src/app/(dashboard)/dashboard/integrations/page.tsx` | The list page; independent reads |
@@ -1793,7 +1793,7 @@ would otherwise check by hand.
 | `tests/integrations-client.test.ts` | Reads against a stubbed fetch; pagination-free array; 404 as error (8 tests) |
 | `tests/integrations-form-component.test.tsx` | Create body shape, preselection, local validation, refusal (6 tests) |
 | `tests/integrations-actions-component.test.tsx` | State-honest buttons, enable announcements, consequence copy, confirms (12 tests) |
-| `tests/integrations-credential-component.test.tsx` | PAT cleared after submit either way, never in storage/DOM, test-as-data, replace confirm (10 tests) |
+| `tests/integrations-credential-component.test.tsx` | PAT cleared after submit either way, never in storage/DOM, test-as-data, replace confirm, provider-specific hint copy (11 tests) |
 
 ## 56. Phase 13 acceptance checklist
 

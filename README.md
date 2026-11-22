@@ -44,10 +44,15 @@ hardening) is **implemented**, audit-first (ADR-054): `enable` refreshes a live
 connection in place, a failed refresh withdraws its stale tools, a racing
 delete/disconnect/disable wins over an in-flight connect, the GitHub client
 refuses redirects outright, and tool-call metrics split by a closed
-`source_type` enum — the platform guide for the second provider is
-`docs/INTEGRATION_PLATFORM.md`.
+`source_type` enum. Phase 16 (second provider integration — Notion) is
+**implemented** (ADR-055, `docs/providers/NOTION.md`): a code-registered,
+read-only, internal-connection-token Notion connector — six tools, pinned
+`Notion-Version: 2026-03-11`, the same vault, lifecycle, catalog,
+authorization, execution, audit, and metrics paths reused with zero
+provider-specific logic outside `src/integrations/notion/`; no test dials
+Notion, and live account validation was not performed.
 - Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`,
-  741 gateway tests; `pnpm test:dashboard`, 471 tests).
+  775 gateway tests; `pnpm test:dashboard`, 472 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
 - `tools/list` serves the live catalog, filtered per agent; no backend is
@@ -593,7 +598,9 @@ Phase 8 behaviour changes — is `docs/API_REFERENCE.md`.
 - `AGENT_COMPATIBILITY.md` — which MCP clients work, with evidence.
 - `ROADMAP.md` — implementation phases.
 - `DECISIONS.md` — accepted decisions.
-- `AGENT_GUIDE.md` — instructions for local coding agents.
+- `INTEGRATION_PLATFORM.md` — the managed-integration platform guide.
+- `providers/NOTION.md` — the Notion provider (ADR-055): credential,
+  sharing model, tools, boundaries, limitations.
 
 ## Next task
 
@@ -609,7 +616,14 @@ audit-first hardening pass over the managed-integration platform — refresh in
 place, honest failed-refresh state, concurrency ownership at the lifecycle
 seam, redirect refusal in the GitHub client, and a source-typed tool-call
 counter — with `docs/INTEGRATION_PLATFORM.md` written for whoever adds the
-second provider.
+next provider.
+
+Phase 16 is **implemented** (ADR-055): Notion, the second code-registered
+provider — read-only, internal connection token, structurally different from
+GitHub (opaque cursors, a block tree, the database/data-source split) and
+landing with zero changes outside `src/integrations/notion/` and one registry
+entry. `docs/providers/NOTION.md` is the provider guide. **Live Notion account
+validation: NOT PERFORMED — requires separate user approval.**
 
 Next: **the release half of Phase 15** (see `docs/ROADMAP.md`): security
 review, soak and failure/recovery tests, backup/restore verification, docs

@@ -6,6 +6,7 @@ import {
 } from './provider.js';
 import type { Connector } from './connector.js';
 import { githubConnector } from './github/connector.js';
+import { notionConnector } from './notion/connector.js';
 
 /**
  * Code-registered provider registry (ADR-050).
@@ -18,8 +19,9 @@ import { githubConnector } from './github/connector.js';
  * code.
  *
  * Production registrations: GitHub (ADR-053), read-only through a fine-grained
- * personal access token. Test fixtures register throwaway providers in their
- * own registry instance; this list stays production truth.
+ * personal access token; Notion (ADR-055), read-only through an internal
+ * connection token. Test fixtures register throwaway providers in their own
+ * registry instance; this list stays production truth.
  */
 
 /** A provider's code-side entry: its definition plus its connector. */
@@ -47,9 +49,29 @@ export const githubRegistration: ProviderRegistration = {
   },
 };
 
-/** Registrations go here when a real provider is implemented (Phase 13+). */
+/**
+ * The Notion registration (ADR-055), exported for the same reason as the
+ * GitHub one: its contract tests wire the production registration to a
+ * fixture connector, so the registration under test is the one shipped.
+ */
+export const notionRegistration: ProviderRegistration = {
+  id: 'notion',
+  name: 'Notion',
+  description:
+    'Read-only Notion access through an internal connection token. Six tools cover search, pages, blocks, databases, and data sources. The connection only sees pages and databases explicitly shared with it in Notion, and the token needs Read content only — no update, insert, comment, or user-information capabilities.',
+  capabilities: ['discovery', 'execution'],
+  metadata: {
+    authMethod: 'internal connection token',
+    requiredPermissions: ['Read content'],
+    apiOrigin: 'https://api.notion.com',
+    docs: 'https://developers.notion.com/reference/intro',
+  },
+};
+
+/** Production registrations; each entry is reviewed code, not config. */
 const REGISTRATIONS: ReadonlyArray<{ registration: ProviderRegistration; connector: Connector }> = [
   { registration: githubRegistration, connector: githubConnector },
+  { registration: notionRegistration, connector: notionConnector },
 ];
 
 export class ProviderRegistry {
@@ -109,7 +131,7 @@ export class ProviderRegistry {
 
 /**
  * The registry the gateway assembles with. Wired with the code registrations
- * (GitHub, ADR-053); tests construct their own instance instead of mutating
- * this one.
+ * (GitHub ADR-053, Notion ADR-055); tests construct their own instance
+ * instead of mutating this one.
  */
 export const providerRegistry = new ProviderRegistry(REGISTRATIONS);

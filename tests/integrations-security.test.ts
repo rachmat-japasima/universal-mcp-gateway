@@ -226,10 +226,11 @@ describe('operator API boundary', () => {
       headers: { ...HOST, ...session.headers },
     });
     expect(providers.status).toBe(200);
-    // Providers are code (ADR-050): GitHub ships registered (ADR-053), and
-    // the listing is the whole truth — the gateway adds nothing, hides nothing.
+    // Providers are code (ADR-050): GitHub (ADR-053) and Notion (ADR-055)
+    // ship registered, and the listing is the whole truth — the gateway adds
+    // nothing, hides nothing.
     const listed = (await providers.json()) as { data: Array<{ id: string }> };
-    expect(listed.data.map((provider) => provider.id)).toEqual(['github']);
+    expect(listed.data.map((provider) => provider.id)).toEqual(['github', 'notion']);
 
     // A fresh deployment still has zero connections and zero credentials:
     // registering a provider connects nobody.

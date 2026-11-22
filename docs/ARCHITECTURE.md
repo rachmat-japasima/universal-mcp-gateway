@@ -367,27 +367,29 @@ context and an in-memory aggregate registry, and both reset with the process.
   store as `unavailable` while the in-memory registry keeps reporting real
   numbers — neither side fabricates the other's answer.
 
-## 4.7 Managed integrations (Phases 12–15)
+## 4.7 Managed integrations (Phases 12–16)
 
-ADR-048–053. A second tool source type — `managed_integration` — enters through
+ADR-048–055. A second tool source type — `managed_integration` — enters through
 one seam and borrows everything else: catalog, authorization, metrics, audit.
-**GitHub is the first registered provider** (ADR-053) — code-registered,
-fine-grained PAT, read-only; the registry is still code and still has no
-runtime widening.
+**Two providers ship registered:** GitHub (ADR-053, fine-grained PAT) and
+Notion (ADR-055, internal connection token) — both code-registered and
+read-only; the registry is still code and still has no runtime widening.
 
 - **`src/integrations/` is the whole module:** `source.ts` (the closed
   `{sourceType, sourceId}` pair), `provider.ts` (registration schema and the
   two capabilities), `connection.ts` (seven statuses, transitions-as-data,
   non-secret metadata), `registry.ts` (the `REGISTRATIONS` module constant —
-  `githubRegistration` is its first entry — plus a validating `register()`;
-  the constructor default is an empty registry, so tests wire exactly what
-  they assert), `connector.ts` (the guest contract and
-  `withCancellation`), `runtime.ts` (the dispatch gate), `vault.ts` (the
+  `githubRegistration` and `notionRegistration` are its entries — plus a
+  validating `register()`; the constructor default is an empty registry, so
+  tests wire exactly what they assert), `connector.ts` (the guest contract
+  and `withCancellation`), `runtime.ts` (the dispatch gate), `vault.ts` (the
   AES-256-GCM envelope), `service.ts` (lifecycle, credentials, `verify`,
-  `dispatchable`), `github/` (the first connector: `registration.ts`,
-  `client.ts` — the provider-owned HTTP client with fixed origin, closed
-  header set, bounded single retry — `tools.ts` — six read-only tools with
-  strict zod inputs and required identity fields in the normalizers).
+  `dispatchable`), `github/` and `notion/` (the two connectors, each the same
+  three-file shape: a provider-owned HTTP client with fixed origin, closed
+  header set, bounded single retry; `tools.ts` with strict inputs and
+  `.strict()`-enforced outputs; a connector module composing them). Notion
+  landed with zero changes outside its own directory and the registry entry —
+  the platform's generalization proof.
 - **The seam is one branch in `ToolRouter.call()`, after authorization.**
   MCP-only helpers are narrowed to the MCP variant of the `CatalogTool` union
   so the compiler enforces the seam. No runtime wired → `TOOL_UNAVAILABLE`;

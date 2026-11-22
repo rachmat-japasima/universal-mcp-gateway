@@ -27,6 +27,7 @@ import { send } from '@/lib/api/write-client';
  */
 
 const GITHUB_TOKEN_URL = 'https://github.com/settings/personal-access-tokens';
+const NOTION_CONNECTIONS_URL = 'https://app.notion.com/developers/connections';
 
 export function CredentialPanel({ connection }: { connection: IntegrationConnection }): React.ReactElement {
   const router = useRouter();
@@ -39,6 +40,7 @@ export function CredentialPanel({ connection }: { connection: IntegrationConnect
   const busy = pending !== null;
   const hasStored = connection.credentialId !== null;
   const isGitHub = connection.providerId === 'github';
+  const isNotion = connection.providerId === 'notion';
 
   async function store(): Promise<void> {
     if (busy) return;
@@ -120,6 +122,17 @@ export function CredentialPanel({ connection }: { connection: IntegrationConnect
                 github.com/settings/personal-access-tokens
               </a>
               .
+            </Text>
+          ) : null}
+          {isNotion ? (
+            <Text type="supporting" as="p">
+              Notion internal connection token. Read content only — this gateway asks for no update, insert, comment,
+              or user-information permission. Create the connection in the{' '}
+              <a href={NOTION_CONNECTIONS_URL} rel="noreferrer noopener" className="underline">
+                Notion developer portal
+              </a>{' '}
+              and copy the API token from its Configuration tab. The connection sees nothing until content is shared
+              with it: use the portal&apos;s Content access tab, or a page&apos;s ••• → Connections → Add connection.
             </Text>
           ) : null}
         </VStack>

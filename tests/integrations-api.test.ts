@@ -339,18 +339,23 @@ describe('integrations operator API', () => {
     }
   });
 
-  it('lists the production registry through the API: GitHub, registered read-only', async () => {
+  it('lists the production registry through the API: GitHub and Notion, registered read-only', async () => {
     // The default registry is production wiring; listing it touches no network.
     gateway = createGateway({ config, logger, store, credentialKeys: testKeys() });
 
     const providers = (await (await call({ method: 'GET', path: '/integrations/providers' })).json())['data'] as Array<
       Record<string, unknown>
     >;
-    expect(providers.map((provider) => provider['id'])).toEqual(['github']);
+    expect(providers.map((provider) => provider['id'])).toEqual(['github', 'notion']);
     expect(providers[0]).toMatchObject({
       name: 'GitHub',
       capabilities: ['discovery', 'execution'],
       metadata: { authMethod: 'fine-grained personal access token' },
+    });
+    expect(providers[1]).toMatchObject({
+      name: 'Notion',
+      capabilities: ['discovery', 'execution'],
+      metadata: { authMethod: 'internal connection token' },
     });
   });
 });

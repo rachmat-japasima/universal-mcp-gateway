@@ -386,7 +386,7 @@ function schemas(): Record<string, unknown> {
         id: {
           type: 'string',
           pattern: '^[a-z][a-z0-9-]{0,63}$',
-          description: 'Registry key: a lowercase slug, stable once published. GitHub ships registered (ADR-053).',
+          description: 'Registry key: a lowercase slug, stable once published. GitHub (ADR-053) and Notion (ADR-055) ship registered.',
         },
         name: { type: 'string' },
         description: { type: 'string' },
@@ -1085,7 +1085,7 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
           tags: ['integrations'],
           summary: 'Registered managed-integration providers',
           description:
-            'The provider registry is code-registered (ADR-050): no marketplace, no plugins, no dynamic loading. GitHub ships registered and read-only (ADR-053); the listing is the whole truth.',
+            'The provider registry is code-registered (ADR-050): no marketplace, no plugins, no dynamic loading. GitHub (ADR-053) and Notion (ADR-055) ship registered and read-only; the listing is the whole truth.',
           responses: { 200: okBody({ type: 'array', items: ref('Provider') }) },
         },
       },
@@ -1142,7 +1142,7 @@ export function buildOpenApi(config: Config): Record<string, unknown> {
           tags: ['integrations'],
           summary: 'Test the stored credential',
           description:
-            'Runs the provider verification handshake (GitHub: one authenticated GET) without moving the row. The refusal arrives as `200` data: `reauthorization_required` means store a new token.',
+            'Runs the provider verification handshake (one authenticated GET: GitHub `/user`, Notion `/v1/users/me`) without moving the row. The refusal arrives as `200` data: `reauthorization_required` means store a new token.',
           parameters: [CONNECTION_ID],
           responses: { 200: okBody(CONNECTION_VERIFY), ...errorResponses(['404', 'Not found']) },
         },

@@ -195,4 +195,23 @@ describe('CredentialPanel', () => {
     expect(link.getAttribute('href')).toBe('https://github.com/settings/personal-access-tokens');
     expect(link.getAttribute('rel')).toContain('noreferrer');
   });
+
+  it('names the Notion capability and the sharing step a fresh connection needs', () => {
+    render(
+      <CredentialPanel
+        connection={connection({ providerId: 'notion', providerName: 'Notion', name: 'team-wiki' })}
+      />,
+    );
+
+    // Read content only — the least privilege the six tools need.
+    expect(screen.getByText(/Read content only/)).toBeTruthy();
+    // The sharing-pages explanation: a connection sees nothing by default.
+    expect(screen.getByText(/sees nothing until content is shared/)).toBeTruthy();
+    expect(screen.getByText(/Content access tab/)).toBeTruthy();
+    const link = screen.getByRole('link', { name: /Notion developer portal/ });
+    expect(link.getAttribute('href')).toBe('https://app.notion.com/developers/connections');
+    expect(link.getAttribute('rel')).toContain('noreferrer');
+    // The GitHub hint stays where it belongs: on GitHub connections.
+    expect(screen.queryByText(/Metadata, Issues and Pull requests/)).toBeNull();
+  });
 });
