@@ -4,7 +4,7 @@ Notion is the gateway's second code-registered managed provider (Phase 16).
 It exists to prove the Phase 12–15 platform with a provider that is
 structurally different from GitHub — a workspace-scoped, cursor-paginated,
 block-tree document API behind a static internal token — with **zero
-provider-specific logic anywhere outside `src/integrations/notion/`**: the
+provider-specific logic anywhere outside `apps/gateway/src/integrations/notion/`**: the
 registry, the vault, the lifecycle, the catalog, the authorization model, the
 execution pipeline, the operator API, and the audit/metrics paths are reused
 unchanged. Everything in this document is also the honest ceiling: the
@@ -16,7 +16,7 @@ Read-only workspace content: search, pages, content blocks, databases, and
 data-source rows. No tool in this provider can write, and no code path exists
 that could — there is no write endpoint in the client, no write tool in the
 catalog, and the MCP annotations say `readOnlyHint: true`. The provider is
-registered as code (`notionRegistration` in `src/integrations/registry.ts`),
+registered as code (`notionRegistration` in `apps/gateway/src/integrations/registry.ts`),
 never as configuration: no dynamic loading, no marketplace entry, nothing an
 operator can widen at runtime.
 
@@ -63,7 +63,7 @@ the gateway does not fabricate a scope list.
   standard TLS verification applies.
 - **Version:** every request carries `Notion-Version: 2026-03-11` — the
   current official API version, required by every endpoint. The version
-  lives in exactly one constant in `src/integrations/notion/client.ts`.
+  lives in exactly one constant in `apps/gateway/src/integrations/notion/client.ts`.
 - **Headers:** `Authorization: Bearer <token>`, `Notion-Version`,
   `Accept: application/json`, and `Content-Type: application/json` on POSTs.
   The token never rides a URL or a query string, and this module has no
@@ -214,7 +214,7 @@ identical to the GitHub flow.
 
 Every HTTP exchange in the repository is a fixture: the client takes an
 injectable `fetch`, the connector is built from it, and **no test dials
-`api.notion.com`**. `tests/integrations-notion.test.ts` pins: the client
+`api.notion.com`**. `apps/gateway/tests/integrations-notion.test.ts` pins: the client
 boundary (origin, pinned headers, redirect refusal, the status map, the
 bounded 429 retry, unreachable, non-JSON), the six tools' schemas and
 normalizers (ids both shapes, bounds, unicode, unknown/future/unsupported

@@ -4,7 +4,7 @@ Slack is the gateway's third code-registered managed provider (Phase 17).
 It exists to prove the Phase 12–16 platform with a provider whose failure
 model is unlike either predecessor — **HTTP 200 answers that are
 application failures** — behind a manually supplied bot token, with **zero
-provider-specific logic anywhere outside `src/integrations/slack/`**: the
+provider-specific logic anywhere outside `apps/gateway/src/integrations/slack/`**: the
 registry, the vault, the lifecycle, the catalog, the authorization model,
 the execution pipeline, the operator API, and the audit/metrics paths are
 reused unchanged. Everything in this document is also the honest ceiling:
@@ -17,7 +17,7 @@ DMs; their message history; their threads; and the people in them. No tool
 in this provider can write, and no code path exists that could — there is
 no write endpoint in the client, no write tool in the catalog, and the MCP
 annotations say `readOnlyHint: true`. The provider is registered as code
-(`slackRegistration` in `src/integrations/registry.ts`), never as
+(`slackRegistration` in `apps/gateway/src/integrations/registry.ts`), never as
 configuration: no dynamic loading, no marketplace entry, nothing an operator
 can widen at runtime.
 
@@ -271,7 +271,7 @@ and cleared after submit, identical to the other providers.
 
 Every HTTP exchange in the repository is a fixture: the client takes an
 injectable `fetch`, the connector is built from it, and **no test dials
-`slack.com`**. `tests/integrations-slack.test.ts` pins: the client boundary
+`slack.com`**. `apps/gateway/tests/integrations-slack.test.ts` pins: the client boundary
 (origin, pinned headers, redirect refusal, **the 200 + `ok:false` map with
 every documented code and an unknown one**, the status map, the bounded 429
 retry, unreachable, non-JSON), the five tools' schemas and normalizers

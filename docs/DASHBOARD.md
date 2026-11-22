@@ -1074,7 +1074,7 @@ endpoint is what the agent page renders, so the two screens cannot disagree.
 | `apps/gateway/src/infrastructure/database/repositories/agents.ts` | `AgentRow`/`toAgent` exported for that reuse |
 | `apps/gateway/src/registry/policy-service.ts` | `listAssignments` |
 | `apps/gateway/src/api/routes/policies.routes.ts` | `GET /:policyId/assignments` |
-| `src/api/openapi.ts` | OpenAPI entry for the new read |
+| `apps/gateway/src/api/openapi.ts` | OpenAPI entry for the new read |
 | `apps/gateway/tests/policies-api.test.ts` | Four new gateway tests (14 total in the file) |
 | `src/lib/api/types.ts` | `POLICY_EFFECTS`, `POLICY_RESOURCES`, `PolicyRule`, `Policy`, `PolicyQuery`, `PolicyCreateInput`, `PolicyUpdateInput` |
 | `src/lib/api/policies.ts` | List/get/create/update/delete/assign/unassign/assignments |

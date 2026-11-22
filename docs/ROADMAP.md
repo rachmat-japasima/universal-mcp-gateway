@@ -185,9 +185,10 @@ The full product scope is approved in this document. Implement sequentially; do 
       other module route is an honest placeholder with no sample data and no
       fake counters.
 - [x] 25 dashboard component/validator tests at Phase 9 close; 38 after Phase
-      10.0 added login-form and auth-helper tests. Root `vitest.config.ts` is
-      pinned to `tests/**/*.test.ts` so one workspace's suite cannot run inside
-      the other's environment.
+      10.0 added login-form and auth-helper tests. The gateway's
+      `vitest.config.ts` (at the repository root then, `apps/gateway/` since the
+      workspace restructuring) is pinned to `tests/**/*.test.ts` so one
+      workspace's suite cannot run inside the other's environment.
 - [x] `pnpm typecheck`, `pnpm test` (486 at Phase 9 close; 528 after Phase 10.0),
       `pnpm build`, dashboard typecheck / test / build (17 routes) all pass; no
       real backend connected; bind still `127.0.0.1`.
