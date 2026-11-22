@@ -33,8 +33,8 @@ interface FormState {
 /**
  * A registry with exactly one provider has an obvious default, so it starts
  * selected; the operator can still change it. With two or more (today's:
- * GitHub and Notion), no default would be honest, so the field starts empty
- * and validation asks.
+ * GitHub, Notion, and Slack), no default would be honest, so the field
+ * starts empty and validation asks.
  */
 function initialState(providers: IntegrationProvider[]): FormState {
   return { providerId: providers.length === 1 ? providers[0]!.id : '', name: '' };

@@ -50,9 +50,17 @@ read-only, internal-connection-token Notion connector — six tools, pinned
 `Notion-Version: 2026-03-11`, the same vault, lifecycle, catalog,
 authorization, execution, audit, and metrics paths reused with zero
 provider-specific logic outside `src/integrations/notion/`; no test dials
-Notion, and live account validation was not performed.
+Notion, and live account validation was not performed. Phase 17 (third
+provider integration — Slack) is **implemented** (ADR-056,
+`docs/providers/SLACK.md`): a code-registered, read-only, bot-token Slack
+connector — five tools, Slack's two-envelope failure rule (HTTP 200 with
+`ok:false` is a failure), nine read scopes, `ts` values kept as exact
+strings, and the same vault, lifecycle, catalog, authorization, execution,
+audit, and metrics paths reused with zero provider-specific logic outside
+`src/integrations/slack/`; no test dials Slack, and live workspace
+validation was not performed.
 - Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`,
-  775 gateway tests; `pnpm test:dashboard`, 472 tests).
+  811 gateway tests; `pnpm test:dashboard`, 473 tests).
 - Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
   protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
 - `tools/list` serves the live catalog, filtered per agent; no backend is
@@ -598,9 +606,12 @@ Phase 8 behaviour changes — is `docs/API_REFERENCE.md`.
 - `AGENT_COMPATIBILITY.md` — which MCP clients work, with evidence.
 - `ROADMAP.md` — implementation phases.
 - `DECISIONS.md` — accepted decisions.
+- `AGENT_GUIDE.md` — instructions for local coding agents.
 - `INTEGRATION_PLATFORM.md` — the managed-integration platform guide.
 - `providers/NOTION.md` — the Notion provider (ADR-055): credential,
   sharing model, tools, boundaries, limitations.
+- `providers/SLACK.md` — the Slack provider (ADR-056): credential,
+  membership model, tools, boundaries, limitations.
 
 ## Next task
 
@@ -624,6 +635,16 @@ GitHub (opaque cursors, a block tree, the database/data-source split) and
 landing with zero changes outside `src/integrations/notion/` and one registry
 entry. `docs/providers/NOTION.md` is the provider guide. **Live Notion account
 validation: NOT PERFORMED — requires separate user approval.**
+
+Phase 17 is **implemented** (ADR-056): Slack, the third code-registered
+provider — read-only, a manually supplied bot token, and a failure model
+neither predecessor shares (application failures arrive as HTTP 200 with
+`ok:false`, so the client reads both envelope halves of every answer) —
+landing with zero changes outside `src/integrations/slack/` and one registry
+entry. `search.messages` is documented out, not approximated (it is a
+user-token-only method). `docs/providers/SLACK.md` is the provider guide.
+**Live Slack workspace validation: NOT PERFORMED — requires separate user
+approval.**
 
 Next: **the release half of Phase 15** (see `docs/ROADMAP.md`): security
 review, soak and failure/recovery tests, backup/restore verification, docs

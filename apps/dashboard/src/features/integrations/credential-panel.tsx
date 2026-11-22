@@ -28,6 +28,7 @@ import { send } from '@/lib/api/write-client';
 
 const GITHUB_TOKEN_URL = 'https://github.com/settings/personal-access-tokens';
 const NOTION_CONNECTIONS_URL = 'https://app.notion.com/developers/connections';
+const SLACK_APPS_URL = 'https://api.slack.com/apps';
 
 export function CredentialPanel({ connection }: { connection: IntegrationConnection }): React.ReactElement {
   const router = useRouter();
@@ -41,6 +42,7 @@ export function CredentialPanel({ connection }: { connection: IntegrationConnect
   const hasStored = connection.credentialId !== null;
   const isGitHub = connection.providerId === 'github';
   const isNotion = connection.providerId === 'notion';
+  const isSlack = connection.providerId === 'slack';
 
   async function store(): Promise<void> {
     if (busy) return;
@@ -133,6 +135,18 @@ export function CredentialPanel({ connection }: { connection: IntegrationConnect
               </a>{' '}
               and copy the API token from its Configuration tab. The connection sees nothing until content is shared
               with it: use the portal&apos;s Content access tab, or a page&apos;s ••• → Connections → Add connection.
+            </Text>
+          ) : null}
+          {isSlack ? (
+            <Text type="supporting" as="p">
+              Slack bot token (starts with xoxb-). Read-only scopes: channels/groups/im/mpim read + history, and
+              users:read — this gateway asks for no write scope and never posts. Install the app from{' '}
+              <a href={SLACK_APPS_URL} rel="noreferrer noopener" className="underline">
+                api.slack.com/apps
+              </a>{' '}
+              and copy the Bot User OAuth Token from its OAuth &amp; Permissions page. The bot sees only public
+              channels by default: invite it to any private channel it should read, and it can join a DM or group
+              only from inside Slack itself.
             </Text>
           ) : null}
         </VStack>

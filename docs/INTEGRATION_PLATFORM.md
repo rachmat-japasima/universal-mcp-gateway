@@ -30,10 +30,13 @@ marketplace, no plugin directory. A provider exists because a developer wrote
 it into `REGISTRATIONS`, which makes every entry reviewed, typed, and covered
 by connector-contract tests. There is no operator write path to the registry,
 so there is no second copy of it to drift from the code. Production registers
-exactly two providers: **GitHub**, read-only, through a fine-grained personal
+exactly three providers: **GitHub**, read-only, through a fine-grained personal
 access token (ADR-053); **Notion**, read-only, through an internal connection
 token (ADR-055, `docs/providers/NOTION.md`) — the structurally different
-second provider that proved the platform generalizes.
+second provider that proved the platform generalizes; and **Slack**, read-only,
+through a manually supplied bot token (ADR-056,
+`docs/providers/SLACK.md`) — the third, whose 200-with-`ok:false` failure
+model forced no change outside its own directory.
 
 ## 2. Provider definition
 
@@ -312,12 +315,12 @@ fields, and never audit metadata.
 
 1. Write an ADR first (what the provider is, which capabilities it declares,
    what its credential is, why read-only first). `docs/DECISIONS.md` carries
-   ADR-053 and ADR-055 as the models.
+   ADR-053, ADR-055, and ADR-056 as the models.
 2. Add the definition + connector import to `REGISTRATIONS`
    (`src/integrations/registry.ts`). One line per file touched by hand.
 3. Implement the connector in `src/integrations/<provider>/`, modeled on
-   `github/` and `notion/`: a client module owning the fixed origin and
-   closed headers, a tools module of pure schemas and normalizers, a
+   `github/`, `notion/`, and `slack/`: a client module owning the fixed origin
+   and closed headers, a tools module of pure schemas and normalizers, a
    connector module composing them. Injectable `fetch`/`sleep`; no test
    dials the network.
 4. Declare the minimum capability set — `discovery` alone if the provider
@@ -326,7 +329,8 @@ fields, and never audit metadata.
    webhooks, OAuth, sync workers are out of scope until a later phase says
    otherwise.
 6. Add suites mirroring `tests/integrations-github.test.ts` (and, for a
-   structurally different provider, `tests/integrations-notion.test.ts`):
+   structurally different provider, `tests/integrations-notion.test.ts` and
+   `tests/integrations-slack.test.ts`):
    client boundary, normalizer honesty, execution through the production
    service. Extend `tests/integrations.test.ts`'s "ships exactly the real
    providers" test so the registry's production contents stay pinned.
@@ -361,9 +365,10 @@ Non-negotiable, enforced by review because the contract cannot force them:
 
 ## 14. Current limitations
 
-- **Two providers.** GitHub (six read-only tools) and Notion (six read-only
-  tools) are the registered providers. No OAuth, no GitHub Apps, no Notion
-  public connections or webhooks, no write operations, no synchronization
+- **Three providers.** GitHub (six read-only tools), Notion (six read-only
+  tools), and Slack (five read-only tools) are the registered providers. No
+  OAuth, no GitHub Apps, no Notion public connections or webhooks, no Slack
+  Socket Mode or app installation, no write operations, no synchronization
   workers — unsupported, not missing.
 - **Manual key rotation.** `INTEGRATION_MASTER_KEY_PREVIOUS` exists so an
   operator can rotate by hand; there is no automatic rotation and no

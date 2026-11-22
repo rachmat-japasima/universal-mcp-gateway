@@ -14,6 +14,9 @@ Read:
 - `MONITORING.md`
 - `ROADMAP.md`
 - `DECISIONS.md`
+- `AGENT_COMPATIBILITY.md`
+- `INTEGRATION_PLATFORM.md`
+- `providers/NOTION.md`, `providers/SLACK.md`
 
 The full product includes gateway core, backend registry, adapters, tool routing, agent profiles, authorization, session isolation, concurrency protection, monitoring, audit, and a full web dashboard.
 
@@ -31,22 +34,28 @@ The full product includes gateway core, backend registry, adapters, tool routing
   authentication) is implemented** (ADR-045), Phase 11 (observability) is
   implemented (ADR-046/047), Phase 12 (integration-ready architecture) is
   implemented (ADR-048–052), **Phase 13 (first real provider — GitHub,
-  ADR-053) is implemented**, and **Phase 14 (agent compatibility) is
-  implemented** — `docs/AGENT_COMPATIBILITY.md` is the client matrix;
-  `tests/compatibility/` is its SDK harness. `pnpm typecheck`, `pnpm build`,
-  and `pnpm test` pass (731 tests), and the dashboard passes its own
-  typecheck, build, and 470 tests.
+  ADR-053) is implemented**, **Phase 14 (agent compatibility) is implemented**
+  (`docs/AGENT_COMPATIBILITY.md` is the client matrix; `tests/compatibility/`
+  is its SDK harness), **the integration-platform half of Phase 15 is
+  implemented** (ADR-054: refresh in place, honest failed-refresh state,
+  lifecycle concurrency ownership, redirect refusal, source-typed metrics),
+  **Phase 16 (second provider — Notion, ADR-055) is implemented**, and
+  **Phase 17 (third provider — Slack, ADR-056) is implemented**.
+  `pnpm typecheck`, `pnpm build`, and `pnpm test` pass (811 tests), and the
+  dashboard passes its own typecheck, build, and 473 tests.
 - `src/integrations/` holds the managed-integration domain: source refs,
-  provider registration (the registry is code; its first entry is
-  `githubRegistration` — read-only, fine-grained PAT), connection lifecycle
-  as data, the bounded connector contract, the AES-256-GCM envelope vault
-  (`INTEGRATION_MASTER_KEY` only, lazy fail-closed), and
-  `IntegrationService`. The router dispatches managed tools through one seam
-  **after** authorization; the operator API under `/api/v1/integrations`
-  covers both reads and the write lifecycle (create, write-only credential,
-  test-as-data, enable, disable, disconnect, delete). **No OAuth, no GitHub
-  Apps, no webhooks, no enterprise hosts, no write tools** — and no test
-  dials `api.github.com` (the connector's `fetchImpl` is injectable).
+  provider registration (the registry is code; its entries are
+  `githubRegistration`, `notionRegistration`, and `slackRegistration` — all
+  read-only), connection lifecycle as data, the bounded connector contract,
+  the AES-256-GCM envelope vault (`INTEGRATION_MASTER_KEY` only, lazy
+  fail-closed), and `IntegrationService`. The router dispatches managed tools
+  through one seam **after** authorization; the operator API under
+  `/api/v1/integrations` covers both reads and the write lifecycle (create,
+  write-only credential, test-as-data, enable, disable, disconnect, delete).
+  **No OAuth, no GitHub Apps, no Notion public connections or webhooks, no
+  Slack Socket Mode or app installation, no enterprise hosts, no write
+  tools** — and no test dials `api.github.com`, `api.notion.com`, or
+  `slack.com` (each connector's `fetchImpl` is injectable).
 - `src/core/gateway.ts` builds the app via `createGateway({ config, logger, store?, credentialKeys? })`:
   SDK `createMcpHandler` + Host/Origin middleware for non-API paths + `/health`, mounts the
   management API at `/api/v1` when a store is present, and mounts bearer authentication on
@@ -79,22 +88,27 @@ The full product includes gateway core, backend registry, adapters, tool routing
   `GATEWAY_ORIGIN` server-side (default `http://127.0.0.1:8787`). The gateway stays
   the **root** package — there is no `apps/gateway/package.json`.
 - Production backend registry must remain empty initially, and the **provider
-  registry is code** (ADR-050): `githubRegistration` is its first entry
-  (Phase 13). Do not register a second provider, and do not store a real
+  registry is code** (ADR-050): `githubRegistration` (Phase 13),
+  `notionRegistration` (Phase 16), and `slackRegistration` (Phase 17) are its
+  entries. Do not register a fourth provider, and do not store a real
   credential or make a live provider call without explicit user approval.
 
 Inspect actual repository state before editing. This document may lag the code.
 
 ## 3. Immediate assignment
 
-Phases 1–14 are complete in their stated scopes (Phase 13 is the first real
-provider — GitHub, read-only, ADR-053; Phase 14 is agent compatibility —
-`docs/AGENT_COMPATIBILITY.md`, harness in `tests/compatibility/`). The
-remaining Phase 10 module pages are not started. **Phase 15 (hardening and
-release) is not started and must not be started without explicit approval**;
-the roadmap renumbered during execution — the originally planned Phase 13/14
-swap was leapfrogged when the first-real-provider work landed as Phase 13,
-and agent compatibility took Phase 14.
+Phases 1–17 are complete in their stated scopes (the three registered
+providers are GitHub — Phase 13, ADR-053; Notion — Phase 16, ADR-055,
+`docs/providers/NOTION.md`; Slack — Phase 17, ADR-056,
+`docs/providers/SLACK.md`; each landed audit-first, read-only, and with zero
+provider-specific logic outside its own directory and the registry entry).
+The remaining Phase 10 module pages are not started. **The release half of
+Phase 15 (security review, soak, backup/restore verification, docs and
+versioning, local process supervision) is not started and must not be started
+without explicit approval**; a Phase 18 is likewise not to be started
+automatically. Live validation against a real GitHub account, Notion
+workspace, or Slack workspace was not performed and requires separate user
+approval.
 
 Phase 14's rules, which outlive the phase: the gateway has **no
 agent-specific code** — compatibility is protocol-level and stays that way;
@@ -103,13 +117,23 @@ vocabulary is VERIFIED / PROTOCOL VERIFIED / PARTIAL / NOT VERIFIED /
 UNSUPPORTED); and real-client probes always use isolated temp configs —
 never an existing Claude Code, Codex, or OpenCode configuration.
 
+Provider rules that outlive their phases: a new provider needs an ADR and an
+explicit-approval gate before any code (`docs/INTEGRATION_PLATFORM.md` §12
+is the checklist; `docs/DECISIONS.md` carries ADR-053/055/056 as the models);
+connectors are read-only with fixed origins and closed header sets; no test
+dials a provider host; and the honest-failure vocabulary
+(`reauthorization_required` for dead or short-scoped credentials) is the
+operator's signal, never an error envelope to hide.
+
 Phase 9 built the dashboard foundation: shell, navigation, theme, Astryx
 integration, typed API client, same-origin read proxy, and feedback compositions.
 10.0 added operator identity and the gateway-enforced boundary those pages will
 rely on. Phase 13 built the integrations module — three routes (`/dashboard/
 integrations`, `/new`, `/[connectionId]`), the write proxy's fourth mount — so
 the "no dashboard page" absence recorded at Phase 12 close is resolved for
-cause: the registry now holds GitHub and the gateway owns the write API.
+cause: the gateway owns the write API and the registry now holds three
+read-only providers (GitHub, Notion, Slack), each with its own credential
+hint on the connection detail page.
 
 **Two authentication boundaries exist and must stay separate.** `/mcp` requires a
 per-agent bearer credential (Phase 6); every `/api/v1` route requires an operator

@@ -221,7 +221,7 @@ describe('provider registry', () => {
 
   it('ships exactly the real providers: GitHub and Notion, registered read-only', () => {
     const registered = providerRegistry.list();
-    expect(registered.map((definition) => definition.id)).toEqual(['github', 'notion']);
+    expect(registered.map((definition) => definition.id)).toEqual(['github', 'notion', 'slack']);
     expect(registered[0]).toMatchObject({ name: 'GitHub', capabilities: ['discovery', 'execution'] });
     expect(registered[1]).toMatchObject({ name: 'Notion', capabilities: ['discovery', 'execution'] });
     // The auth method is metadata, never a capability: the closed capability

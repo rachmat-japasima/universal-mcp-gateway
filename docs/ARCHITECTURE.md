@@ -367,29 +367,32 @@ context and an in-memory aggregate registry, and both reset with the process.
   store as `unavailable` while the in-memory registry keeps reporting real
   numbers — neither side fabricates the other's answer.
 
-## 4.7 Managed integrations (Phases 12–16)
+## 4.7 Managed integrations (Phases 12–17)
 
-ADR-048–055. A second tool source type — `managed_integration` — enters through
+ADR-048–056. A second tool source type — `managed_integration` — enters through
 one seam and borrows everything else: catalog, authorization, metrics, audit.
-**Two providers ship registered:** GitHub (ADR-053, fine-grained PAT) and
-Notion (ADR-055, internal connection token) — both code-registered and
-read-only; the registry is still code and still has no runtime widening.
+**Three providers ship registered:** GitHub (ADR-053, fine-grained PAT),
+Notion (ADR-055, internal connection token), and Slack (ADR-056, manually
+supplied bot token) — all code-registered and read-only; the registry is still
+code and still has no runtime widening.
 
 - **`src/integrations/` is the whole module:** `source.ts` (the closed
   `{sourceType, sourceId}` pair), `provider.ts` (registration schema and the
   two capabilities), `connection.ts` (seven statuses, transitions-as-data,
   non-secret metadata), `registry.ts` (the `REGISTRATIONS` module constant —
-  `githubRegistration` and `notionRegistration` are its entries — plus a
-  validating `register()`; the constructor default is an empty registry, so
-  tests wire exactly what they assert), `connector.ts` (the guest contract
-  and `withCancellation`), `runtime.ts` (the dispatch gate), `vault.ts` (the
-  AES-256-GCM envelope), `service.ts` (lifecycle, credentials, `verify`,
-  `dispatchable`), `github/` and `notion/` (the two connectors, each the same
-  three-file shape: a provider-owned HTTP client with fixed origin, closed
-  header set, bounded single retry; `tools.ts` with strict inputs and
-  `.strict()`-enforced outputs; a connector module composing them). Notion
-  landed with zero changes outside its own directory and the registry entry —
-  the platform's generalization proof.
+  `githubRegistration`, `notionRegistration`, and `slackRegistration` are its
+  entries — plus a validating `register()`; the constructor default is an
+  empty registry, so tests wire exactly what they assert), `connector.ts` (the
+  guest contract and `withCancellation`), `runtime.ts` (the dispatch gate),
+  `vault.ts` (the AES-256-GCM envelope), `service.ts` (lifecycle,
+  credentials, `verify`, `dispatchable`), `github/`, `notion/`, and `slack/`
+  (the three connectors, each the same three-file shape: a provider-owned
+  HTTP client with fixed origin, closed header set, bounded single retry;
+  `tools.ts` with strict inputs and `.strict()`-enforced outputs; a connector
+  module composing them). Notion landed with zero changes outside its own
+  directory and the registry entry; Slack repeated the proof with a different
+  failure model — HTTP 200 answers that are application failures
+  (`{ok: false, error}`), both envelope halves read on every response.
 - **The seam is one branch in `ToolRouter.call()`, after authorization.**
   MCP-only helpers are narrowed to the MCP variant of the `CatalogTool` union
   so the compiler enforces the seam. No runtime wired → `TOOL_UNAVAILABLE`;
@@ -425,8 +428,8 @@ read-only; the registry is still code and still has no runtime widening.
   client refuses redirects outright; `umg_tool_calls_total` gained a closed
   two-value `source_type` label; and failed connect/refresh attempts write an
   audit row with `result: 'failure'`. The full platform description —
-  contracts, pipeline, lifecycle, checklist for the second provider — is
-  `docs/INTEGRATION_PLATFORM.md`.
+  contracts, pipeline, lifecycle, the checklist for whoever adds the next
+  provider — is `docs/INTEGRATION_PLATFORM.md`.
 
 ## 5. Inbound MCP lifecycle
 

@@ -230,7 +230,7 @@ describe('operator API boundary', () => {
     // ship registered, and the listing is the whole truth — the gateway adds
     // nothing, hides nothing.
     const listed = (await providers.json()) as { data: Array<{ id: string }> };
-    expect(listed.data.map((provider) => provider.id)).toEqual(['github', 'notion']);
+    expect(listed.data.map((provider) => provider.id)).toEqual(['github', 'notion', 'slack']);
 
     // A fresh deployment still has zero connections and zero credentials:
     // registering a provider connects nobody.

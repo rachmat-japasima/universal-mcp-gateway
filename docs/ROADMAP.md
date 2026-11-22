@@ -808,6 +808,35 @@ connection publishing alongside (18 tools, zero collisions, each call carrying
 its own connection's sealed token). No test dials `api.notion.com`; **live
 account validation: NOT PERFORMED — requires separate user approval.**
 
+## Phase 17 — Third provider integration (Slack)
+
+*Slack as the third code-registered provider (ADR-056) is **implemented** —
+see `docs/providers/SLACK.md`.* Audit-first a third time; the new proof is a
+failure model GitHub and Notion do not share: **application failures arrive
+as HTTP 200 with `{ok: false, error: "<code>"}`**, so the client reads both
+envelope halves on every answer — a 200 is not a success until the body says
+so, and the stable error code is the only failure-body text that crosses the
+connector boundary. Credential: manually supplied **bot user OAuth token**
+(`xoxb-`) — no OAuth flow, no refresh infrastructure; nine read scopes
+(`channels/groups/im/mpim` `:read` + `:history`, `users:read`), and the
+connector refuses non-bot tokens before any request leaves. Five read-only
+tools (`list_conversations`, `get_conversation_info`,
+`get_conversation_history`, `get_thread_replies`, `get_user_info`); fixed
+origin `https://slack.com/api`, redirects refused, one bounded
+`Retry-After ≤ 5s` retry; `ts` values are string ids
+(`epoch.microseconds`), carried exactly, never float-parsed; unknown message
+subtypes recorded, never dropped; cursors opaque, `limit` a deliberate ≤ 200
+bound. **`search.messages` is excluded on the audit's research finding** —
+user-token-only — documented, not approximated. Zero provider-specific logic
+outside `src/integrations/slack/`: the registry entry is the only core
+change, and the vault, lifecycle, catalog, authorization, execution, audit,
+and metrics paths are reused unchanged — proven by a router-level suite with
+two Slack connections, two agents, and Notion and GitHub connections
+publishing alongside (22 tools, zero collisions, each call carrying its own
+connection's sealed token; workspaces never become identity). No test dials
+`slack.com`; **live Slack workspace validation: NOT PERFORMED — requires
+separate user approval.**
+
 ## Not scheduled (candidate future phases)
 - Import/export configuration.
 - Advanced alerting.

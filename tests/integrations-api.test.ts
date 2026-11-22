@@ -346,7 +346,7 @@ describe('integrations operator API', () => {
     const providers = (await (await call({ method: 'GET', path: '/integrations/providers' })).json())['data'] as Array<
       Record<string, unknown>
     >;
-    expect(providers.map((provider) => provider['id'])).toEqual(['github', 'notion']);
+    expect(providers.map((provider) => provider['id'])).toEqual(['github', 'notion', 'slack']);
     expect(providers[0]).toMatchObject({
       name: 'GitHub',
       capabilities: ['discovery', 'execution'],

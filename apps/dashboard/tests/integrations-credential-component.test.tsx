@@ -214,4 +214,26 @@ describe('CredentialPanel', () => {
     // The GitHub hint stays where it belongs: on GitHub connections.
     expect(screen.queryByText(/Metadata, Issues and Pull requests/)).toBeNull();
   });
+
+  it('names the Slack token shape, scopes, and the private-channel invite step', () => {
+    render(
+      <CredentialPanel
+        connection={connection({ providerId: 'slack', providerName: 'Slack', name: 'team-chat' })}
+      />,
+    );
+
+    // The bot token family, so an xoxp- paste fails honestly on the page.
+    expect(screen.getByText(/Slack bot token \(starts with xoxb-\)/)).toBeTruthy();
+    // Read-only scopes, and never a write.
+    expect(screen.getByText(/users:read/)).toBeTruthy();
+    expect(screen.getByText(/no write scope and never posts/)).toBeTruthy();
+    // The membership explanation: a bot sees private channels only by invite.
+    expect(screen.getByText(/invite it to any private channel/)).toBeTruthy();
+    const link = screen.getByRole('link', { name: /api\.slack\.com\/apps/ });
+    expect(link.getAttribute('href')).toBe('https://api.slack.com/apps');
+    expect(link.getAttribute('rel')).toContain('noreferrer');
+    // The other providers' hints stay where they belong.
+    expect(screen.queryByText(/Metadata, Issues and Pull requests/)).toBeNull();
+    expect(screen.queryByText(/Read content only/)).toBeNull();
+  });
 });

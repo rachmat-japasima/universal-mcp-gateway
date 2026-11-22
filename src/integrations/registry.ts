@@ -7,6 +7,7 @@ import {
 import type { Connector } from './connector.js';
 import { githubConnector } from './github/connector.js';
 import { notionConnector } from './notion/connector.js';
+import { slackConnector } from './slack/connector.js';
 
 /**
  * Code-registered provider registry (ADR-050).
@@ -20,7 +21,8 @@ import { notionConnector } from './notion/connector.js';
  *
  * Production registrations: GitHub (ADR-053), read-only through a fine-grained
  * personal access token; Notion (ADR-055), read-only through an internal
- * connection token. Test fixtures register throwaway providers in their own
+ * connection token; Slack (ADR-056), read-only through a manually supplied
+ * bot token. Test fixtures register throwaway providers in their own
  * registry instance; this list stays production truth.
  */
 
@@ -68,10 +70,41 @@ export const notionRegistration: ProviderRegistration = {
   },
 };
 
+/**
+ * The Slack registration (ADR-056), exported for the same reason as the
+ * GitHub and Notion ones: its contract tests wire the production
+ * registration to a fixture connector, so the registration under test is
+ * the one shipped.
+ */
+export const slackRegistration: ProviderRegistration = {
+  id: 'slack',
+  name: 'Slack',
+  description:
+    'Read-only Slack access through a manually supplied bot token. Five tools cover conversations, message history, thread replies, and users; the bot sees only what its read scopes and memberships allow — private channels must invite it, and there is no search, no write, and no file download.',
+  capabilities: ['discovery', 'execution'],
+  metadata: {
+    authMethod: 'bot user OAuth token (xoxb-), manually supplied',
+    requiredPermissions: [
+      'channels:read',
+      'channels:history',
+      'groups:read',
+      'groups:history',
+      'im:read',
+      'im:history',
+      'mpim:read',
+      'mpim:history',
+      'users:read',
+    ],
+    apiOrigin: 'https://slack.com/api',
+    docs: 'https://docs.slack.dev/reference/methods',
+  },
+};
+
 /** Production registrations; each entry is reviewed code, not config. */
 const REGISTRATIONS: ReadonlyArray<{ registration: ProviderRegistration; connector: Connector }> = [
   { registration: githubRegistration, connector: githubConnector },
   { registration: notionRegistration, connector: notionConnector },
+  { registration: slackRegistration, connector: slackConnector },
 ];
 
 export class ProviderRegistry {
@@ -131,7 +164,7 @@ export class ProviderRegistry {
 
 /**
  * The registry the gateway assembles with. Wired with the code registrations
- * (GitHub ADR-053, Notion ADR-055); tests construct their own instance
- * instead of mutating this one.
+ * (GitHub ADR-053, Notion ADR-055, Slack ADR-056); tests construct their own
+ * instance instead of mutating this one.
  */
 export const providerRegistry = new ProviderRegistry(REGISTRATIONS);

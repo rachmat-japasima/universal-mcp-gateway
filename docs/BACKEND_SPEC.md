@@ -548,7 +548,7 @@ on every write (ADR-052/053; payload detail in `docs/API_REFERENCE.md` §3.10).
 
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `GET` | `/api/v1/integrations/providers` | Registered providers. GitHub (ADR-053) and Notion (ADR-055) ship registered and read-only; the registry is code and cannot be widened at runtime. |
+| `GET` | `/api/v1/integrations/providers` | Registered providers. GitHub (ADR-053), Notion (ADR-055), and Slack (ADR-056) ship registered and read-only; the registry is code and cannot be widened at runtime. |
 | `GET` | `/api/v1/integrations/connections` | Connections, newest first; `providerName` present iff the provider is still registered. |
 | `POST` | `/api/v1/integrations/connections` | Create; the row answers `201` at `pending`. |
 | `GET`/`DELETE` | `/api/v1/integrations/connections/{connectionId}` | Read one; hard delete answering with the removed row. |
