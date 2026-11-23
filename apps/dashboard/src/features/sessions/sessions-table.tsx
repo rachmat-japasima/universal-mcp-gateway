@@ -7,6 +7,7 @@ import { Table, proportional, type TableColumn } from '@astryxdesign/core/Table'
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import Link from 'next/link';
+import { useState } from 'react';
 
 import { EmptyStateCard } from '@/components/feedback/states';
 import type { Pagination, Session, SessionQuery } from '@/lib/api/types';
@@ -137,6 +138,10 @@ export function SessionsTable({
   agents?: Array<{ id: string; name: string }>;
 }): React.ReactElement {
   const names = new Map((agents ?? []).map((agent) => [agent.id, agent.name]));
+  // Not a search filter: this is the id the lookup submits, so the submit stays
+  // disabled until there is something to look up. `required` alone only spoke
+  // up after a click that could not go anywhere.
+  const [sessionId, setSessionId] = useState('');
 
   const rows: Row[] = sessions.map((session) => ({
     id: session.id,
@@ -221,13 +226,20 @@ export function SessionsTable({
               <input
                 type="text"
                 name="sessionId"
+                value={sessionId}
+                onChange={(event) => setSessionId(event.target.value)}
                 placeholder="Session id (a UUID)"
                 maxLength={36}
                 required
                 className="rounded-md border border-solid px-3 py-2 font-mono text-sm"
               />
             </label>
-            <Button label="Open session" type="submit" variant="secondary" />
+            <Button
+              label="Open session"
+              type="submit"
+              variant="secondary"
+              isDisabled={sessionId.trim() === ''}
+            />
           </form>
         </VStack>
       </Card>
