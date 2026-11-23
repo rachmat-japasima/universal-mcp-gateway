@@ -1,685 +1,228 @@
 # Universal MCP Gateway
 
-A self-hosted, local-first MCP gateway and control plane for multiple coding agents and independently managed MCP backends.
+A local-first, self-hosted gateway and control plane for Model Context Protocol
+(MCP) backends and coding agents.
 
-## Full product scope
+One MCP endpoint in front of many backends. The gateway aggregates their tools
+into a single catalog, routes calls, enforces per-agent policies, isolates
+sessions, and records every decision in an audit trail. A separate operator
+dashboard manages all of it.
 
-- MCP Streamable HTTP gateway.
-- Dynamic backend registry and adapters.
-- Tool discovery, namespacing, and routing.
-- Agent profiles and per-agent credentials.
-- Authorization policies.
-- Session isolation and concurrency controls.
-- Complete administration dashboard.
-- Monitoring, structured logs, diagnostics, and audit trail.
-- Backup, recovery, and operational runbooks.
+![Architecture: MCP clients and the operator browser reach a gateway on 127.0.0.1:8787, which routes tool calls to MCP backends and managed integrations and persists state in SQLite; the Next.js dashboard administers it over loopback.](docs/diagrams/architecture.svg)
 
-## Technology
+## Features
 
-### Backend
-Node.js, TypeScript ESM, pnpm, Hono, official MCP TypeScript SDK, Zod, Pino, YAML, SQLite (`better-sqlite3`), Vitest.
+- **One endpoint, many backends.** stdio and Streamable HTTP MCP servers are
+  registered at runtime; tools are discovered, namespaced (`backend__tool`), and
+  routed from a single catalog.
+- **Agents and credentials.** Each agent gets its own bearer token; tokens are
+  stored as hashes, can be rotated and revoked, and are shown once at creation.
+- **Authorization policies.** Allow/deny rules are evaluated per tool call and
+  can be previewed before they are applied.
+- **Session isolation.** Every MCP session is bound to the authenticated agent,
+  with idle and hard lifetime limits and bounded concurrency.
+- **Managed integrations.** Code-registered providers (GitHub, Notion, Slack)
+  share the same catalog, policy engine, audit trail, and lifecycle as backends,
+  with no provider-specific logic outside their adapter directories.
+- **Operation surface.** Structured, correlated logs; Prometheus metrics;
+  readiness and liveness probes; bounded graceful shutdown.
+- **Operator dashboard.** Overview, backends, tools, agents, policies, sessions,
+  activity, audit, integrations, and monitoring — including connect, validate,
+  and policy assignment.
+- **Backup and restore.** Verified SQLite snapshots and a restore path that
+  refuses to run against a live gateway.
 
-### Dashboard
-Next.js, React, TypeScript, and **Astryx directly** as the UI component library/design system.
+## Requirements
 
-**Do not use shadcn/ui or Radix UI as a fallback component library.** Follow current official Astryx documentation: https://astryx.atmeta.com/
+- Node.js **26** (matches CI and the container image)
+- pnpm **11** (`corepack enable`)
+- Linux, macOS, or WSL2. SQLite is embedded — no external database.
 
-## Current status
+## Quick start
 
-Phases 1–8 are complete. Phase 9 (dashboard foundation) is **complete in its
-adjusted scope**: the foundation is implemented and verified. Phase 10.0
-(dashboard operator identity and authentication) is **implemented** — the gateway
-now requires an operator session on every `/api/v1` route and the dashboard has a
-real login. The remaining Phase 10 modules are not built. Phase 11 (monitoring
-and observability foundation) is **implemented**: structured correlated logging
-and a metrics registry, exported at `GET /metrics` (operator-authenticated) and
-`GET /api/v1/monitoring/metrics`. Phase 12 (integration-ready architecture) is
-**implemented**: two tool source types — MCP backends and managed integrations —
-share one catalog, one authorization model, and one audit trail. Phase 13
-(First real provider integration — GitHub) is **implemented**: a code-registered,
-read-only, fine-grained-PAT GitHub connector, the operator write API
-(`test` answers as data; `enable` is the only path to `connected`), and three
-dashboard routes; no test dials GitHub. Phase 15 (integration-platform
-hardening) is **implemented**, audit-first (ADR-054): `enable` refreshes a live
-connection in place, a failed refresh withdraws its stale tools, a racing
-delete/disconnect/disable wins over an in-flight connect, the GitHub client
-refuses redirects outright, and tool-call metrics split by a closed
-`source_type` enum. Phase 16 (second provider integration — Notion) is
-**implemented** (ADR-055, `docs/providers/NOTION.md`): a code-registered,
-read-only, internal-connection-token Notion connector — six tools, pinned
-`Notion-Version: 2026-03-11`, the same vault, lifecycle, catalog,
-authorization, execution, audit, and metrics paths reused with zero
-provider-specific logic outside `apps/gateway/src/integrations/notion/`; no test dials
-Notion, and live account validation was not performed. Phase 17 (third
-provider integration — Slack) is **implemented** (ADR-056,
-`docs/providers/SLACK.md`): a code-registered, read-only, bot-token Slack
-connector — five tools, Slack's two-envelope failure rule (HTTP 200 with
-`ok:false` is a failure), nine read scopes, `ts` values kept as exact
-strings, and the same vault, lifecycle, catalog, authorization, execution,
-audit, and metrics paths reused with zero provider-specific logic outside
-`apps/gateway/src/integrations/slack/`; no test dials Slack, and live workspace
-validation was not performed.
-- Typecheck, build, and tests pass (`pnpm typecheck`, `pnpm build`, `pnpm test`,
-  811 gateway tests; `pnpm test:dashboard`, 473 tests).
-- Streamable HTTP `/mcp` verified against the official MCP Client SDK for both
-  protocol eras (2025 `initialize` handshake and 2026 `server/discover`).
-- `tools/list` serves the live catalog, filtered per agent; no backend is
-  registered and none is connected in the production registry, so it is empty
-  there by default.
-- Phase 1: 19 integration tests cover handshake, malformed input, Host/Origin
-  validation, per-exchange server isolation, and shutdown.
-- Phase 2: domain + Zod 4 contracts, error taxonomy, centralized configuration,
-  SQLite foundation (versioned transactional migrations, 11 tables), repository
-  interfaces, and bootstrap wiring.
-- Phase 3: backend registry and management API at `/api/v1` — CRUD, validation,
-  enable/disable, pagination/filtering/search, optimistic concurrency, and audit
-  events. 69 new tests (service + API + real-socket).
-- Phase 4: MCP transport adapters (stdio + Streamable HTTP) over the official
-  MCP Client SDK, a serialized lifecycle manager, a persisted state machine with
-  a `disconnecting` state, bounded exponential-backoff reconnect, startup
-  recovery, an SSRF destination policy, and `connect`/`disconnect`/`reconnect`/
-  `runtime` endpoints. 61 new tests, including real child processes and a
-  loopback HTTP fixture.
-- Phase 5: generic tool discovery, deterministic namespacing, a fail-closed
-  collision policy, lossless JSON Schema forwarding, `tools/list` + `tools/call`
-  over a low-level SDK `Server`, per-call timeout and cancellation, lifecycle
-  synchronization, and a catalog management API. 47 new tests.
-- Phase 6: agent profiles, per-agent bearer credentials, a default-deny policy
-  engine enforced on both `tools/list` and `tools/call`, per-request
-  authentication on `/mcp`, and `auth.*` / `access.denied` audit events. 69 new
-  tests.
-- Phase 7: persistent session isolation — one protocol session bound to one agent
-  and one credential, immutable at the database level; idle and hard-cap expiry
-  enforced per request; invalidation on revocation/rotation/disable/delete;
-  terminate, cleanup, and inspect endpoints; and `session.*` audit events. 65
-  new tests → 437 total. Session serving is single-process by construction
-  (`docs/ARCHITECTURE.md` §10).
-- Phase 8: management API completion — overview, monitoring (+ four
-  sub-resources), `/ready`, diagnostics, read-only settings, filterable and
-  paginated activity and audit, and an OpenAPI 3.1 document checked against the
-  live route table. One snapshot reader feeds every ops endpoint so counts
-  cannot disagree; an unavailable store reports `null`, never `0`. 49 new tests
-  → 486 total.
-- `/health` reports `backendCount: 0`; production backend registry is empty.
+```bash
+git clone <repository-url> universal-mcp-gateway
+cd universal-mcp-gateway
+pnpm install
 
-**Phase 10.0 — dashboard operator identity and authentication.** ADR-045; the
-gateway now requires an operator session on every `/api/v1` route, and the
-dashboard has a real login.
+# The gateway refuses to sign MCP credentials without this (≥ 32 chars).
+export CREDENTIAL_HASH_SECRET="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))")"
 
-- One local operator in `admin_users` (migration `0006`, additive). scrypt hashes
-  from `node:crypto` with the parameters encoded in the stored string.
-- Opaque server-side sessions in `operator_sessions` — only an HMAC digest is
-  stored — with idle (30 min) and absolute (12 h) lifetimes derived on read,
-  rotation at login, immediate revocation, and lockout after five failures.
-- Default-deny boundary in the gateway (`operatorAuth`) with a closed exemption
-  list, plus `X-CSRF-Token` on every non-safe method. `/health` and `/ready` stay
-  unauthenticated; `/mcp` is untouched and still uses per-agent bearer tokens.
-- Dashboard `/login`, `/api/login`, `/api/logout`, a session probe, and an account
-  menu. The dashboard never verifies a password and never mints a session.
-- 42 new gateway tests (28 auth boundary + 14 identity), 13 new dashboard tests
-  → 528 gateway / 38 dashboard.
-- **Not built:** multiple operators, RBAC beyond `owner`, password-change and
-  session-listing UIs, TLS, per-IP login rate limits, dashboard CSP. Loopback
-  only; see `docs/SECURITY.md` §8.2.
+# Create the first operator account (interactive; the password is never an argv).
+pnpm operator:create
 
-**Phase 10.1 — backend management.** The first module page is real: the dashboard
-now manages the backend registry end to end.
+# Terminal 1 — gateway on 127.0.0.1:8787
+pnpm dev
 
-- `/dashboard/backends` (list, server-side search/transport/enabled filters,
-  pagination, counts from `GET /api/v1/monitoring/backends`), `/backends/new`,
-  `/backends/[backendId]`, and `/backends/[backendId]/edit`.
-- Enable/disable, connect/disconnect/reconnect, and delete — with availability
-  derived from the gateway's own rules and `expectedVersion` sent for the
-  compare-and-set operations.
-- Writes go through the dashboard's own allowlisted same-origin proxy
-  (`/api/backends/[...path]`), which forwards the operator cookie and the CSRF
-  token from one session probe. The browser never reaches the gateway and holds
-  no token.
-- `env`/`headers` values are `secret:<path>`/`env:<VAR>` references only. The
-  form refuses a literal value; no response can carry a secret because none is
-  stored.
-- 110 new dashboard tests → 528 gateway / 148 dashboard. **Not built:** the other
-  module pages (tools, agents, policies, sessions, activity, monitoring, audit,
-  settings) remain honest placeholders; runtime-status filtering needs an API
-  parameter that does not exist. No backend was registered or connected, and the
-  running gateway was not restarted. See `docs/DASHBOARD.md` Part IV.
+# Terminal 2 — dashboard on http://127.0.0.1:3000
+pnpm dev:dashboard
+```
 
-**Phase 11 — monitoring and observability foundation.** ADR-046, ADR-047; the
-gateway now keeps structured, correlated logs and aggregate telemetry — with no
-new runtime dependency.
+Open <http://127.0.0.1:3000> and sign in. The dashboard shows "Gateway
+unreachable" until the gateway process is up; that is a real state, not an
+error.
 
-- Correlation first on the outer app: `X-Request-Id` generated/echoed on every
-  response; `X-Correlation-Id` accepted only when it matches
-  `^[A-Za-z0-9._-]{1,64}$` — validated, never trusted. Both travel via
-  AsyncLocalStorage, so no global mutable context exists and concurrent requests
-  stay isolated. Migration `0007` persists the join on activity rows; audit
-  keeps the gateway's own request id.
-- Structured logging with serializer-level redaction (`authorization`, cookies,
-  credential/token/secret field families); tool arguments and upstream responses
-  are never logged.
-- A hand-rolled in-memory registry (`apps/gateway/src/monitoring/metrics.ts`): counters,
-  gauges, bucketed histograms, `umg_`-prefixed, **closed-enum labels only** —
-  never a tool name, agent id, or caller input; violations drop into
-  `umg_metrics_dropped_total`. In memory only: resets on restart, current facts
-  not history.
-- Instrumented at every layer that owns an outcome: HTTP surfaces, MCP methods,
-  tool calls, lifecycle (connect/reconnect/disconnect), auth, credentials,
-  backends, sessions.
-- Two exports, one boundary: `GET /metrics` (Prometheus text 0.0.4) behind the
-  same operator cookie and loopback check as `/api/v1`, mounted only when an
-  operator exists; JSON twin `GET /api/v1/monitoring/metrics` for the dashboard.
-- The dashboard's monitoring page gains a fifth card (Telemetry) reading the
-  registry by exact metric and label — no rates, no percentages, no charts — and
-  `/settings` reports `features.metrics: true`.
-- 50 new gateway tests (correlation, redaction, registry + access control,
-  instrumentation) → 582; 5 new dashboard tests → 432.
-- **Not verified:** a real Prometheus scrape of a long-running instance, and a
-  browser view of the telemetry card against a live gateway.
+There is no built-in `.env` loader. `.env.example` documents the variables;
+export them in your shell or inject them with your process manager.
 
-**Phase 12 — integration-ready architecture.** ADR-048–052; the gateway can now
-host two kinds of tool sources without forking any pipeline. Architecture only:
-**zero production providers are registered**, and no connection can exist in a
-production deployment.
+### Connect an MCP client
 
-- Every catalog tool carries a stable `{ sourceType, sourceId }`:
-  `mcp_backend` (unchanged; `backendId` survives, equal to `sourceId`) or
-  `managed_integration` (connection id; no fabricated `backendId`). One catalog,
-  composite snapshot keys, deterministic namespacing reused — no existing MCP
-  public tool name changed.
-- A code-registered provider registry (`apps/gateway/src/integrations/`): zod-validated
-  registrations, duplicate ids refused, declared capabilities cross-checked
-  against the connector. No dynamic loading, no marketplace, no plugins.
-- Connectors are bounded guests: the execution context is exactly
-  `{ connectionId, metadata, resolveCredential, signal, timeoutMs }` — no store
-  handle, no eager credential value. Errors normalize onto the existing
-  `BACKEND_*` codes; the connector's own message stays in `details`.
-- One dispatch seam in the router, **after** authorization: a denied caller of
-  a managed tool gets the uniform unknown-tool answer and the connector never
-  runs. A `reauthorization_required` answer flips the connection status,
-  withdraws its tools, and fails closed until an operator acts.
-- Credentials are sealed in an AES-256-GCM envelope vault (per-record DEK,
-  versioned envelope, master key from `INTEGRATION_MASTER_KEY` only, lazy
-  fail-closed — no key means no credential can be stored, ever). The database
-  holds a reference; no endpoint returns a value; a test scans every database
-  file for the plaintext and finds none.
-- Connection lifecycle is data: seven statuses, every non-terminal status can
-  reach `disabled`, `disabled` is the only terminal, and `error` /
-  `reauthorization_required` exit only through an explicit operator connect.
-- Migration `0008` is additive only and is tested against a genuine Phase 11
-  database: every row survives, the new tables arrive empty. Read-only operator
-  endpoints `GET /api/v1/integrations/{providers,connections}` answer honestly
-  (`[]` in production); managed calls reuse `tools.call` activity rows and
-  `umg_tool_calls_total`.
-- 76 new gateway tests across five suites (domain/registry/catalog, execution,
-  vault, database migration, security regression) → 658; dashboard unchanged at
-  432. **Not built:** the operator write API, any dashboard page, and any real
-  provider — none exists to point them at.
+Create an agent and a credential in the dashboard (the token is shown once),
+then point the client at the gateway:
 
-**Phase 13 — first real provider integration (GitHub).** ADR-053. The registry's
-first code entry: GitHub, **read-only**, fine-grained PAT.
+```json
+{
+  "mcpServers": {
+    "gateway": {
+      "type": "http",
+      "url": "http://127.0.0.1:8787/mcp",
+      "headers": { "Authorization": "Bearer <agent token>" }
+    }
+  }
+}
+```
 
-- The provider-owned HTTP client (`apps/gateway/src/integrations/github/`): fixed origin
-  `https://api.github.com` (HTTPS only, nothing caller-suppliable can redirect
-  it), closed header set (`Bearer`, `X-GitHub-Api-Version: 2026-03-10`,
-  `Accept: application/vnd.github+json`, UA `universal-mcp-gateway`), one retry
-  only on `Retry-After ≤ 5s`, and a closed failure vocabulary — GitHub prose
-  never crosses the connector boundary.
-- Six read-only tools (`list_repositories`, `get_repository`, `list_issues`,
-  `get_issue`, `list_pull_requests`, `get_pull_request`): strict zod inputs,
-  bounded pagination, timeouts with cancellation, normalizers that refuse
-  malformed provider shapes rather than padding them.
-- The operator write API on the same `IntegrationService`: create is `pending`;
-  `credential` is write-only (a replacement deletes the previous envelope
-  in-transaction); `test` is data either way and moves nothing; `enable` is the
-  only path to `connected`, the only exit from `disabled`, the only reconnect —
-  it stamps `validatedAt` (migration `0009`, nullable until first proof) and
-  publishes the tools. Every write sits behind session + CSRF + origin and
-  audits through the Phase 12 closed enum; the OpenAPI document keeps path
-  parity by test.
-- Three dashboard routes — `/dashboard/integrations` (list), `/new` (create,
-  the step that takes no secret), `/[connectionId]` (credential panel,
-  lifecycle actions, published tools). The PAT lives in one
-  `type="password"`/`autoComplete="off"` field, is cleared when the request
-  answers success or failure, and is never rendered back or persisted.
-- 39 new gateway tests; the dashboard grows to 470 across 45 files. **Zero calls
-  to `api.github.com` from the repository** — the client's injectable `fetch`
-  carries every suite; the first live call is an operator's `test` or `enable`.
-
-**Phase 9 — Astryx dashboard foundation.** A Next.js 16 / React 19 dashboard
-lives in `apps/dashboard` (pnpm workspace) and uses Astryx directly as its design
-system. At this point the gateway still lived at the repository root; the later
-repository restructuring moved it into `apps/gateway` (see Development
-commands below for the current workspace layout).
-
-- `/dashboard` reads real data from `GET /api/v1/overview`; `/dashboard/backends`
-  manages the registry (Phase 10.1). The remaining module routes (`/tools`,
-  `/agents`, `/policies`, `/sessions`, `/activity`, `/monitoring`, `/audit`,
-  `/settings`) exist as honest placeholders — no sample data, no fake counters.
-- The gateway binds `127.0.0.1` and grants no CORS, so the browser never calls it.
-  Server components use `GATEWAY_ORIGIN`; client refreshes go through the
-  same-origin allowlisted proxy `/api/proxy/[...path]`.
-- The header probe distinguishes *unreachable* (proxy `503` + error envelope)
-  from *not ready* (gateway `503` + a valid readiness document) by payload shape,
-  because both arrive as `503`.
-- Astryx only: no shadcn/ui, no Radix UI.
-- **Operator login is Phase 10.0 (implemented).** `pnpm operator:create` creates
-  the single local operator; `/login` signs in; the gateway — not the dashboard —
-  verifies the password and enforces the session on every `/api/v1` request. See
-  "Operator sign-in" below and `docs/SECURITY.md` §4.3.
-- **Not verified:** real-browser click-path behaviour (no browser automation was
-  installed). Component behaviour is covered by jsdom tests; layout by SSR
-  inspection and the production build. This applies to the login form too.
-  See `docs/DASHBOARD.md` Part III.
-
-**Nothing connects by itself.** Registration, validation, and enable/disable are
-configuration operations: no process is spawned and no socket is dialled. A
-connection happens only on an explicit `POST /backends/:id/connect`, and a
-restart rewrites every persisted live state to `disconnected` without
-reconnecting. Connecting discovers tools; disconnecting removes them.
-
-**Tools are namespaced `<backend_id>__<tool_name>`.** Two backends claiming the
-same public name have **both** tools withheld — never routed by discovery order.
-Schemas are forwarded verbatim, validated with AJV where they compile, and
-forwarded unvalidated (with the reason logged) where they do not. There is no
-HTTP tool-invocation endpoint: calls go through `/mcp` only.
-
-**Backends can now run processes and make outbound connections.** The outbound
-policy (scheme, credentials, DNS-resolved destinations, redirects) is in
-`apps/gateway/src/security/network-policy.ts`; `ALLOW_PRIVATE_NETWORK` opens only
-loopback/private/CGNAT and never metadata or link-local. TLS verification is
-never disabled.
-
-**`/mcp` requires a per-agent credential.** Every request presents
-`Authorization: Bearer umg_live_…`, verified independently on that request.
-Authorization is default deny: an agent sees only the tools its policies allow,
-and a denied call answers `-32602 "Unknown tool"`, identical to a name that does
-not exist. New agents have no credential and no access until an operator issues
-one and assigns a policy.
-
-**A protocol session is bound to the agent that opened it.** In the 2025 era the
-SDK issues an `mcp-session-id`; the gateway stores it against the authenticating
-agent and credential, and every later request must present both a valid bearer
-*and* a session that is active, unexpired, and owned by that agent. A session id
-is a routing handle, never proof: presenting one without a token is a 401.
-Unknown, terminated, expired, revoked, and other-agent sessions all answer the
-same `404 Session not found`. The 2026 era is per-request by protocol design and
-has no session to bind. A sessionless one-shot `tools/list` still works exactly as
-before.
-
-**The management API requires an operator session** (Phase 10.0), is
-loopback-only, and — since Phase 6 — can mint a credential. It is no longer
-reachable by an anonymous local process, but a local user who holds the operator
-password can still grant themselves MCP access. Treat it as a local operator CLI,
-not a service. Do not expose this beyond loopback. See `docs/SECURITY.md` §3.1,
-§4.1, §4.3, §5.
-
-**Set `CREDENTIAL_HASH_SECRET` before connecting any agent.** In production a
-missing or too-short secret refuses startup; in development the gateway starts
-but every `/mcp` request answers 401 until it is set. There is deliberately no
-auto-generated ephemeral secret, and no default value.
+Verified end-to-end with Claude Code and OpenCode. See
+[`docs/AGENT_COMPATIBILITY.md`](docs/AGENT_COMPATIBILITY.md) for the full client
+matrix and evidence.
 
 ## Configuration
 
-Environment variables, with defaults:
+Precedence: explicit overrides → environment variables → defaults. Invalid
+values fail fast at startup with a message naming the setting. Secrets are never
+logged.
 
-| Variable | Default | Notes |
+| Variable | Default | Purpose |
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | Loopback only (`127.0.0.1`, `localhost`, `::1`) |
-| `PORT` | `8787` | 1–65535 |
-| `DATABASE_PATH` | `./data/gateway.db`, resolved against the repository root | Created with parents if missing; cwd-independent (same file from any working directory) |
-| `LOG_LEVEL` | `info` | `fatal`…`trace`, `silent` |
+| `PORT` | `8787` | Gateway listener port |
+| `DATABASE_PATH` | `./data/gateway.db` | Resolved against the repository root, not the working directory |
 | `ENVIRONMENT` | `development` | `development`, `test`, `production` |
-| `REQUEST_BODY_LIMIT_BYTES` | `4194304` | Max MCP request body |
-| `REQUEST_TIMEOUT_MS` | `30000` | Per-exchange bound |
-| `SESSION_IDLE_TIMEOUT_MS` | `1800000` | 30 min. A session unused this long is refused per request and swept by cleanup |
-| `SESSION_MAX_LIFETIME_MS` | `43200000` | 12 h hard cap from creation, regardless of activity |
-| `RECONNECT_ENABLED` | `false` | Auto-reconnect after a transient loss |
-| `RECONNECT_INITIAL_DELAY_MS` | `1000` | First backoff step |
-| `RECONNECT_MAX_DELAY_MS` | `60000` | Backoff ceiling |
-| `RECONNECT_MAX_ATTEMPTS` | `5` | Attempts before giving up (1–100) |
-| `RECONNECT_JITTER_RATIO` | `0.2` | ± fraction of each delay (0–1) |
-| `ALLOW_PRIVATE_NETWORK` | `false` | Permit loopback/private HTTP backends (fixtures only) |
+| `LOG_LEVEL` | `info` | `fatal` … `trace`, `silent` |
+| `CREDENTIAL_HASH_SECRET` | *(required)* | ≥ 32 chars; production refuses to start without it |
+| `CREDENTIAL_HASH_KEY_ID` | `v1` | Key id stored with each credential digest |
+| `INTEGRATION_MASTER_KEY` | *(none)* | 32-byte base64 key for integration credentials; the vault fails closed without it |
+| `ALLOW_PRIVATE_NETWORK` | `false` | Permit private/loopback HTTP backends (fixtures only) |
+| `REQUEST_TIMEOUT_MS` | `30000` | Bound on one MCP request exchange |
 | `TOOL_DISCOVERY_TIMEOUT_MS` | `15000` | Bound on one backend's `tools/list` |
-| `TOOL_CALL_TIMEOUT_MS` | `60000` | Ceiling on one `tools/call` (backend `timeoutMs` still wins if lower) |
-| `CREDENTIAL_HASH_SECRET` | *(none)* | **Required for `/mcp`.** ≥32 chars. Read outside `Config`; production refuses startup without it |
-| `CREDENTIAL_HASH_KEY_ID` | `v1` | Key id stored with each digest, for rotation |
+| `TOOL_CALL_TIMEOUT_MS` | `60000` | Ceiling on one `tools/call` |
+| `SESSION_IDLE_TIMEOUT_MS` | `1800000` | Idle session refusal window |
+| `SESSION_MAX_LIFETIME_MS` | `43200000` | Hard session cap from creation |
+| `RECONNECT_ENABLED` | `false` | Automatic reconnect after a transient loss |
+| `OPERATOR_SESSION_IDLE_TIMEOUT_MS` | `1800000` | Dashboard session idle timeout |
+| `OPERATOR_COOKIE_SECURE` | `false` | Set `true` only when serving the dashboard over HTTPS |
+| `GATEWAY_ORIGIN` | `http://127.0.0.1:8787` | Dashboard → gateway address; server-only, never `NEXT_PUBLIC_*` |
 
-Precedence: explicit overrides → environment → defaults. Invalid configuration
-fails fast at startup with a message naming the setting. No YAML is read; no
-secret is ever logged.
+The full list, including reconnect backoff and operator session limits, is in
+[`.env.example`](.env.example). Every setting is validated at startup.
 
-`.env.example` lists the common variables. There is no built-in `.env` loader —
-export the variables or let your process manager inject them. `CREDENTIAL_HASH_SECRET`
-is the only one with no default, and it is deliberately not part of `Config`.
+## Surfaces
 
-## Development commands
-
-The repository is a pnpm workspace. The root manifest only orchestrates; each
-command below delegates to the owning package:
-
-| Location | Contents |
-| --- | --- |
-| `apps/gateway` | The gateway backend — source, tests, CLIs, its own manifests |
-| `apps/dashboard` | The Next.js operator dashboard |
-| `data/` | Runtime state, gitignored: `gateway.db`, `backups/` |
-| `deployment/` | Docker and systemd artifacts (NOT VERIFIED, `deployment/README.md`) |
-
-There is no `packages/` member yet: nothing is shared between the two apps
-(their only coupling is the runtime proxy through `GATEWAY_ORIGIN`), so no
-shared package is created for appearance.
-
-Gateway (`apps/gateway`):
-```bash
-pnpm install
-pnpm dev            # tsx watch apps/gateway/src/index.ts on 127.0.0.1:8787
-pnpm typecheck
-pnpm build
-pnpm test
-```
-
-Dashboard (`apps/dashboard`, port 3000):
-```bash
-pnpm dev:dashboard       # next dev --port 3000
-pnpm typecheck:dashboard
-pnpm test:dashboard    # 473 jsdom component/validator tests
-pnpm build:dashboard
-```
-
-Explicit aliases and the combined gate (identical behaviour to the commands
-above, kept so a script name states its target):
-```bash
-pnpm dev:gateway         # same as pnpm dev
-pnpm build:gateway       # same as pnpm build
-pnpm verify              # both typechecks + both test suites
-pnpm soak --profile=ci   # 90 s steady-load measurement; CI-only, not in verify
-```
-
-Operational CLIs (Phase 18) — the runbook, including deployment artifacts and
-known accepted risks, is `docs/OPERATIONS.md`:
-```bash
-pnpm operator:create     # first operator, interactive
-pnpm operator:unlock <name>  # clear a 15-minute lockout after five failures
-pnpm backup              # verified snapshot of a running gateway
-pnpm restore <file> --confirm   # local CLI only, gateway stopped
-```
-
-Run the gateway and the dashboard in two terminals. The dashboard shows
-"Gateway unreachable" until the gateway is up; that is a real state, not an
-error to work around. The dashboard talks to `GATEWAY_ORIGIN` (default
-`http://127.0.0.1:8787`), which is server-only — never a `NEXT_PUBLIC_*`
-variable, because the browser must not learn the gateway address.
-
-## Operator sign-in (Phase 10.0)
-
-The management API requires an operator session. Create the operator **once, on
-the gateway host**:
-
-```bash
-pnpm operator:create
-```
-
-- The password is read from a TTY/stdin prompt, **never from argv** — an
-  argument would land in shell history and process listings.
-- The command refuses to run when an operator already exists. There is no default
-  or generated password.
-- An unconfigured instance answers login with *"No operator is configured. Run
-  `pnpm operator:create` on the gateway host."* and nothing more.
-
-Then open `http://localhost:3000`, which redirects to `/login`. Sign-in posts to
-the dashboard's own `/api/login` route, which forwards the credentials to the
-gateway over loopback; the gateway verifies the password, mints the session, and
-the dashboard re-issues the cookie on its own origin. **The dashboard never
-verifies a password** — it cannot, and that is the point.
-
-| Setting | Default | Meaning |
+| Path | Auth | Purpose |
 | --- | --- | --- |
-| `OPERATOR_SESSION_IDLE_TIMEOUT_MS` | `1800000` (30 min) | Session ends after this much inactivity |
-| `OPERATOR_SESSION_MAX_LIFETIME_MS` | `43200000` (12 h) | Absolute ceiling, regardless of use |
-| `OPERATOR_COOKIE_SECURE` | `false` | Set `true` only when serving over HTTPS. A `Secure` cookie on plain-HTTP loopback is silently dropped, so login would appear to do nothing |
+| `ALL /mcp` | Agent bearer token | Authenticated MCP endpoint (Streamable HTTP) |
+| `/api/v1/*` | Operator session + CSRF for writes | Management API (backends, agents, policies, sessions, audit, monitoring) |
+| `GET /health` | None | Liveness probe |
+| `GET /ready` | None | Readiness: 503 when storage or the ledger is unreadable |
+| `GET /metrics` | Operator session | Prometheus text export |
+| `GET /api/v1/openapi.json` | Operator session | OpenAPI 3.1 contract, checked against the live route table |
 
-Lifetime rules, locking, and CSRF are described in `docs/SECURITY.md` §4.3.
-Calling the API directly (e.g. `curl`) needs the cookie and, for any write, the
-`X-CSRF-Token` from login — see `docs/API_REFERENCE.md` §3.1.1.
+Errors share one envelope: `{ "error": { "code", "message", "requestId" } }`.
+The endpoint-by-endpoint contract is
+[`docs/API_REFERENCE.md`](docs/API_REFERENCE.md).
 
-**Loopback only.** The operator password and session cookie cross plaintext HTTP
-inside the host. There is no TLS, no RBAC beyond a single `owner`, and no per-IP
-login rate limit (per-account lockout: 5 failures → 15 minutes). Do not put this
-behind a tunnel, reverse proxy, or non-loopback bind.
+## Commands
 
-MCP agent authentication is unchanged and separate: `/mcp` still requires its own
-per-agent bearer credential, an operator cookie is refused there, and an agent
-bearer is refused on `/api/v1`.
+The repository is a pnpm workspace; the root manifest only orchestrates.
 
-Health:
-```bash
-curl -i http://127.0.0.1:8787/health
-```
-
-MCP endpoint:
-```text
-http://127.0.0.1:8787/mcp
-```
-
-Management API (operator session required, loopback only):
-```bash
-# Sign in first; keep the cookie and the CSRF token (Phase 10.0).
-COOKIE=$(curl -s -D - -o /dev/null http://127.0.0.1:8787/api/v1/auth/login \
-  -H 'content-type: application/json' -d '{"username":"owner","password":"…"}' \
-  | grep -i '^set-cookie:' | sed 's/.*umg_operator=\([^;]*\).*/umg_operator=\1/')
-CSRF=$(curl -s http://127.0.0.1:8787/api/v1/auth/session -H "cookie: $COOKIE" | jq -r .data.csrfToken)
-
-# Empty registry
-curl -s http://127.0.0.1:8787/api/v1/backends -H "cookie: $COOKIE"
-# {"data":[],"pagination":{"page":1,"limit":20,"total":0,"totalPages":0}}
-
-# Validate a proposed configuration (persists nothing, connects nothing)
-curl -s -X POST http://127.0.0.1:8787/api/v1/backends/validate \
-  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
-  -H 'content-type: application/json' \
-  -d '{"name":"fs","connection":{"type":"stdio","command":"node","args":["server.js"]}}'
-
-# Register a backend (configuration only — nothing is spawned or dialled)
-curl -s -X POST http://127.0.0.1:8787/api/v1/backends \
-  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
-  -H 'content-type: application/json' \
-  -d '{"name":"fs","connection":{"type":"stdio","command":"node","args":["server.js"],"env":{"KEY":"env:FS_KEY"}}}'
-
-# Inspect, filter, and page (reads need the cookie, not the CSRF header)
-curl -s 'http://127.0.0.1:8787/api/v1/backends?transport=stdio&enabled=true&page=1&limit=20&sort=name' \
-  -H "cookie: $COOKIE"
-
-# Connect explicitly, then inspect runtime state (Phase 4)
-curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/connect -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF"
-curl -s http://127.0.0.1:8787/api/v1/backends/<id>/runtime -H "cookie: $COOKIE"
-curl -s http://127.0.0.1:8787/api/v1/backends/runtime -H "cookie: $COOKIE"
-curl -s -X POST http://127.0.0.1:8787/api/v1/backends/<id>/disconnect -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF"
-
-# Agents, credentials, policies (Phase 6). Writes carry the CSRF header.
-curl -s -X POST http://127.0.0.1:8787/api/v1/agents \
-  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
-  -H 'content-type: application/json' -d '{"name":"coding-agent"}'
-# Token is returned ONCE here; it is never readable again.
-curl -s -X POST http://127.0.0.1:8787/api/v1/agents/<agentId>/credentials \
-  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
-  -H 'content-type: application/json' -d '{"name":"laptop"}'
-curl -s -X POST http://127.0.0.1:8787/api/v1/policies \
-  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
-  -H 'content-type: application/json' \
-  -d '{"name":"read-only","rules":[{"resource":"tool","target":"<backendId>__get_status","effect":"allow"}]}'
-curl -s -X POST http://127.0.0.1:8787/api/v1/policies/<policyId>/assignments \
-  -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF" \
-  -H 'content-type: application/json' -d '{"agentId":"<agentId>"}'
-# Read-only preview of what that agent may call, and why
-curl -s http://127.0.0.1:8787/api/v1/agents/<agentId>/access -H "cookie: $COOKIE"
-
-# Sessions (Phase 7). Internal ids only; a protocol session id is not accepted here.
-curl -s 'http://127.0.0.1:8787/api/v1/sessions?status=active&limit=20' -H "cookie: $COOKIE"
-curl -s http://127.0.0.1:8787/api/v1/sessions/<sessionId> -H "cookie: $COOKIE"
-# Body is optional; the default reason is operator_terminated.
-curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/<sessionId>/terminate -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF"
-# Expire idle/lapsed sessions now (row-retaining, safe to repeat)
-curl -s -X POST http://127.0.0.1:8787/api/v1/sessions/cleanup -H "cookie: $COOKIE" -H "x-csrf-token: $CSRF"
-
-# Operations (Phase 8). Read-only.
-curl -s http://127.0.0.1:8787/api/v1/overview -H "cookie: $COOKIE"
-curl -s http://127.0.0.1:8787/api/v1/monitoring/backends -H "cookie: $COOKIE"
-curl -s http://127.0.0.1:8787/api/v1/settings -H "cookie: $COOKIE"
-curl -s http://127.0.0.1:8787/api/v1/diagnostics -H "cookie: $COOKIE"
-# History: filters are closed enums; unknown values are 400, not empty pages.
-curl -s 'http://127.0.0.1:8787/api/v1/activity?type=tools.call&order=desc&limit=50' -H "cookie: $COOKIE"
-curl -s 'http://127.0.0.1:8787/api/v1/audit?result=failure&actorType=agent&limit=50' -H "cookie: $COOKIE"
-
-# End the session (revokes the row, not just the cookie)
-curl -s -X POST http://127.0.0.1:8787/api/v1/auth/logout -H "cookie: $COOKIE"
-
-# Readiness (distinct from /health): 503 when storage or the ledger is unreadable.
-curl -i http://127.0.0.1:8787/ready
-
-# Then call /mcp as that agent
-curl -s -X POST http://127.0.0.1:8787/mcp \
-  -H 'authorization: Bearer umg_live_…' \
-  -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-```
-
-| Method | Path |
+| Command | Result |
 | --- | --- |
-| `GET` | `/api/v1/system` |
-| `GET` | `/api/v1/system/health` |
-| `GET` | `/api/v1/backends` |
-| `POST` | `/api/v1/backends` |
-| `GET` | `/api/v1/backends/runtime` |
-| `GET` | `/api/v1/backends/:backendId` |
-| `PATCH` | `/api/v1/backends/:backendId` |
-| `DELETE` | `/api/v1/backends/:backendId` |
-| `POST` | `/api/v1/backends/:backendId/enable` |
-| `POST` | `/api/v1/backends/:backendId/disable` |
-| `POST` | `/api/v1/backends/:backendId/connect` |
-| `POST` | `/api/v1/backends/:backendId/disconnect` |
-| `POST` | `/api/v1/backends/:backendId/reconnect` |
-| `GET` | `/api/v1/backends/:backendId/runtime` |
-| `POST` | `/api/v1/backends/validate` |
-| `GET` | `/api/v1/agents` |
-| `POST` | `/api/v1/agents` |
-| `GET` | `/api/v1/agents/:agentId` |
-| `PATCH` | `/api/v1/agents/:agentId` |
-| `DELETE` | `/api/v1/agents/:agentId` |
-| `POST` | `/api/v1/agents/:agentId/enable` |
-| `POST` | `/api/v1/agents/:agentId/disable` |
-| `GET` | `/api/v1/agents/:agentId/access` |
-| `GET` | `/api/v1/agents/:agentId/credentials` |
-| `POST` | `/api/v1/agents/:agentId/credentials` |
-| `POST` | `/api/v1/agents/:agentId/credentials/:credentialId/rotate` |
-| `POST` | `/api/v1/agents/:agentId/credentials/:credentialId/revoke` |
-| `GET` | `/api/v1/policies` |
-| `POST` | `/api/v1/policies` |
-| `GET` | `/api/v1/policies/:policyId` |
-| `PATCH` | `/api/v1/policies/:policyId` |
-| `DELETE` | `/api/v1/policies/:policyId` |
-| `POST` | `/api/v1/policies/:policyId/assignments` |
-| `DELETE` | `/api/v1/policies/:policyId/assignments/:agentId` |
-| `GET` | `/api/v1/sessions` |
-| `GET` | `/api/v1/sessions/:sessionId` |
-| `POST` | `/api/v1/sessions/:sessionId/terminate` |
-| `POST` | `/api/v1/sessions/cleanup` |
-| `GET` | `/api/v1/activity` |
-| `GET` | `/api/v1/activity/:eventId` |
-| `GET` | `/api/v1/audit` |
-| `GET` | `/api/v1/audit/:eventId` |
-| `GET` | `/api/v1/overview` |
-| `GET` | `/api/v1/monitoring` |
-| `GET` | `/api/v1/monitoring/health` |
-| `GET` | `/api/v1/monitoring/backends` |
-| `GET` | `/api/v1/monitoring/sessions` |
-| `GET` | `/api/v1/monitoring/runtime` |
-| `GET` | `/api/v1/monitoring/metrics` |
-| `GET` | `/api/v1/diagnostics` |
-| `GET` | `/api/v1/settings` |
-| `GET` | `/api/v1/openapi.json` |
-| `GET` | `/api/v1/backends/:backendId/tools` |
-| `POST` | `/api/v1/backends/:backendId/tools/refresh` |
-| `GET` | `/api/v1/tools` |
-| `GET` | `/api/v1/tools/discovery` |
-| `GET` | `/api/v1/tools/conflicts` |
-| `POST` | `/api/v1/tools/refresh` |
-| `GET` | `/api/v1/tools/:publicName` |
+| `pnpm dev` | Gateway with file watching on `127.0.0.1:8787` |
+| `pnpm dev:dashboard` | Dashboard on `127.0.0.1:3000` |
+| `pnpm build` | Build both applications |
+| `pnpm verify` | Both typechecks and both test suites (the gate) |
+| `pnpm soak --profile=ci` | 90-second steady-load measurement (CI only) |
+| `pnpm operator:create` | Create the first operator account |
+| `pnpm operator:unlock <name>` | Clear a 15-minute lockout after failed sign-ins |
+| `pnpm backup` | Verified snapshot of a running gateway |
+| `pnpm restore <file> --confirm` | Restore with the gateway stopped |
 
-Outside the version prefix: `GET /health` (liveness) and `GET /ready`
-(readiness), `GET /metrics` (Prometheus text export; operator session required,
-mounted only when an operator exists), plus `ALL /mcp` for the authenticated MCP
-surface.
+## Project layout
 
-`GET /api/v1/openapi.json` is the authoritative contract (OpenAPI 3.1). It is
-generated from a literal table and checked against the live route table by
-`apps/gateway/tests/openapi.test.ts`, so it cannot describe a route that does not exist.
+| Path | Contents |
+| --- | --- |
+| `apps/gateway` | Gateway: Hono HTTP layer, MCP routing, adapters, policies, SQLite store, CLIs |
+| `apps/dashboard` | Next.js operator dashboard (React, Astryx design system) |
+| `deployment/` | Docker and systemd artifacts — read the caveats in `deployment/README.md` |
+| `docs/` | Architecture, API, security, operations, provider guides, decision records |
+| `data/` | Runtime state, gitignored (`gateway.db`, backups) |
 
-Every request body must be `application/json`. Errors use one envelope:
-`{ "error": { "code", "message", "requestId" } }`. The endpoint-by-endpoint
-contract — pagination, filters, envelopes, operational payloads, and the two
-Phase 8 behaviour changes — is `docs/API_REFERENCE.md`.
+The gateway and dashboard share no package: their only coupling is the
+server-side proxy through `GATEWAY_ORIGIN`.
+
+## Security model
+
+- **Loopback by design.** Configuration refuses a non-loopback `HOST`, and the
+  management API re-checks the socket address on every request. Non-loopback
+  exposure requires an explicit security review.
+- **Hashed agent credentials.** Tokens are stored as hashes with a key id for
+  rotation; plaintext is shown once.
+- **Per-call authorization.** Policies are evaluated at call time, not at
+  discovery time, and denials are audited.
+- **Operator sessions.** The dashboard has real sign-in, a CSRF token on every
+  write, idle/max lifetimes, and lockout after repeated failures.
+- **Host and origin validation** on the MCP surface blocks DNS rebinding and
+  cross-origin calls.
+- **Response headers.** The dashboard sets CSP, `frame-ancestors 'none'`,
+  `X-Frame-Options: DENY`, `nosniff`, and `Referrer-Policy: no-referrer`; the
+  gateway sends `nosniff`.
+
+## Deployment
+
+The gateway is a long-running loopback process. Start with a plain build:
+
+```bash
+pnpm build
+export CREDENTIAL_HASH_SECRET=…   # required in production
+node apps/gateway/dist/index.js
+```
+
+Docker and systemd examples live in [`deployment/`](deployment/README.md). Note
+that the gateway requires host networking in a container — publishing a port
+from a bridge network contradicts the loopback-only design. SIGINT and SIGTERM
+both take a bounded graceful-drain path.
+
+Operational runbooks, backup/restore, and accepted risks are in
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ## Documentation
 
-- `PRD.md` — full product requirements.
-- `ARCHITECTURE.md` — system architecture (dashboard in §13).
-- `DASHBOARD.md` — Part I: dashboard/Astryx product specification. Part II: what Phase 9 actually implemented.
-- `BACKEND_SPEC.md` — management API and backend domain.
-- `API_REFERENCE.md` — endpoint inventory, envelopes, filters, OpenAPI.
-- `SECURITY.md` — security requirements.
-- `DATABASE.md` — database model and persistence.
-- `MONITORING.md` — logs, metrics, audit, operations.
-- `AGENT_COMPATIBILITY.md` — which MCP clients work, with evidence.
-- `ROADMAP.md` — implementation phases.
-- `DECISIONS.md` — accepted decisions.
-- `AGENT_GUIDE.md` — instructions for local coding agents.
-- `INTEGRATION_PLATFORM.md` — the managed-integration platform guide.
-- `providers/NOTION.md` — the Notion provider (ADR-055): credential,
-  sharing model, tools, boundaries, limitations.
-- `providers/SLACK.md` — the Slack provider (ADR-056): credential,
-  membership model, tools, boundaries, limitations.
+| Document | Contents |
+| --- | --- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, modules, lifecycles, security boundaries |
+| [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) | Endpoint inventory, envelopes, filters, OpenAPI |
+| [`docs/BACKEND_SPEC.md`](docs/BACKEND_SPEC.md) | Backend domain and management API |
+| [`docs/DASHBOARD.md`](docs/DASHBOARD.md) | Dashboard specification and implementation notes |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | Security requirements and threat model |
+| [`docs/DATABASE.md`](docs/DATABASE.md) | Schema, migrations, persistence |
+| [`docs/MONITORING.md`](docs/MONITORING.md) | Logs, metrics, audit, diagnostics |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Runbook, deployment, backup and restore |
+| [`docs/INTEGRATION_PLATFORM.md`](docs/INTEGRATION_PLATFORM.md) | Adding a managed provider |
+| [`docs/AGENT_COMPATIBILITY.md`](docs/AGENT_COMPATIBILITY.md) | Client matrix with evidence |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phases and remaining work |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Accepted architecture decisions |
+| [`docs/providers/`](docs/providers/) | Notion and Slack provider guides |
 
-## Next task
+## Status
 
-Phase 14 (agent compatibility) is **implemented** — see
-`docs/AGENT_COMPATIBILITY.md` for the client matrix and its evidence: Claude
-Code and OpenCode VERIFIED end-to-end, Codex CLI PARTIAL (no working local
-login to drive a turn), DeepSeek Desktop NOT VERIFIED (not installed), and
-the SDK harness (`apps/gateway/tests/compatibility/`, scenarios A–F) carrying the
-protocol-level proof for every standards-compliant client.
+The core gateway, operator dashboard, monitoring, and the GitHub, Notion, and
+Slack integrations are implemented and covered by the test suite. Claude Code
+and OpenCode are verified end-to-end; no test dials a live provider account, and
+live GitHub/Notion/Slack validation has not been performed. The remaining work
+is release hardening (security review, soak and failure/recovery tests,
+backup/restore verification, versioning) — tracked in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-The integration-platform half of Phase 15 is **implemented** (ADR-054): an
-audit-first hardening pass over the managed-integration platform — refresh in
-place, honest failed-refresh state, concurrency ownership at the lifecycle
-seam, redirect refusal in the GitHub client, and a source-typed tool-call
-counter — with `docs/INTEGRATION_PLATFORM.md` written for whoever adds the
-next provider.
+## License
 
-Phase 16 is **implemented** (ADR-055): Notion, the second code-registered
-provider — read-only, internal connection token, structurally different from
-GitHub (opaque cursors, a block tree, the database/data-source split) and
-landing with zero changes outside `apps/gateway/src/integrations/notion/` and one registry
-entry. `docs/providers/NOTION.md` is the provider guide. **Live Notion account
-validation: NOT PERFORMED — requires separate user approval.**
-
-Phase 17 is **implemented** (ADR-056): Slack, the third code-registered
-provider — read-only, a manually supplied bot token, and a failure model
-neither predecessor shares (application failures arrive as HTTP 200 with
-`ok:false`, so the client reads both envelope halves of every answer) —
-landing with zero changes outside `apps/gateway/src/integrations/slack/` and one registry
-entry. `search.messages` is documented out, not approximated (it is a
-user-token-only method). `docs/providers/SLACK.md` is the provider guide.
-**Live Slack workspace validation: NOT PERFORMED — requires separate user
-approval.**
-
-Next: **the release half of Phase 15** (see `docs/ROADMAP.md`): security
-review, soak and failure/recovery tests, backup/restore verification, docs
-and versioning, local process supervision. Nothing non-loopback without the
-explicit security gate.
-
-**Start with a decision, not code:** each step needs user approval before
-anything is registered or connected. Not to be added without approval: real
-backends, agent client config changes, OAuth or any third-party auth flow,
-non-loopback exposure. Still deferred from Phase 7–15: real-browser
-click-path verification, per-backend `limited` queueing
-(`docs/ARCHITECTURE.md` §11.2), backup/restore APIs, audit retention, session
-cleanup sweep UI, operator password-change API.
+ISC — see [`apps/gateway/package.json`](apps/gateway/package.json).
