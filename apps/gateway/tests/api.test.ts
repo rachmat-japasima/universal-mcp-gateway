@@ -105,6 +105,7 @@ describe('system', () => {
   it('leaves /health unchanged and working', async () => {
     const response = await gateway.app.request('/health', { headers: HOST });
     expect(response.status).toBe(200);
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
     expect(await json(response)).toMatchObject({ status: 'ok', mcp: { backendCount: 0, status: 'empty' } });
   });
 

@@ -361,6 +361,12 @@ export function createGateway(options: GatewayOptions): Gateway {
    */
   app.use('*', httpMetrics(metrics));
 
+  // Every response is JSON; a browser must never sniff it into something else.
+  app.use('*', async (c, next) => {
+    c.header('X-Content-Type-Options', 'nosniff');
+    await next();
+  });
+
   // DNS-rebinding defence for the MCP surface. Scoped to `/mcp` and `/health`
   // rather than `*` so the management API can answer with its own error envelope
   // (the SDK middleware replies with a JSON-RPC envelope, which a REST client

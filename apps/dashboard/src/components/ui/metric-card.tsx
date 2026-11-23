@@ -1,5 +1,4 @@
 import { Card } from '@astryxdesign/core/Card';
-import { Heading } from '@astryxdesign/core/Heading';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
@@ -25,17 +24,17 @@ export function MetricCard({
   return (
     <Card padding={4} elevation="none">
       <VStack gap={1}>
-        <Text type="label" color="secondary">
+        <Text as="h2" type="label" color="secondary">
           {label}
         </Text>
         {value === null ? (
-          <Heading level={3} type="display-3" color="secondary">
+          <Text type="display-3" color="secondary">
             {unavailableLabel}
-          </Heading>
+          </Text>
         ) : (
-          <Heading level={3} type="display-3">
+          <Text type="display-3">
             {typeof value === 'number' ? new Intl.NumberFormat('en-US').format(value) : value}
-          </Heading>
+          </Text>
         )}
         {detail === undefined ? null : <Text type="supporting">{detail}</Text>}
       </VStack>
