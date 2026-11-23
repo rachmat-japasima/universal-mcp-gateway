@@ -179,11 +179,11 @@ rather than shipping an open surface.
 | Session storage | opaque 256-bit token; only an HMAC-SHA-256 digest (`token_hash`) is stored, keyed by `CREDENTIAL_HASH_SECRET` with its own key id |
 | Session lifetime | idle timeout (30 min) and absolute lifetime (12 h) both derived on read, so neither can be extended by using the session |
 | Rotation | a login carrying an existing session ends that session before minting the new one, so a pre-login session id cannot survive login |
-| Lockout | 5 consecutive failures → 15 minutes, persisted as `locked_until`; the correct password is refused while the lock stands |
+| Lockout | 5 consecutive failures → 15 minutes, persisted as `locked_until`; the correct password is refused while the lock stands. `pnpm operator:unlock <username>` clears it from the gateway host without waiting and records `operator.unlocked` in the audit log |
 | Enumeration defence | unknown user, wrong password, disabled account, and lockout all answer the same `401` with the same message; a dummy scrypt verification burns comparable time on unknown users |
 | Cookie | `HttpOnly`, `SameSite=Strict`, `Path=/`; `Secure` only when explicitly configured (`OPERATOR_COOKIE_SECURE`), because a `Secure` cookie on plain-HTTP loopback is silently dropped and login appears to do nothing |
 | CSRF | `SameSite=Strict` plus an `X-CSRF-Token` header derived as `HMAC(session token, "operator-csrf-v1")`, verified on every non-safe method. No extra column, no stored token, and a token from another session is rejected |
-| Dead cookie | every rejection path clears the cookie, so an expired session redirects once instead of looping |
+| Dead cookie | `POST /api/logout` deletes it. The protected layout's redirect to `/login?next=…` leaves it in place: signing in replaces it, and `/login` never bounces back to `/dashboard`, so a dead cookie still costs exactly one redirect |
 
 **Bootstrap.** `pnpm operator:create` reads the password from stdin/a TTY prompt —
 never from argv, where it would land in shell history and process listings — and
