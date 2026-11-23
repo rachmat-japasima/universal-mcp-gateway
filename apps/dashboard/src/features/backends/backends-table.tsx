@@ -55,7 +55,7 @@ function columnsFor(byId: Map<string, Backend>): TableColumn<Row>[] {
     {
       key: 'name',
       header: 'Name',
-      width: proportional(3, { minWidth: 200 }),
+      width: proportional(4, { minWidth: 200 }),
       renderCell: (row) => (
         <VStack gap={0}>
           <Link href={`/dashboard/backends/${row.id}`} className="underline">
@@ -72,31 +72,34 @@ function columnsFor(byId: Map<string, Backend>): TableColumn<Row>[] {
     {
       key: 'transport',
       header: 'Transport',
-      width: proportional(2, { minWidth: 120 }),
+      width: proportional(2, { minWidth: 110 }),
       renderCell: (row) => <TransportLabel transport={row.transport} />,
     },
     {
       key: 'enabled',
       header: 'Enabled',
-      width: proportional(1, { minWidth: 100 }),
+      width: proportional(2, { minWidth: 90 }),
       renderCell: (row) => <EnabledBadge enabled={row.enabled} />,
     },
     {
       key: 'runtime',
       header: 'Runtime',
-      width: proportional(2, { minWidth: 140 }),
+      width: proportional(2, { minWidth: 120 }),
       renderCell: (row) => <RuntimeStatus status={row.status} />,
     },
     {
       key: 'updatedAt',
       header: 'Updated',
-      width: proportional(2, { minWidth: 150 }),
+      width: proportional(2, { minWidth: 130 }),
       renderCell: (row) => <Text type="supporting">{formatTimestamp(row.updatedAt)}</Text>,
     },
     {
       key: 'actions',
       header: 'Actions',
-      width: proportional(3, { minWidth: 280 }),
+      // The cell wraps, so the floor only has to hold one row of its two
+      // buttons. At 280 the six floors plus cell padding exceeded the card at
+      // 1440px, and the table's own horizontal scroll put Delete out of reach.
+      width: proportional(3, { minWidth: 180 }),
       renderCell: (row) => {
         const backend = byId.get(row.id);
         // `byId` is built from the same array, so this is always present; the
