@@ -53,6 +53,7 @@ export const AUDIT_ACTIONS = [
   'operator.session.revoked',
   'operator.session.expired',
   'operator.created',
+  'operator.unlocked',
   'operator.disabled',
   'operator.password_changed',
   /**

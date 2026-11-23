@@ -18,6 +18,7 @@
     "test:dashboard": "pnpm --filter @universal-mcp-gateway/dashboard test",
     "verify": "pnpm run typecheck && pnpm run typecheck:dashboard && pnpm test && pnpm run test:dashboard",
     "operator:create": "tsx src/cli/operator-create.ts",
+    "operator:unlock": "tsx src/cli/operator-unlock.ts",
     "backup": "tsx src/cli/backup-main.ts",
     "restore": "tsx src/cli/restore-main.ts",
     "soak": "tsx tests/soak/soak.ts"

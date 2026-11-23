@@ -105,6 +105,42 @@ describe('password hashing', () => {
   });
 });
 
+describe('lockout recovery', () => {
+  const LOCKED_UNTIL = '2026-11-22T00:15:00.000Z';
+
+  it('clears the counter and the lock without recording a login', () => {
+    const created = store.operators.create(
+      { username: 'recovery', passwordHash: hashPassword(PASSWORD) },
+      '2026-11-22T00:00:00.000Z',
+    );
+    const locked = store.operators.recordLoginFailure(created.id, '2026-11-22T00:00:01.000Z', LOCKED_UNTIL);
+    expect(locked.failedLoginAttempts).toBe(1);
+    expect(locked.lockedUntil).toBe(LOCKED_UNTIL);
+
+    const unlocked = store.operators.unlock(created.id, '2026-11-22T00:05:00.000Z');
+
+    expect(unlocked.failedLoginAttempts).toBe(0);
+    expect(unlocked.lockedUntil).toBeUndefined();
+    // Recovery is not a sign-in: the last-login timestamp must stay truthful.
+    expect(unlocked.lastLoginAt).toBeUndefined();
+    expect(unlocked.passwordHash).toBe(created.passwordHash);
+  });
+
+  it('is the same reset a successful login performs', () => {
+    const created = store.operators.create(
+      { username: 'recovery-2', passwordHash: hashPassword(PASSWORD) },
+      '2026-11-22T00:00:00.000Z',
+    );
+    store.operators.recordLoginFailure(created.id, '2026-11-22T00:00:01.000Z', LOCKED_UNTIL);
+
+    const byLogin = store.operators.recordLoginSuccess(created.id, '2026-11-22T00:06:00.000Z');
+    const byUnlock = store.operators.unlock(created.id, '2026-11-22T00:07:00.000Z');
+
+    expect(byLogin.failedLoginAttempts).toBe(byUnlock.failedLoginAttempts);
+    expect(byLogin.lockedUntil).toBe(byUnlock.lockedUntil);
+  });
+});
+
 describe('operator identity', () => {
   it('creates an operator with a unique id, timestamps, and owner role', () => {
     const before = new Date().toISOString();

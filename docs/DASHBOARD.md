@@ -548,7 +548,9 @@ current password is account takeover for whoever holds the session. See
 **Lockout is the brute-force control** (5 failures → 15 minutes), and it gates
 login only: an existing session keeps working while the account is locked, so
 triggering the lock cannot evict a signed-in operator. It is bounded, never
-permanent, and clears on the next successful login. There is no per-IP limiter.
+permanent, clears on the next successful login, and
+`pnpm operator:unlock <username>` clears it immediately from the gateway host —
+the same trust boundary as `pnpm operator:create`. There is no per-IP limiter.
 
 Verified: gateway test suite (528 tests, including 42 operator identity/auth
 tests) covers the boundary, cookie attributes, CSRF, lockout, rotation, expiry,

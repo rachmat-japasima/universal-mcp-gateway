@@ -17,6 +17,7 @@
     "typecheck:dashboard": "pnpm --filter @universal-mcp-gateway/dashboard typecheck",
     "verify": "pnpm run typecheck && pnpm run typecheck:dashboard && pnpm run test",
     "operator:create": "pnpm --filter @universal-mcp-gateway/gateway operator:create",
+  "operator:unlock": "pnpm --filter @universal-mcp-gateway/gateway operator:unlock",
     "backup": "pnpm --filter @universal-mcp-gateway/gateway backup",
     "restore": "pnpm --filter @universal-mcp-gateway/gateway restore",
     "soak": "pnpm --filter @universal-mcp-gateway/gateway soak"

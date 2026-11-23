@@ -330,6 +330,11 @@ export interface OperatorRepository {
   setPassword(id: string, passwordHash: string, now: string): Operator;
   /** Successful login: clears the attempt counter and the lockout. */
   recordLoginSuccess(id: string, now: string): Operator;
+  /**
+   * Recovery: clears the attempt counter and any lockout without recording a
+   * login. Shell access is the trust boundary this exists inside.
+   */
+  unlock(id: string, now: string): Operator;
   /** Failed login: increments and locks when the threshold is reached. */
   recordLoginFailure(id: string, now: string, lockUntil: string | undefined): Operator;
   disable(id: string, now: string): Operator;

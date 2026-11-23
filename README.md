@@ -398,6 +398,7 @@ Operational CLIs (Phase 18) — the runbook, including deployment artifacts and
 known accepted risks, is `docs/OPERATIONS.md`:
 ```bash
 pnpm operator:create     # first operator, interactive
+pnpm operator:unlock <name>  # clear a 15-minute lockout after five failures
 pnpm backup              # verified snapshot of a running gateway
 pnpm restore <file> --confirm   # local CLI only, gateway stopped
 ```

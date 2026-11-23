@@ -204,6 +204,24 @@ export class SqliteOperatorRepository implements OperatorRepository {
     return this.requireById(id);
   }
 
+  /**
+   * Clears the attempt counter and any lockout without touching the hash.
+   *
+   * Deliberately not `recordLoginSuccess`: unlocking is a recovery step, not a
+   * login, and `last_login_at` must keep meaning "the last real sign-in".
+   */
+  unlock(id: string, now: string): Operator {
+    this.database
+      .prepare(
+        `UPDATE admin_users
+            SET failed_login_attempts = 0, locked_until = NULL, updated_at = ?
+          WHERE id = ?`,
+      )
+      .run(now, id);
+
+    return this.requireById(id);
+  }
+
   recordLoginFailure(id: string, now: string, lockUntil: string | undefined): Operator {
     this.database
       .prepare(
